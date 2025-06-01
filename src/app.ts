@@ -28,20 +28,15 @@ const mistralApiKey = <string>process.env['MISTRAL_API_KEY'];
 const mistralURL = 'https://api.mistral.ai/v1/chat/completions';
 const chatTokenBot = <string>process.env['CHAT_TOKEN_BOT'];
 const chatTokenSlash = <string>process.env['CHAT_TOKEN_SLASH'];
+const chatTokenGroup = <string>process.env['CHAT_TOKEN_GROUP'];
 const chatIncomingURL =
   'https://thomsen.in/chat/webapi/entry.cgi?api=SYNO.Chat.External&method=chatbot&version=2&token=';
-
-/*
-const sampleAnswer: Promise<string> = Promise.resolve(
-  'Guten Morgen! Natürlich, ich kann dir eine allgemeine Anleitung zur Montage einer neuen Heizung geben. Diese Anleitung ist jedoch sehr vereinfacht und sollte von einem Fachmann durchgeführt werden, um sicherzustellen, dass alles korrekt und sicher installiert wird. Hier sind die grundlegenden Schritte:\n\n### 1. Vorbereitung\n- **Materialien und Werkzeuge**: Stelle sicher, dass du alle notwendigen Materialien und Werkzeuge hast, wie z.B. Heizungsgerät, Rohre, Schrauben, Klemmen, Dichtungen, Werkzeuge zur Montage und Messgeräte.\n- **Sicherheitsvorkehrungen**: Schalte die Stromversorgung ab und entferne die alte Heizung, falls vorhanden.\n- **Planung**: Plane die Installation und überprüfe die Abmessungen und Platzierung der neuen Heizung.\n\n### 2. Rohrleitung\n- **Rohrverlegung**: Installiere die Rohrleitung, die die Heizung mit dem Wasser- oder Gasversorgungssystem verbindet. Dies kann durch das Einlegen der Rohre in die Wände oder Decken erfolgen.\n- **Verbindung**: Verbinde die Rohre mit den entsprechenden Verbindungen und Klemmen. Stelle sicher, dass alle Verbindungen sicher und dicht sind.\n\n### 3. Heizungsgerät\n- **Montage**: Montiere das Heizungsgerät an der gewünschten Stelle. Dies kann an einer Wand, Decke oder Boden sein.\n- **Verbindung**: Verbinde das Heizungsgerät mit der Rohrleitung. Dies kann durch Schrauben, Klemmen oder andere Befestigungsmittel erfolgen.\n\n### 4. Elektrische Verbindungen\n- **Kabel**: Verbinde die elektrischen Kabel des Heizungsgeräts mit dem Stromnetz. Stelle sicher, dass alle Verbindungen sicher und korrekt sind.\n- **Schalter**: Installiere den Heizungsschalter an der gewünschten Stelle und verbinde ihn mit dem Heizungsgerät.\n\n### 5. Dichtungen und Abdichtungen\n- **Dichtungen**: Stelle sicher, dass alle Verbindungen und Öffnungen mit Dichtungen versehen sind, um Leckagen zu verhindern.\n- **Abdichtungen**: Installiere alle notwendigen Abdichtungen, um sicherzustellen, dass die Heizung sicher und effizient funktioniert. \n\n### 6. Test und Einstellung\n- **Test**: Schalte die Heizung ein und überprüfe, ob sie ordnungsgemäß funktioniert. Stelle sicher, dass die Temperatur korrekt eingestellt ist.\n- **Einstellung**: Justiere die Einstellungen des Heizungsgeräts, um die beste Leistung und Effizienz zu erzielen.\n\n### 7. Dokumentation und Wartung\n- **Dokumentation**: Dokumentiere alle Schritte und Änderungen, die während der Installation vorgenommen wurden.\n- **Wartung**: Plane regelmäßige Wartungen und Inspektionen, um die Lebensdauer und Effizienz der Heizung zu gewährleisten.\n\n### Wichtige Hinweise\n- **Sicherheitsvorkehrungen**: Achte immer auf die Sicherheitsvorkehrungen und folge den Anweisungen des Herstellers.\n- **Fachmann**: Lasse die Installation eines Heizungssystems, insbesondere bei komplexen Systemen, von einem Fachmann durchführen.\n\nIch hoffe, diese Anleitung hilft dir weiter. Wenn du spezifische Fragen hast oder weitere Details benötigst, lass es mich wissen!'
-);
-*/
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function buildPrompt(text: string, username: string): string {
+function buildPrompt(text: string, username: string, short: boolean = false): string {
   return `
     You are a helpful chatbot named Yasmin. 
     Use the informal form to address the user.
@@ -50,6 +45,8 @@ function buildPrompt(text: string, username: string): string {
     ${text}
 
     Answer in the language used in this question: ${text}
+
+    ${short ? 'Your answer should have less than 1900 characters' : ''}
   `;
 }
 
@@ -124,27 +121,9 @@ const app = express();
 app.use(cors());
 app.use(express.urlencoded());
 
-app.post('/chat/slash', (req, res) => {
-  const reqBody = <SynologyRequest>req.body;
-  console.log(
-    `INFO Slash Chat called - body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
-  );
-  if (reqBody.token != chatTokenSlash) {
-    console.log('WARN Previous Slash chat request has invalid authorization token');
-    res.sendStatus(401);
-  } else {
-    const question = reqBody.text.replace('/yasmin', '').trim();
-    queryMistral(buildPrompt(question, reqBody.username)).then(answer =>
-      res.status(200).send({
-        text: formatMistralAnswer(answer)
-      })
-    );
-  }
-});
-
 app.post('/chat/bot', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
-  console.log(`INFO Bot Chat called - body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  console.log(`INFO Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
   if (reqBody.token != chatTokenBot) {
     console.log('WARN Previous Bot Chat request has invalid authorization token');
     res.sendStatus(401);
@@ -154,6 +133,37 @@ app.post('/chat/bot', (req, res) => {
       res.sendStatus(202);
       sendAnswersToChat(reqBody.user_id, answers);
     });
+  }
+});
+
+app.post('/chat/slash', (req, res) => {
+  const reqBody = <SynologyRequest>req.body;
+  console.log(`INFO Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  if (reqBody.token != chatTokenSlash) {
+    console.log('WARN Previous Slash Chat request has invalid authorization token');
+    res.sendStatus(401);
+  } else {
+    const question = reqBody.text.replace('/yasmin', '').trim();
+    queryMistral(buildPrompt(question, reqBody.username, true)).then(answer =>
+      res.status(200).send({
+        text: formatMistralAnswer(answer)
+      })
+    );
+  }
+});
+
+app.post('/chat/group', (req, res) => {
+  const reqBody = <SynologyRequest>req.body;
+  console.log(`INFO Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  if (reqBody.token != chatTokenGroup) {
+    console.log('WARN Previous Group Chat request has invalid authorization token');
+    res.sendStatus(401);
+  } else {
+    queryMistral(buildPrompt(reqBody.text, reqBody.username, true)).then(answer =>
+      res.status(200).send({
+        text: formatMistralAnswer(answer)
+      })
+    );
   }
 });
 
