@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
+import process from 'node:process';
 
 interface SynologyRequest {
   token: string;
@@ -173,4 +174,8 @@ app.get('/test', (req, res) => {
 
 app.listen(5000, () => {
   console.log('Yasmin AI API Server started');
+});
+
+process.on('uncaughtException', err => {
+  console.log(`ERROR: Caught exception: ${err.name} -> ${err.message}${err.stack ? '\n' + err.stack : ''}`);
 });
