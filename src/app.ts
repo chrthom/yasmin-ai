@@ -49,7 +49,7 @@ function buildSystemPrompt(text: string, username: string, shortAnswer: boolean)
 }
 
 function buildPrefixPrompt(): string {
-  return "Yasmin (Home assistant of Thomsen family):";
+  return 'Yasmin (Home assistant of Thomsen family):';
 }
 
 function splitter(str: string, l: number = 1800) {
@@ -101,7 +101,9 @@ function queryMistral(userText: string, username: string, shortAnswer: boolean =
     })
     .then(x => x.json())
     .then(mistralRes =>
-      formatMistralAnswer((<MistralResponse>mistralRes).choices[0].message.content.slice(prefixPrompt.length)).trim()
+      formatMistralAnswer(
+        (<MistralResponse>mistralRes).choices[0].message.content.slice(prefixPrompt.length)
+      ).trim()
     );
 }
 
@@ -153,7 +155,9 @@ app.post('/chat/bot', (req, res) => {
 
 app.post('/chat/slash', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
-  console.log(`INFO Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  console.log(
+    `INFO Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+  );
   if (reqBody.token != chatTokenSlash) {
     console.log('WARN Previous Slash Chat request has invalid authorization token');
     res.sendStatus(401);
@@ -169,7 +173,9 @@ app.post('/chat/slash', (req, res) => {
 
 app.post('/chat/group', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
-  console.log(`INFO Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  console.log(
+    `INFO Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+  );
   if (reqBody.token != chatTokenGroup) {
     console.log('WARN Previous Group Chat request has invalid authorization token');
     res.sendStatus(401);
