@@ -67,7 +67,7 @@ function splitter(str: string, l: number = 1800) {
 
 function queryMistral(prompt: string): Promise<string> {
   const mistralBody = {
-    model: 'ministral-3b-2410',
+    model: 'mistral-large-2411',
     messages: [
       {
         role: 'user',
