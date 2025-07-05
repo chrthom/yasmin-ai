@@ -71,7 +71,7 @@ function buildSystemPrompt(username: string, shortAnswer: boolean): string {
     If you are asked a factual question, answer scientifically.
     If the request is personal, answer in a conversational tone using youth language.
     ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}.
-    Answer in the same langauge that ${capitalize(username)} uses in his/her request.
+    Answer in the same language that ${capitalize(username)} uses in his/her request.
   `;
 }
 
