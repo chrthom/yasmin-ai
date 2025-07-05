@@ -44,6 +44,7 @@ function buildSystemPrompt(text: string, username: string, shortAnswer: boolean)
     You are talking to ${capitalize(username)}.
     Answer in the language used by ${capitalize(username)}.
     If a question is asked give a personalized answer.
+    Answer like a 6 year-old girl that belongs to the family.
     ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}
   `;
 }
