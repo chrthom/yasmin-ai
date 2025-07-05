@@ -37,18 +37,19 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function buildPrompt(text: string, username: string, short: boolean = false): string {
+function buildSystemPrompt(text: string, username: string, shortAnswer: boolean): string {
   return `
     You are a helpful chatbot named Yasmin. 
     Use the informal form to address the user.
-    Please answer the following request from the user named "${capitalize(username)}":
-
-    ${text}
-
-    Answer in the language used in this question: ${text}
-
-    ${short ? 'Your answer should have less than 1900 characters' : ''}
+    You are talking to ${capitalize(username)}.
+    Answer in the language used by ${capitalize(username)}.
+    If a question is asked give a personalized answer.
+    ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}
   `;
+}
+
+function buildPrefixPrompt(): string {
+  return "Yasmin (Home assistant of Thomsen family):";
 }
 
 function splitter(str: string, l: number = 1800) {
@@ -65,13 +66,23 @@ function splitter(str: string, l: number = 1800) {
   return strs;
 }
 
-function queryMistral(prompt: string): Promise<string> {
+function queryMistral(userText: string, username: string, shortAnswer: boolean = false): Promise<string> {
+  const prefixPrompt = buildPrefixPrompt();
   const mistralBody = {
-    model: 'mistral-large-2411',
+    model: 'mistral-medium-latest',
     messages: [
       {
+        role: 'system',
+        content: buildSystemPrompt(userText, username, shortAnswer)
+      },
+      {
         role: 'user',
-        content: prompt
+        content: userText
+      },
+      {
+        role: 'assistant',
+        content: prefixPrompt,
+        prefix: true
       }
     ]
   };
@@ -84,11 +95,14 @@ function queryMistral(prompt: string): Promise<string> {
       Authorization: `Bearer ${mistralApiKey}`
     }
   })
+    .then(x => {
+      console.log(`INFO Received raw answer from mistral: ${x}`);
+      return x;
+    })
     .then(x => x.json())
-    .then(mistralRes => {
-      console.log(`INFO Received raw answer from mistral: ${JSON.stringify(mistralRes)}`);
-      return (<MistralResponse>mistralRes).choices[0].message.content;
-    });
+    .then(mistralRes =>
+      formatMistralAnswer((<MistralResponse>mistralRes).choices[0].message.content.slice(prefixPrompt.length)).trim()
+    );
 }
 
 function formatMistralAnswer(answer: string): string {
@@ -129,8 +143,8 @@ app.post('/chat/bot', (req, res) => {
     console.log('WARN Previous Bot Chat request has invalid authorization token');
     res.sendStatus(401);
   } else {
-    queryMistral(buildPrompt(reqBody.text, reqBody.username)).then(answer => {
-      const answers = splitter(formatMistralAnswer(answer));
+    queryMistral(reqBody.text, reqBody.username).then(answer => {
+      const answers = splitter(answer);
       res.sendStatus(202);
       sendAnswersToChat(reqBody.user_id, answers);
     });
@@ -144,10 +158,10 @@ app.post('/chat/slash', (req, res) => {
     console.log('WARN Previous Slash Chat request has invalid authorization token');
     res.sendStatus(401);
   } else {
-    const question = reqBody.text.replace('/yasmin', '').trim();
-    queryMistral(buildPrompt(question, reqBody.username, true)).then(answer =>
+    const userText = reqBody.text.replace('/yasmin', '').trim();
+    queryMistral(userText, reqBody.username, true).then(answer =>
       res.status(200).send({
-        text: formatMistralAnswer(answer)
+        text: answer
       })
     );
   }
@@ -160,9 +174,9 @@ app.post('/chat/group', (req, res) => {
     console.log('WARN Previous Group Chat request has invalid authorization token');
     res.sendStatus(401);
   } else {
-    queryMistral(buildPrompt(reqBody.text, reqBody.username, true)).then(answer =>
+    queryMistral(reqBody.text, reqBody.username, true).then(answer =>
       res.status(200).send({
-        text: formatMistralAnswer(answer)
+        text: answer
       })
     );
   }
