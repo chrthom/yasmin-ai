@@ -33,24 +33,47 @@ const chatTokenGroup = <string>process.env['CHAT_TOKEN_GROUP'];
 const chatIncomingURL =
   'https://thomsen.in/chat/webapi/entry.cgi?api=SYNO.Chat.External&method=chatbot&version=2&token=';
 
+const familyRelations = new Map<string, string>([
+  ['anjali', 'daughter'],
+  ['christopher', 'daughter'],
+  ['zara', 'younger sister'],
+  ['samira', 'older sister'],
+  ['ellena', 'older sister'],
+  ['helge', 'granddaughter'],
+  ['christine', 'granddaughter'],
+  ['lennard', 'niece'],
+  ['jonas', 'niece']
+]);
+
+const userAge = new Map<string, number>([
+  ['anjali', 36],
+  ['christopher', 36],
+  ['zara', 13],
+  ['samira', 5],
+  ['ellena', 2],
+  ['helge', 57],
+  ['christine', 56],
+  ['lennard', 34],
+  ['jonas', 29]
+]);
+
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function buildSystemPrompt(text: string, username: string, shortAnswer: boolean): string {
+function buildSystemPrompt(username: string, shortAnswer: boolean): string {
   return `
-    You are a helpful chatbot named Yasmin. 
-    Use the informal form to address the user.
-    You are talking to ${capitalize(username)}.
-    Answer in the language used by ${capitalize(username)}.
-    If a question is asked give a personalized answer.
-    Answer like a 6 year-old girl that belongs to the family.
-    ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}
+    Give an answer appropriate for a ${userAge.get(username)} year old in a conversational tone using youth language.
+    Your name is Yasmin and you are 10 years old.
+    You are talking to ${capitalize(username)}, who is ${userAge.get(username)} years old.
+    You are the ${familyRelations.get(username)} of ${capitalize(username)}.
+    ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}.
+    Answer in the same langauge that ${capitalize(username)} uses in his/her request.
   `;
 }
 
-function buildPrefixPrompt(): string {
-  return 'Yasmin (Home assistant of Thomsen family):';
+function buildPrefixPrompt(username: string): string {
+  return `Yasmin:`;
 }
 
 function splitter(str: string, l: number = 1800) {
@@ -68,13 +91,13 @@ function splitter(str: string, l: number = 1800) {
 }
 
 function queryMistral(userText: string, username: string, shortAnswer: boolean = false): Promise<string> {
-  const prefixPrompt = buildPrefixPrompt();
+  const prefixPrompt = buildPrefixPrompt(username);
   const mistralBody = {
     model: 'mistral-medium-latest',
     messages: [
       {
         role: 'system',
-        content: buildSystemPrompt(userText, username, shortAnswer)
+        content: buildSystemPrompt(username, shortAnswer)
       },
       {
         role: 'user',
@@ -97,7 +120,7 @@ function queryMistral(userText: string, username: string, shortAnswer: boolean =
     }
   })
     .then(x => {
-      console.log(`INFO Received raw answer from mistral: ${x}`);
+      console.log(`INFO Received raw answer from mistral: ${JSON.stringify(x)}`);
       return x;
     })
     .then(x => x.json())
