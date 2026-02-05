@@ -8,9 +8,9 @@ interface SynologyRequest {
   token: string;
   user_id: number;
   username: string;
-  post_id: number;
-  thread_id: number;
-  timestamp: number;
+  post_id?: number;
+  thread_id?: number;
+  timestamp?: number;
   text: string;
 }
 
@@ -36,7 +36,8 @@ async function processRequest(
 
 const app = express();
 app.use(cors());
-app.use(express.urlencoded());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 app.post('/chat/bot', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
