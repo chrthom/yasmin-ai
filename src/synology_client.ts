@@ -8,12 +8,7 @@ export class SynologyClient {
   }
 
   formatAnswer(answer: string): string {
-    return answer
-      .toString()
-      .replaceAll(/^- /gm, '* ')
-      .replaceAll(/\*\*([^*]+)\*\* ?/gm, '*$1* ')
-      .replaceAll(/^#+ (.*)$/gm, '*_$1_*')
-      .trim();
+    return answer.toString().trim();
   }
 
   chunkText(str: string, l: number = 1800) {
