@@ -33,12 +33,13 @@ export class ChatAgent {
   }
 
   private buildInitialPrompt(userText: string, username: string, shortAnswer: boolean): string {
+    const capitalizedUsername = this.capitalize(username);
     return `
-      You are talking to ${username}, who is ${this.knowledge.getAgeOf(username)} years old.
-      You are the ${this.knowledge.getFamilyRelationTo(username)} of ${username}.
+      You are talking to ${capitalizedUsername}, who is ${this.knowledge.getAgeOf(username)} years old.
+      You are the ${this.knowledge.getFamilyRelationTo(username)} of ${capitalizedUsername}.
       ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}.
 
-      Request from ${username}:
+      Request from ${capitalizedUsername}:
       ${userText}
     `;
   }
@@ -73,7 +74,7 @@ export class ChatAgent {
           role: 'user',
           content: conversationId
             ? userText
-            : this.buildInitialPrompt(userText, this.capitalize(username), shortAnswer)
+            : this.buildInitialPrompt(userText, username, shortAnswer)
         }
       ]
     };

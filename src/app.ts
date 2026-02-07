@@ -5,13 +5,13 @@ import { ChatAgent } from './chat_agent';
 import { SynologyClient } from './synology_client';
 
 interface SynologyRequest {
+  text: string;
   token: string;
   user_id: number;
   username: string;
   post_id?: number;
   thread_id?: number;
   timestamp?: number;
-  text: string;
 }
 
 const mistralApiKey = <string>process.env['MISTRAL_API_KEY'];
