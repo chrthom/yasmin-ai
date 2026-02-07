@@ -10,8 +10,8 @@ export class SynologyClient {
   formatAnswer(answer: string): string {
     return answer
       .toString()
-      .replaceAll(/\*\*([^*]+)\*\* ?/gm, '$1 ')
-      .replaceAll(/^#+ (.*)$/gm, '$1')
+      .replaceAll(/\*\*?([^*]+)\*\*?/gm, '$1')
+      .replaceAll(/^#+(.*)$/gm, '$1')
       .trim();
   }
 
