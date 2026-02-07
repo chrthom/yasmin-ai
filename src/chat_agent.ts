@@ -42,7 +42,7 @@ export class ChatAgent {
     return `
       You are talking to ${capitalizedUsername}, who is ${this.knowledge.getAgeOf(username)} years old.
       You are the ${this.knowledge.getFamilyRelationTo(username)} of ${capitalizedUsername}.
-      ${shortAnswer ? 'Your answer should have less than 1900 characters' : ''}.
+      ${shortAnswer ? 'Your answer must be shorter than 1500 characters' : ''}.
 
       Request from ${capitalizedUsername}:
       ${userText}
@@ -62,7 +62,7 @@ export class ChatAgent {
         c =>
           c.name == username &&
           c.agent_id == this.agentId &&
-          Date.parse(c.updated_at) > Date.now() - 24 * 60 * 60 * 1000
+          Date.parse(c.updated_at) > Date.now() - 12 * 60 * 60 * 1000
       )
       .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at))
       .pop()?.id;
