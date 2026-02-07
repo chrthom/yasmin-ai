@@ -65,7 +65,7 @@ export class ChatAgent {
 
   async processRequest(userText: string, username: string, shortAnswer: boolean = false): Promise<string> {
     const conversationId = await this.getActiveConversationId(username);
-    console.log(`INFO Existing conversation ${conversationId}`);
+    console.log(`DEBUG Existing conversation ${conversationId}`);
     const body = {
       agent_id: conversationId ? undefined : this.agentId,
       name: conversationId ? undefined : username,
@@ -87,7 +87,7 @@ export class ChatAgent {
         Authorization: `Bearer ${this.apiKey}`
       }
     }).then(x => x.json());
-    console.log(`INFO Received raw answer from mistral: ${JSON.stringify(response)}`);
+    console.log(`DEBUG Received raw answer from mistral: ${JSON.stringify(response)}`);
     const outputs = (<MistralConversationResponse>response).outputs;
     return outputs[outputs.length - 1].content;
   }

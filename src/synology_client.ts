@@ -31,7 +31,8 @@ export class SynologyClient {
   }
 
   async sendAnswersToChat(userId: number, answers: string[]) {
-    if (answers) {
+    if (answers.length) {
+      console.log(`Send partial message - ${answers.length} answers remaining`); /////
       fetch(`${this.url}%22${this.token}%22`, {
         method: 'post',
         body: new URLSearchParams([

@@ -41,15 +41,14 @@ app.use(express.json());
 
 app.post('/chat/bot', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
-  console.log(`INFO Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  console.log(`DEBUG Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
   if (reqBody.token != chatTokenBot) {
     console.log('WARN Previous Bot Chat request has invalid authorization token');
     res.sendStatus(401);
   } else {
     processRequest(reqBody.text, reqBody.username).then(answer => {
-      const answers = synologyClient.chunkText(answer);
       res.sendStatus(202);
-      synologyClient.sendAnswersToChat(reqBody.user_id, answers);
+      synologyClient.sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse());
     });
   }
 });
@@ -57,7 +56,7 @@ app.post('/chat/bot', (req, res) => {
 app.post('/chat/slash', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
   console.log(
-    `INFO Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+    `DEBUG Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
   );
   if (reqBody.token != chatTokenSlash) {
     console.log('WARN Previous Slash Chat request has invalid authorization token');
@@ -75,7 +74,7 @@ app.post('/chat/slash', (req, res) => {
 app.post('/chat/group', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
   console.log(
-    `INFO Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+    `DEBUG Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
   );
   if (reqBody.token != chatTokenGroup) {
     console.log('WARN Previous Group Chat request has invalid authorization token');
@@ -94,7 +93,7 @@ app.get('/test', (req, res) => {
 });
 
 app.listen(5000, () => {
-  console.log('Yasmin AI API Server started');
+  console.log('INFO Yasmin AI API Server started');
 });
 
 process.on('uncaughtException', err => {
