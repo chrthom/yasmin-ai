@@ -44,7 +44,9 @@ app.use(express.json());
 
 app.post('/chat/bot', (req, res) => {
   const reqBody = <SynologyRequest>req.body;
-  console.log(`DEBUG Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`);
+  console.log(
+    `DEBUG Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+  );
   if (reqBody.token != chatTokenBot) {
     console.log('WARN Previous Bot Chat request has invalid authorization token');
     res.sendStatus(401);

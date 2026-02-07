@@ -1,8 +1,8 @@
 import { Knowledge } from './knowledge';
 
 interface MistralConversationResponseOutputPart {
-  type: string,
-  text: string
+  type: string;
+  text: string;
 }
 
 interface MistralConversationResponseOutput {
@@ -68,7 +68,11 @@ export class ChatAgent {
       .pop()?.id;
   }
 
-  async processRequest(userText: string, username: string, shortAnswer: boolean = false): Promise<MistralConversationResponseOutput[]> {
+  async processRequest(
+    userText: string,
+    username: string,
+    shortAnswer: boolean = false
+  ): Promise<MistralConversationResponseOutput[]> {
     const conversationId = await this.getActiveConversationId(username);
     console.log(`DEBUG Existing conversation ${conversationId}`);
     const body = {
@@ -77,9 +81,7 @@ export class ChatAgent {
       inputs: [
         {
           role: 'user',
-          content: conversationId
-            ? userText
-            : this.buildInitialPrompt(userText, username, shortAnswer)
+          content: conversationId ? userText : this.buildInitialPrompt(userText, username, shortAnswer)
         }
       ]
     };
@@ -94,13 +96,12 @@ export class ChatAgent {
     }).then(x => x.json());
     console.log(`DEBUG Received raw answer from mistral: ${JSON.stringify(response)}`);
     return (<MistralConversationResponse>response).outputs;
-    
   }
 
   convertMultiPart(outputs: MistralConversationResponseOutput[]): string {
-    const messageOutput = outputs.find(o => o.type == 'message.output')
+    const messageOutput = outputs.find(o => o.type == 'message.output');
     if (!messageOutput) {
-      console.log('WARN No output of type message.output was found!')
+      console.log('WARN No output of type message.output was found!');
       return '';
     }
     if (typeof messageOutput.content === 'string') {
