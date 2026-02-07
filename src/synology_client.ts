@@ -8,7 +8,11 @@ export class SynologyClient {
   }
 
   formatAnswer(answer: string): string {
-    return answer.toString().trim();
+    return answer
+      .toString()
+      .replaceAll(/\*\*([^*]+)\*\* ?/gm, '$1 ')
+      .replaceAll(/^#+ (.*)$/gm, '$1')
+      .trim();
   }
 
   chunkText(str: string, l: number = 1800) {
