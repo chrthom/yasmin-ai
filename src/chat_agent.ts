@@ -1,7 +1,12 @@
 import { Knowledge } from './knowledge';
 
+interface MistralConversationResponseOutputPart {
+  type: string,
+  text: string
+}
+
 interface MistralConversationResponseOutput {
-  content: string;
+  content: string | MistralConversationResponseOutputPart[];
   type: string;
 }
 
@@ -63,7 +68,7 @@ export class ChatAgent {
       .pop()?.id;
   }
 
-  async processRequest(userText: string, username: string, shortAnswer: boolean = false): Promise<string> {
+  async processRequest(userText: string, username: string, shortAnswer: boolean = false): Promise<MistralConversationResponseOutput[]> {
     const conversationId = await this.getActiveConversationId(username);
     console.log(`DEBUG Existing conversation ${conversationId}`);
     const body = {
@@ -88,7 +93,23 @@ export class ChatAgent {
       }
     }).then(x => x.json());
     console.log(`DEBUG Received raw answer from mistral: ${JSON.stringify(response)}`);
-    const outputs = (<MistralConversationResponse>response).outputs;
-    return outputs[outputs.length - 1].content;
+    return (<MistralConversationResponse>response).outputs;
+    
+  }
+
+  convertMultiPart(outputs: MistralConversationResponseOutput[]): string {
+    const messageOutput = outputs.find(o => o.type == 'message.output')
+    if (!messageOutput) {
+      console.log('WARN No output of type message.output was found!')
+      return '';
+    }
+    if (typeof messageOutput.content === 'string') {
+      return messageOutput.content;
+    } else {
+      return (<MistralConversationResponseOutputPart[]>messageOutput.content)
+        .filter(p => p.type == 'text')
+        .map(p => p.text)
+        .join(' ');
+    }
   }
 }
