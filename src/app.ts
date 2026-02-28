@@ -23,8 +23,8 @@ const mistralURL = 'https://api.mistral.ai/v1/conversations';
 const chatIncomingURL =
   'https://thomsen.in/chat/webapi/entry.cgi?api=SYNO.Chat.External&method=chatbot&version=2&token=';
 
-const chatAgent = new ChatAgent(mistralURL, mistralApiKey, agentId);
-const synologyClient = new SynologyClient(chatIncomingURL, chatTokenBot);
+export const chatAgent = new ChatAgent(mistralURL, mistralApiKey, agentId);
+export const synologyClient = new SynologyClient(chatIncomingURL, chatTokenBot);
 
 async function processRequest(
   userText: string,
