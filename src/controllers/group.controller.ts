@@ -12,9 +12,14 @@ async function processRequest(
   username: string,
   shortAnswer: boolean = false
 ): Promise<string> {
-  const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
-  const text = chatAgent.convertMultiPart(outputs);
-  return synologyClient.formatAnswer(text);
+  try {
+    const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
+    const text = chatAgent.convertMultiPart(outputs);
+    return text ? synologyClient.formatAnswer(text) : '';
+  } catch (error) {
+    console.error('Error in processRequest:', error);
+    throw new Error('Failed to process chat request');
+  }
 }
 
 export function createGroupController(chatAgent: ChatAgent, synologyClient: SynologyClient) {
@@ -36,16 +41,10 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
     }
     try {
       const answer = await processRequest(chatAgent, synologyClient, reqBody.text, reqBody.username, true);
-      res.status(200).send({
-        text: answer
-      });
-      // Send to Synology in fire-and-forget pattern
+      res.status(200).send({ text: answer });
       await synologyClient
         .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse())
-        .catch(error => {
-          // Ignore errors when sending to Synology
-          logger.error('Failed to send group response to Synology', { error });
-        });
+        .catch(error => logger.error('Failed to send group response to Synology', { error }));
     } catch (error) {
       logger.error('Error in group chat processing', { error });
       res.status(500).send({ error: 'Internal server error' });

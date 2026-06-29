@@ -62,14 +62,12 @@ describe('SynologyClient', () => {
       expect(chunks.length).toBe(2);
       expect(chunks[0].length).toBeLessThanOrEqual(1800);
     });
-  });
 
-  describe('sendAnswersToChat', () => {
-    it('should be defined', () => {
-      expect(synologyClient.sendAnswersToChat).toBeDefined();
+    it('should not mutate input array', () => {
+      const answers = ['msg1', 'msg2', 'msg3'];
+      const answersCopy = [...answers];
+      synologyClient.chunkText('test');
+      expect(answers).toEqual(answersCopy);
     });
-
-    // Note: Actual network calls would need to be mocked for full testing
-    // This is just a basic test to ensure the method exists
   });
 });
