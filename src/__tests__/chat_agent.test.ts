@@ -1,5 +1,4 @@
 import { ChatAgent } from '../chat_agent';
-import { Knowledge } from '../knowledge';
 
 // Mock fetch
 const mockFetch = jest.fn();
@@ -7,23 +6,21 @@ global.fetch = mockFetch;
 
 describe('ChatAgent', () => {
   let chatAgent: ChatAgent;
-  let knowledge: Knowledge;
 
   beforeEach(() => {
-    knowledge = new Knowledge();
     chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
     mockFetch.mockClear();
   });
 
   describe('capitalize', () => {
     it('should capitalize the first letter', () => {
-      // @ts-ignore - accessing private method for testing
+      // @ts-expect-error - accessing private method for testing
       const result = chatAgent.capitalize('hello');
       expect(result).toBe('Hello');
     });
 
     it('should handle empty string', () => {
-      // @ts-ignore - accessing private method for testing
+      // @ts-expect-error - accessing private method for testing
       const result = chatAgent.capitalize('');
       expect(result).toBe('');
     });
@@ -31,7 +28,7 @@ describe('ChatAgent', () => {
 
   describe('buildInitialPrompt', () => {
     it('should build correct prompt for normal conversation', () => {
-      // @ts-ignore - accessing private method for testing
+      // @ts-expect-error - accessing private method for testing
       const result = chatAgent.buildInitialPrompt('Hello there', 'christopher', false);
       expect(result).toContain('You are talking to Christopher');
       expect(result).toContain('who is 36 years old');
@@ -40,13 +37,13 @@ describe('ChatAgent', () => {
     });
 
     it('should include short answer constraint when requested', () => {
-      // @ts-ignore - accessing private method for testing
+      // @ts-expect-error - accessing private method for testing
       const result = chatAgent.buildInitialPrompt('Hello', 'anjali', true);
       expect(result).toContain('Your answer must be shorter than 1500 characters');
     });
 
     it('should handle unknown user', () => {
-      // @ts-ignore - accessing private method for testing
+      // @ts-expect-error - accessing private method for testing
       const result = chatAgent.buildInitialPrompt('Hello', 'unknown', false);
       expect(result).toContain('who is 30 years old');
       expect(result).toContain('You are the distant relative of Unknown');
@@ -65,6 +62,9 @@ describe('ChatAgent', () => {
       ];
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -83,6 +83,9 @@ describe('ChatAgent', () => {
       ];
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -101,6 +104,9 @@ describe('ChatAgent', () => {
       ];
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -125,6 +131,9 @@ describe('ChatAgent', () => {
       ];
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -195,6 +204,9 @@ describe('ChatAgent', () => {
       };
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -219,6 +231,9 @@ describe('ChatAgent', () => {
       };
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -243,6 +258,9 @@ describe('ChatAgent', () => {
       };
 
       mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
 
