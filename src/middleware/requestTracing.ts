@@ -13,7 +13,7 @@ export function requestTracingMiddleware(req: Request, res: Response, next: Next
   requestWithId.requestId = requestId;
 
   // Attach request ID to res.locals for use in response handlers
-  res.locals.requestId = requestId;
+  res.locals['requestId'] = requestId;
 
   // Add request ID to response headers for client correlation
   res.set('X-Request-ID', requestId);
