@@ -3,7 +3,7 @@ import { SynologyRequestSchema } from '../middleware/validation';
 import { config } from '../config';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
-import { createRequestLogger, RequestWithRequestId } from '../middleware/requestTracing';
+import { createRequestLogger } from '../middleware/requestTracing';
 
 async function processRequest(
   chatAgent: ChatAgent,
