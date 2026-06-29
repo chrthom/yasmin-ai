@@ -23,9 +23,11 @@ jest.mock('../config', () => ({
 }));
 
 import { Request, Response } from 'express';
-import { createBotController } from '../controllers/bot.controller';
-import { createSlashController } from '../controllers/slash.controller';
-import { createGroupController } from '../controllers/group.controller';
+import {
+  createBotController,
+  createSlashController,
+  createGroupController
+} from '../controllers/chat.controller';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
 
