@@ -525,8 +525,8 @@ Use this checklist to track implementation progress:
 - [x] #2: Add error handling to app.ts endpoint handlers
 - [x] #12: Add environment variable validation at startup
 - [x] #1: Fix type assertions for environment variables
-- [ ] #4: Update express to stable version
-- [ ] #4: Update node-fetch or remove if using native fetch
+- [x] #4: Update express to stable version
+- [x] #4: Update node-fetch or remove if using native fetch
 - [ ] #7: Implement conversation cache
 - [ ] #6: Create controllers directory and move route handlers
 - [x] #8: Convert .then() chains to async/await
