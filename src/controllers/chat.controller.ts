@@ -9,7 +9,7 @@ interface ChatControllerOptions {
   token: string;
   responseStatus: number;
   stripPrefix?: string;
-  sendToSynology?: boolean
+  sendToSynology?: boolean;
 }
 
 async function processRequest(
@@ -76,13 +76,8 @@ export function createChatController(
 
       if (options.sendToSynology !== false) {
         await synologyClient
-          .sendAnswersToChat(
-            reqBody.user_id,
-            synologyClient.chunkText(answer).reverse()
-          )
-          .catch(error =>
-            logger.error('Failed to send to Synology', { error })
-          );
+          .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse())
+          .catch(error => logger.error('Failed to send to Synology', { error }));
       }
     } catch (error) {
       logger.error('Error in chat processing', { error });
@@ -91,10 +86,7 @@ export function createChatController(
   };
 }
 
-export function createBotController(
-  chatAgent: ChatAgent,
-  synologyClient: SynologyClient
-) {
+export function createBotController(chatAgent: ChatAgent, synologyClient: SynologyClient) {
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.bot,
     responseStatus: 202,
@@ -102,10 +94,7 @@ export function createBotController(
   });
 }
 
-export function createSlashController(
-  chatAgent: ChatAgent,
-  synologyClient: SynologyClient
-) {
+export function createSlashController(chatAgent: ChatAgent, synologyClient: SynologyClient) {
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.slash,
     responseStatus: 200,
@@ -114,10 +103,7 @@ export function createSlashController(
   });
 }
 
-export function createGroupController(
-  chatAgent: ChatAgent,
-  synologyClient: SynologyClient
-) {
+export function createGroupController(chatAgent: ChatAgent, synologyClient: SynologyClient) {
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.group,
     responseStatus: 200,
