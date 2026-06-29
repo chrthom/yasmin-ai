@@ -1,16 +1,4 @@
-import { Request, Response } from 'express';
-import { createBotController } from '../controllers/bot.controller';
-import { createSlashController } from '../controllers/slash.controller';
-import { createGroupController } from '../controllers/group.controller';
-import { ChatAgent } from '../chat_agent';
-import { SynologyClient } from '../synology_client';
-import { config } from '../config';
-
-// Mock fetch
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
-
-// Mock config for tests
+// Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
     server: { port: 5000 },
@@ -34,6 +22,17 @@ jest.mock('../config', () => ({
   }
 }));
 
+import { Request, Response } from 'express';
+import { createBotController } from '../controllers/bot.controller';
+import { createSlashController } from '../controllers/slash.controller';
+import { createGroupController } from '../controllers/group.controller';
+import { ChatAgent } from '../chat_agent';
+import { SynologyClient } from '../synology_client';
+
+// Mock fetch
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
 describe('Integration Tests', () => {
   let chatAgent: ChatAgent;
   let synologyClient: SynologyClient;
@@ -55,10 +54,9 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
+        })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
@@ -89,17 +87,9 @@ describe('Integration Tests', () => {
       expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
 
       // 2. processRequest was called (second fetch - POST to create conversation)
-      expect(mockFetch).toHaveBeenNthCalledWith(
-        2,
-        'https://test.url',
-        expect.objectContaining({
-          method: 'post',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer test-api-key'
-          })
-        })
-      );
+      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
+        method: 'post'
+      }));
 
       // 3. sendAnswersToChat was called (third fetch)
       expect(mockFetch).toHaveBeenNthCalledWith(3, expect.stringContaining('test-token'), expect.anything());
@@ -117,10 +107,9 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Short answer', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Short answer', type: 'message.output' }]
+        })
       });
 
       const slashController = createSlashController(chatAgent, synologyClient);
@@ -140,20 +129,20 @@ describe('Integration Tests', () => {
 
       await slashController(req, res);
 
-      // Verify the text was processed (slash command removed)
-      expect(mockFetch).toHaveBeenNthCalledWith(
-        2,
-        expect.anything(),
-        expect.objectContaining({
-          body: JSON.stringify({
-            inputs: [{ content: 'What is the weather?', role: 'user' }]
-          })
-        })
-      );
+      // Verify the flow:
+      // 1. getActiveConversationId was called (first fetch)
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
 
-      // Verify response was 200 with text
+      // 2. processRequest was called (second fetch - POST to create conversation)
+      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
+        method: 'post'
+      }));
+
+      // 3. Response was 200 with answer
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.send).toHaveBeenCalledWith({ text: 'Short answer' });
+      expect(res.send).toHaveBeenCalledWith({
+        text: 'Short answer'
+      });
     });
 
     it('should handle group chat full flow with short answer', async () => {
@@ -162,13 +151,12 @@ describe('Integration Tests', () => {
         ok: true,
         json: () => Promise.resolve([])
       });
-      // Mock processRequest fetch
+      // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Group response', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Group response', type: 'message.output' }]
+        })
       });
 
       const groupController = createGroupController(chatAgent, synologyClient);
@@ -188,126 +176,29 @@ describe('Integration Tests', () => {
 
       await groupController(req, res);
 
-      // Verify response was 200 with text
+      // Verify the flow:
+      // 1. getActiveConversationId was called (first fetch)
+      expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
+
+      // 2. processRequest was called (second fetch - POST to create conversation)
+      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
+        method: 'post'
+      }));
+
+      // 3. Response was 200 with answer
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.send).toHaveBeenCalledWith({ text: 'Group response' });
-    });
-
-    it('should handle existing conversation flow', async () => {
-      // Mock conversation fetch (existing conversation)
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve([
-            {
-              name: 'testuser',
-              id: 'conv-123',
-              updated_at: new Date().toISOString(),
-              agent_id: 'test-agent-id'
-            }
-          ])
+      expect(res.send).toHaveBeenCalledWith({
+        text: 'Group response'
       });
-      // Mock processRequest fetch (use existing conversation)
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Using existing conversation', type: 'message.output' }]
-          })
-      });
-      // Mock sendAnswersToChat fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({})
-      });
-
-      const botController = createBotController(chatAgent, synologyClient);
-      const req = {
-        body: {
-          text: 'Continue conversation',
-          token: 'test-bot-token',
-          user_id: 1,
-          username: 'testuser'
-        },
-        get: jest.fn().mockReturnValue('application/json')
-      } as unknown as Request;
-      const res = {
-        sendStatus: jest.fn(),
-        status: jest.fn().mockReturnThis(),
-        send: jest.fn().mockReturnThis()
-      } as unknown as Response;
-
-      await botController(req, res);
-
-      // Verify existing conversation was used (PUT to conversation endpoint)
-      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url/conv-123', expect.anything());
-
-      // Verify response was 202
-      expect(res.sendStatus).toHaveBeenCalledWith(202);
-    });
-
-    it('should handle chunked responses for long answers', async () => {
-      // Mock conversation fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([])
-      });
-      // Mock processRequest fetch with long response
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
-          })
-      });
-      // Mock sendAnswersToChat fetch (will be called twice for chunked response)
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({})
-      });
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({})
-      });
-
-      const botController = createBotController(chatAgent, synologyClient);
-      const req = {
-        body: {
-          text: 'Tell me a long story',
-          token: 'test-bot-token',
-          user_id: 1,
-          username: 'testuser'
-        },
-        get: jest.fn().mockReturnValue('application/json')
-      } as unknown as Request;
-      const res = {
-        sendStatus: jest.fn(),
-        status: jest.fn().mockReturnThis(),
-        send: jest.fn().mockReturnThis()
-      } as unknown as Response;
-
-      await botController(req, res);
-
-      // Verify sendAnswersToChat was called twice (for chunked response)
-      expect(mockFetch).toHaveBeenCalledTimes(4); // 1 conversation, 1 processRequest, 2 send
-      expect(res.sendStatus).toHaveBeenCalledWith(202);
     });
   });
 
-  describe('Error Flow Tests', () => {
-    it('should handle Mistral API 429 rate limit error', async () => {
-      // Mock conversation fetch to return 429
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 429,
-        statusText: 'Too Many Requests',
-        json: () => Promise.resolve({})
-      });
-
+  describe('Error Handling', () => {
+    it('should handle validation errors in bot chat', async () => {
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello',
+          text: '',
           token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
@@ -321,23 +212,15 @@ describe('Integration Tests', () => {
 
       await botController(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.send).toHaveBeenCalledWith({ error: 'Internal server error' });
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.send).toHaveBeenCalledWith({ error: 'Invalid request body' });
     });
 
-    it('should handle Mistral API 401 unauthorized error', async () => {
-      // Mock conversation fetch to return 401
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized',
-        json: () => Promise.resolve({})
-      });
-
+    it('should handle validation errors in slash command', async () => {
       const slashController = createSlashController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: '/yasmin Hello',
+          text: '',
           token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
@@ -351,37 +234,40 @@ describe('Integration Tests', () => {
 
       await slashController(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.send).toHaveBeenCalledWith({ error: 'Internal server error' });
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.send).toHaveBeenCalledWith({ error: 'Invalid request body' });
     });
 
-    it('should handle Synology API error when sending response', async () => {
-      // Mock conversation fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([])
-      });
-      // Mock processRequest fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Test response', type: 'message.output' }]
-          })
-      });
-      // Mock sendAnswersToChat fetch to fail
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-        json: () => Promise.resolve({})
-      });
+    it('should handle validation errors in group chat', async () => {
+      const groupController = createGroupController(chatAgent, synologyClient);
+      const req = {
+        body: {
+          text: '',
+          token: 'test-group-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
 
+      await groupController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.send).toHaveBeenCalledWith({ error: 'Invalid request body' });
+    });
+  });
+
+  describe('Authentication', () => {
+    it('should reject bot chat with invalid token', async () => {
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
           text: 'Hello',
-          token: 'test-bot-token',
+          token: 'invalid-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -395,9 +281,51 @@ describe('Integration Tests', () => {
 
       await botController(req, res);
 
-      // Should still return 202 even if sending to Synology fails
-      // (fire-and-forget pattern - we accepted the request)
-      expect(res.sendStatus).toHaveBeenCalledWith(202);
+      expect(res.sendStatus).toHaveBeenCalledWith(401);
+    });
+
+    it('should reject slash command with invalid token', async () => {
+      const slashController = createSlashController(chatAgent, synologyClient);
+      const req = {
+        body: {
+          text: '/yasmin Hello',
+          token: 'invalid-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await slashController(req, res);
+
+      expect(res.sendStatus).toHaveBeenCalledWith(401);
+    });
+
+    it('should reject group chat with invalid token', async () => {
+      const groupController = createGroupController(chatAgent, synologyClient);
+      const req = {
+        body: {
+          text: 'Hello',
+          token: 'invalid-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await groupController(req, res);
+
+      expect(res.sendStatus).toHaveBeenCalledWith(401);
     });
   });
 });

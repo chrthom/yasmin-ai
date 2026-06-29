@@ -1,14 +1,4 @@
-import { Request, Response } from 'express';
-import { createGroupController } from '../controllers/group.controller';
-import { ChatAgent } from '../chat_agent';
-import { SynologyClient } from '../synology_client';
-import { config } from '../config';
-
-// Mock fetch
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
-
-// Mock config for tests
+// Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
     server: { port: 5000 },
@@ -31,6 +21,15 @@ jest.mock('../config', () => ({
     chunk: { maxLength: 1800 }
   }
 }));
+
+import { Request, Response } from 'express';
+import { createGroupController } from '../controllers/group.controller';
+import { ChatAgent } from '../chat_agent';
+import { SynologyClient } from '../synology_client';
+
+// Mock fetch
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
 
 describe('Group Controller', () => {
   let chatAgent: ChatAgent;
@@ -148,22 +147,61 @@ describe('Group Controller', () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.send).toHaveBeenCalledWith({ error: 'Invalid request body' });
     });
+
+    it('should return 400 for empty text', async () => {
+      const req = {
+        body: {
+          text: '',
+          token: 'test-group-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await groupController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 for invalid username format', async () => {
+      const req = {
+        body: {
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
+          username: 'invalid username!'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await groupController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
   });
 
   describe('Successful Requests', () => {
-    it('should return 200 with text response on success', async () => {
-      // Mock conversation fetch
+    it('should return 200 with answer on success', async () => {
+      // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve([])
       });
-      // Mock processRequest fetch
+      // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Test response', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Short answer', type: 'message.output' }]
+        })
       });
 
       const req = {
@@ -183,22 +221,32 @@ describe('Group Controller', () => {
       await groupController(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.send).toHaveBeenCalledWith({ text: 'Test response' });
+      expect(res.send).toHaveBeenCalledWith({
+        text: 'Short answer'
+      });
     });
 
-    it('should use shortAnswer=true for group messages', async () => {
+    it('should handle chunked responses correctly', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve([])
       });
-      // Mock processRequest fetch
+      // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Short response', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
+        })
+      });
+      // Mock sendAnswersToChat fetch (will be called twice for chunked response)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
       });
 
       const req = {
@@ -217,8 +265,8 @@ describe('Group Controller', () => {
 
       await groupController(req, res);
 
-      // Verify the request was made (shortAnswer=true is used internally)
-      expect(mockFetch).toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockFetch).toHaveBeenCalledTimes(4); // 1 for conversation, 1 for processRequest, 2 for chunked send
     });
   });
 
@@ -250,6 +298,49 @@ describe('Group Controller', () => {
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.send).toHaveBeenCalledWith({ error: 'Internal server error' });
+    });
+
+    it('should return 500 on SynologyClient error', async () => {
+      // Mock conversation fetch
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([])
+      });
+      // Mock processRequest fetch
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Test response', type: 'message.output' }]
+        })
+      });
+      // Mock sendAnswersToChat fetch to fail
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({})
+      });
+
+      const req = {
+        body: {
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await groupController(req, res);
+
+      // Should still return 200 even if sending to Synology fails
+      // (fire-and-forget pattern)
+      expect(res.sendStatus).toHaveBeenCalledWith(200);
     });
   });
 });

@@ -1,14 +1,4 @@
-import { Request, Response } from 'express';
-import { createBotController } from '../controllers/bot.controller';
-import { ChatAgent } from '../chat_agent';
-import { SynologyClient } from '../synology_client';
-import { config } from '../config';
-
-// Mock fetch
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
-
-// Mock config for tests
+// Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
     server: { port: 5000 },
@@ -31,6 +21,15 @@ jest.mock('../config', () => ({
     chunk: { maxLength: 1800 }
   }
 }));
+
+import { Request, Response } from 'express';
+import { createBotController } from '../controllers/bot.controller';
+import { ChatAgent } from '../chat_agent';
+import { SynologyClient } from '../synology_client';
+
+// Mock fetch
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
 
 describe('Bot Controller', () => {
   let chatAgent: ChatAgent;
@@ -200,10 +199,9 @@ describe('Bot Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Test response', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Test response', type: 'message.output' }]
+        })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
@@ -237,13 +235,12 @@ describe('Bot Controller', () => {
         ok: true,
         json: () => Promise.resolve([])
       });
-      // Mock processRequest fetch
+      // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
+        })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
@@ -316,10 +313,9 @@ describe('Bot Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            outputs: [{ content: 'Test response', type: 'message.output' }]
-          })
+        json: () => Promise.resolve({
+          outputs: [{ content: 'Test response', type: 'message.output' }]
+        })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({
