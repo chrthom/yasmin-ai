@@ -523,6 +523,7 @@ Use this checklist to track implementation progress:
 - [ ] #2: Add error handling to ChatAgent fetch calls
 - [ ] #2: Add error handling to SynologyClient fetch calls
 - [x] #2: Add error handling to app.ts endpoint handlers
+- [x] #3: Extract hardcoded values to config file (config.ts)
 - [x] #12: Add environment variable validation at startup
 - [x] #1: Fix type assertions for environment variables
 - [x] #4: Update express to stable version

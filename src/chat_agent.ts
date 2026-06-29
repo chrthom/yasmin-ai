@@ -1,4 +1,5 @@
 import { Knowledge } from './knowledge';
+import { config } from './config';
 
 interface MistralConversationResponseOutputPart {
   type: string;
@@ -32,6 +33,7 @@ export class ChatAgent {
   private agentId: string;
   private knowledge = new Knowledge();
   private conversationCache = new Map<string, CachedConversation>();
+  private conversationTtlMs = config.mistral.conversationTtlMs;
 
   constructor(url: string, apiKey: string, agentId: string) {
     this.url = url;
@@ -59,7 +61,7 @@ export class ChatAgent {
     // Check cache first
     const cached = this.conversationCache.get(username);
     if (cached && cached.expiresAt > Date.now()) {
-      console.log(`DEBUG Cache hit for conversation of ${username}`);
+      console.log(`DEBUG Cached conversation ${cached.conversationId} for ${username}`);
       return cached.conversationId;
     }
 
@@ -75,7 +77,7 @@ export class ChatAgent {
         c =>
           c.name == username &&
           c.agent_id == this.agentId &&
-          Date.parse(c.updated_at) > Date.now() - 12 * 60 * 60 * 1000
+          Date.parse(c.updated_at) > Date.now() - this.conversationTtlMs
       )
       .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at))
       .pop()?.id;
@@ -84,7 +86,7 @@ export class ChatAgent {
     if (conversationId) {
       this.conversationCache.set(username, {
         conversationId,
-        expiresAt: Date.now() + 12 * 60 * 60 * 1000
+        expiresAt: Date.now() + this.conversationTtlMs
       });
       console.log(`DEBUG Cached conversation ${conversationId} for ${username}`);
     }

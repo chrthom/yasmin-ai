@@ -1,51 +1,31 @@
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
-import process from 'node:process';
 import { z } from 'zod';
+import { config, validateEnv } from './config';
 import { ChatAgent } from './chat_agent';
 import { SynologyClient } from './synology_client';
 
+validateEnv();
+
 const SynologyRequestSchema = z.object({
-  text: z.string().min(1).max(10000),
+  text: z.string().min(1).max(config.validation.maxTextLength),
   token: z.string().min(1),
   user_id: z.number().int().positive(),
-  username: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
+  username: z.string().min(1).max(config.validation.maxUsernameLength).regex(/^[a-zA-Z0-9_-]+$/),
   post_id: z.number().int().positive().optional(),
   thread_id: z.number().int().positive().optional(),
   timestamp: z.number().int().positive().optional(),
 });
 
-const requiredEnv = [
-  'MISTRAL_API_KEY',
-  'CHAT_TOKEN_BOT',
-  'CHAT_TOKEN_SLASH',
-  'CHAT_TOKEN_GROUP',
-  'AGENT_ID'
-];
+const chatIncomingURL = `${config.synology.chatIncomingUrl}?api=SYNO.Chat.External&method=chatbot&version=2&token=`;
 
-requiredEnv.forEach(key => {
-  if (!process.env[key]) {
-    console.error(`ERROR: Missing required environment variable: ${key}`);
-    process.exit(1);
-  }
-});
-
-const mistralApiKey = process.env['MISTRAL_API_KEY']!;
-const chatTokenBot = process.env['CHAT_TOKEN_BOT']!;
-const chatTokenSlash = process.env['CHAT_TOKEN_SLASH']!;
-const chatTokenGroup = process.env['CHAT_TOKEN_GROUP']!;
-const agentId = process.env['AGENT_ID']!;
-const mistralURL = 'https://api.mistral.ai/v1/conversations';
-const chatIncomingURL =
-  'https://thomsen.in/chat/webapi/entry.cgi?api=SYNO.Chat.External&method=chatbot&version=2&token=';
-
-export const chatAgent = new ChatAgent(mistralURL, mistralApiKey, agentId);
-export const synologyClient = new SynologyClient(chatIncomingURL, chatTokenBot);
+export const chatAgent = new ChatAgent(config.mistral.baseUrl, config.mistral.apiKey, config.mistral.agentId);
+export const synologyClient = new SynologyClient(chatIncomingURL, config.synology.tokens.bot);
 
 const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 15,
+  windowMs: config.rateLimit.windowMs,
+  max: config.rateLimit.max,
   message: 'Too many requests, please try again later.',
   headers: true,
 });
@@ -78,7 +58,7 @@ app.post('/chat/bot', async (req, res) => {
   console.log(
     `DEBUG Bot Chat called - Body: ${JSON.stringify(redactedBody)} Headers: ${req.get('Content-Type')}`
   );
-  if (reqBody.token != chatTokenBot) {
+  if (reqBody.token != config.synology.tokens.bot) {
     console.log('WARN Bot Chat request has invalid authorization token');
     res.sendStatus(401);
     return;
@@ -105,7 +85,7 @@ app.post('/chat/slash', async (req, res) => {
   console.log(
     `DEBUG Slash Chat called - Body: ${JSON.stringify(redactedBody)} Headers: ${req.get('Content-Type')}`
   );
-  if (reqBody.token != chatTokenSlash) {
+  if (reqBody.token != config.synology.tokens.slash) {
     console.log('WARN Slash Chat request has invalid authorization token');
     res.sendStatus(401);
     return;
@@ -134,7 +114,7 @@ app.post('/chat/group', async (req, res) => {
   console.log(
     `DEBUG Group Chat called - Body: ${JSON.stringify(redactedBody)} Headers: ${req.get('Content-Type')}`
   );
-  if (reqBody.token != chatTokenGroup) {
+  if (reqBody.token != config.synology.tokens.group) {
     console.log('WARN Group Chat request has invalid authorization token');
     res.sendStatus(401);
     return;
@@ -159,8 +139,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.listen(5000, () => {
-  console.log('INFO Yasmin AI API Server started');
+app.listen(config.server.port, () => {
+  console.log(`INFO Yasmin AI API Server started on port ${config.server.port}`);
 });
 
 process.on('uncaughtException', err => {

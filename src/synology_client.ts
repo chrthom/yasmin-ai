@@ -1,3 +1,5 @@
+import { config } from './config';
+
 export class SynologyClient {
   private url: string;
   private token: string;
@@ -15,7 +17,7 @@ export class SynologyClient {
       .trim();
   }
 
-  chunkText(str: string, maxLength: number = 1800): string[] {
+  chunkText(str: string, maxLength: number = config.chunk.maxLength): string[] {
     const chunks: string[] = [];
     while (str.length > 0) {
       // Find the last newline before maxLength
