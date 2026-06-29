@@ -5,10 +5,10 @@ import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
 
 async function processRequest(
-  chatAgent: ChatAgent,
-  synologyClient: SynologyClient,
-  userText: string,
-  username: string,
+  chatAgent: ChatAgent
+  synologyClient: SynologyClient
+  userText: string
+  username: string
   shortAnswer: boolean = false
 ): Promise<string> {
   const outputs = await chatAgent.processRequest(userText, username, shortAnswer);

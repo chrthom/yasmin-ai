@@ -67,7 +67,7 @@ export class ChatAgent {
 
     try {
       const response = await fetch(this.url, {
-        method: 'get',
+        method: 'get'
         headers: {
           Authorization: `Bearer ${this.apiKey}`
         }
@@ -92,7 +92,7 @@ export class ChatAgent {
       // Cache the result if found
       if (conversationId) {
         this.conversationCache.set(username, {
-          conversationId,
+          conversationId
           expiresAt: Date.now() + this.conversationTtlMs
         });
         console.log(`DEBUG Cached conversation ${conversationId} for ${username}`);
@@ -106,19 +106,19 @@ export class ChatAgent {
   }
 
   async processRequest(
-    userText: string,
-    username: string,
+    userText: string
+    username: string
     shortAnswer: boolean = false
   ): Promise<MistralConversationResponseOutput[]> {
     try {
       const conversationId = await this.getActiveConversationId(username);
       console.log(`DEBUG Existing conversation ${conversationId}`);
       const body = {
-        agent_id: conversationId ? undefined : this.agentId,
-        name: conversationId ? undefined : username,
+        agent_id: conversationId ? undefined : this.agentId
+        name: conversationId ? undefined : username
         inputs: [
           {
-            role: 'user',
+            role: 'user'
             content: conversationId ? userText : this.buildInitialPrompt(userText, username, shortAnswer)
           }
         ]
@@ -127,10 +127,10 @@ export class ChatAgent {
 
       const url = conversationId ? `${this.url}/${conversationId}` : this.url;
       const response = await fetch(url, {
-        method: 'post',
-        body: JSON.stringify(body),
+        method: 'post'
+        body: JSON.stringify(body)
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
           Authorization: `Bearer ${this.apiKey}`
         }
       });
