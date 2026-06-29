@@ -1,23 +1,23 @@
 // Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
-    server: { port: 5000 }
+    server: { port: 5000 },
     mistral: {
-      baseUrl: 'https://api.mistral.ai/v1/conversations'
-      apiKey: 'test-api-key'
-      agentId: 'test-agent-id'
+      baseUrl: 'https://api.mistral.ai/v1/conversations',
+      apiKey: 'test-api-key',
+      agentId: 'test-agent-id',
       conversationTtlMs: 12 * 60 * 60 * 1000
-    }
+    },
     synology: {
-      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi'
+      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
       tokens: {
-        bot: 'test-bot-token'
-        slash: 'test-slash-token'
+        bot: 'test-bot-token',
+        slash: 'test-slash-token',
         group: 'test-group-token'
       }
-    }
-    rateLimit: { windowMs: 60 * 1000, max: 15 }
-    validation: { maxTextLength: 10000, maxUsernameLength: 100 }
+    },
+    rateLimit: { windowMs: 60 * 1000, max: 15 },
+    validation: { maxTextLength: 10000, maxUsernameLength: 100 },
     chunk: { maxLength: 1800 }
   }
 }));
@@ -48,35 +48,35 @@ describe('Integration Tests', () => {
     it('should handle bot chat full flow: request -> ChatAgent -> SynologyClient', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-bot-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'test-bot-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -101,12 +101,12 @@ describe('Integration Tests', () => {
     it('should handle slash command full flow with text processing', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Short answer', type: 'message.output' }]
         })
@@ -115,15 +115,15 @@ describe('Integration Tests', () => {
       const slashController = createSlashController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: '/yasmin What is the weather?'
-          token: 'test-slash-token'
-          user_id: 1
+          text: '/yasmin What is the weather?',
+          token: 'test-slash-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -148,12 +148,12 @@ describe('Integration Tests', () => {
     it('should handle group chat full flow with short answer', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Group response', type: 'message.output' }]
         })
@@ -162,15 +162,15 @@ describe('Integration Tests', () => {
       const groupController = createGroupController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello group!'
-          token: 'test-group-token'
-          user_id: 1
+          text: 'Hello group!',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -198,15 +198,15 @@ describe('Integration Tests', () => {
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: ''
-          token: 'test-bot-token'
-          user_id: 1
+          text: '',
+          token: 'test-bot-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -220,15 +220,15 @@ describe('Integration Tests', () => {
       const slashController = createSlashController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: ''
-          token: 'test-slash-token'
-          user_id: 1
+          text: '',
+          token: 'test-slash-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -242,15 +242,15 @@ describe('Integration Tests', () => {
       const groupController = createGroupController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: ''
-          token: 'test-group-token'
-          user_id: 1
+          text: '',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -266,16 +266,16 @@ describe('Integration Tests', () => {
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello'
-          token: 'invalid-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'invalid-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -288,16 +288,16 @@ describe('Integration Tests', () => {
       const slashController = createSlashController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: 'invalid-token'
-          user_id: 1
+          text: '/yasmin Hello',
+          token: 'invalid-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -310,16 +310,16 @@ describe('Integration Tests', () => {
       const groupController = createGroupController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello'
-          token: 'invalid-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'invalid-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 

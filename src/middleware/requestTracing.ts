@@ -63,9 +63,9 @@ export class RequestLogger {
   private formatMessage(level: string, message: string, meta?: object): string {
     const requestId = getRequestId(this.req);
     const baseMeta = {
-      requestId
-      method: this.req.method
-      path: this.req.path
+      requestId,
+      method: this.req.method,
+      path: this.req.path,
       ...meta
     };
     return `${level} [${requestId || 'no-id'}] ${message} ${JSON.stringify(baseMeta)}`;
@@ -88,7 +88,7 @@ export class RequestLogger {
     const errorStack = message instanceof Error ? message.stack : undefined;
     console.error(
       this.formatMessage('ERROR', errorMessage, {
-        ...meta
+        ...meta,
         stack: errorStack
       })
     );

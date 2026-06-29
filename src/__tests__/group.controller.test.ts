@@ -1,23 +1,23 @@
 // Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
-    server: { port: 5000 }
+    server: { port: 5000 },
     mistral: {
-      baseUrl: 'https://api.mistral.ai/v1/conversations'
-      apiKey: 'test-api-key'
-      agentId: 'test-agent-id'
+      baseUrl: 'https://api.mistral.ai/v1/conversations',
+      apiKey: 'test-api-key',
+      agentId: 'test-agent-id',
       conversationTtlMs: 12 * 60 * 60 * 1000
-    }
+    },
     synology: {
-      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi'
+      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
       tokens: {
-        bot: 'test-bot-token'
-        slash: 'test-slash-token'
+        bot: 'test-bot-token',
+        slash: 'test-slash-token',
         group: 'test-group-token'
       }
-    }
-    rateLimit: { windowMs: 60 * 1000, max: 15 }
-    validation: { maxTextLength: 10000, maxUsernameLength: 100 }
+    },
+    rateLimit: { windowMs: 60 * 1000, max: 15 },
+    validation: { maxTextLength: 10000, maxUsernameLength: 100 },
     chunk: { maxLength: 1800 }
   }
 }));
@@ -48,16 +48,16 @@ describe('Group Controller', () => {
     it('should return 401 for invalid token', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: 'wrong-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'wrong-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -69,15 +69,15 @@ describe('Group Controller', () => {
     it('should return 401 for missing token', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          user_id: 1
+          text: 'Hello',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -91,14 +91,14 @@ describe('Group Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: 'test-group-token'
-          user_id: 1
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -111,14 +111,14 @@ describe('Group Controller', () => {
     it('should return 400 for invalid request body - missing user_id', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
+          text: 'Hello',
+          token: 'test-group-token',
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -131,14 +131,14 @@ describe('Group Controller', () => {
     it('should return 400 for invalid request body - missing username', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
+          text: 'Hello',
+          token: 'test-group-token',
           user_id: 1
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -151,15 +151,15 @@ describe('Group Controller', () => {
     it('should return 400 for empty text', async () => {
       const req = {
         body: {
-          text: ''
-          token: 'test-group-token'
-          user_id: 1
+          text: '',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -171,15 +171,15 @@ describe('Group Controller', () => {
     it('should return 400 for invalid username format', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'invalid username!'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -193,12 +193,12 @@ describe('Group Controller', () => {
     it('should return 200 with answer on success', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Short answer', type: 'message.output' }]
         })
@@ -206,15 +206,15 @@ describe('Group Controller', () => {
 
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -229,37 +229,37 @@ describe('Group Controller', () => {
     it('should handle chunked responses correctly', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -274,23 +274,23 @@ describe('Group Controller', () => {
     it('should return 500 on ChatAgent error', async () => {
       // Mock conversation fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -303,36 +303,36 @@ describe('Group Controller', () => {
     it('should return 500 on SynologyClient error', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: 'test-group-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
