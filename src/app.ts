@@ -19,7 +19,7 @@ const limiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.max,
   message: 'Too many requests, please try again later.',
-  headers: true,
+  headers: true
 });
 
 const app = express();
