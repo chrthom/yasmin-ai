@@ -21,11 +21,17 @@ interface MistralConversationMeta {
   agent_id: string;
 }
 
+interface CachedConversation {
+  conversationId: string;
+  expiresAt: number;
+}
+
 export class ChatAgent {
   private url: string;
   private apiKey: string;
   private agentId: string;
   private knowledge = new Knowledge();
+  private conversationCache = new Map<string, CachedConversation>();
 
   constructor(url: string, apiKey: string, agentId: string) {
     this.url = url;
@@ -50,6 +56,13 @@ export class ChatAgent {
   }
 
   private async getActiveConversationId(username: string): Promise<string | undefined> {
+    // Check cache first
+    const cached = this.conversationCache.get(username);
+    if (cached && cached.expiresAt > Date.now()) {
+      console.log(`DEBUG Cache hit for conversation of ${username}`);
+      return cached.conversationId;
+    }
+
     const response = await fetch(this.url, {
       method: 'get',
       headers: {
@@ -57,7 +70,7 @@ export class ChatAgent {
       }
     }).then(x => x.json());
     //console.log(`INFO Received raw conversations from mistral: ${JSON.stringify(response)}`);
-    return (<MistralConversationMeta[]>response)
+    const conversationId = (<MistralConversationMeta[]>response)
       .filter(
         c =>
           c.name == username &&
@@ -66,6 +79,17 @@ export class ChatAgent {
       )
       .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at))
       .pop()?.id;
+
+    // Cache the result if found
+    if (conversationId) {
+      this.conversationCache.set(username, {
+        conversationId,
+        expiresAt: Date.now() + 12 * 60 * 60 * 1000
+      });
+      console.log(`DEBUG Cached conversation ${conversationId} for ${username}`);
+    }
+
+    return conversationId;
   }
 
   async processRequest(
