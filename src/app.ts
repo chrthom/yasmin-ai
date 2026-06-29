@@ -108,8 +108,13 @@ app.post('/chat/group', (req, res) => {
   }
 });
 
-app.get('/test', (req, res) => {
-  res.status(200).send({ text: 'Test!' });
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: '0.1.0',
+    uptime: process.uptime()
+  });
 });
 
 app.listen(5000, () => {

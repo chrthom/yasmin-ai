@@ -533,7 +533,7 @@ Use this checklist to track implementation progress:
 - [ ] #10: Add endpoint tests
 - [ ] #10: Add integration tests
 - [ ] #13: Rewrite sendAnswersToChat as iterative
-- [ ] #15: Improve health check endpoint
+- [x] #15: Improve health check endpoint
 - [ ] #9: Add structured logger (pino/winston)
 - [ ] #11: Add build pipeline
 - [ ] #14: Improve chunkText function
