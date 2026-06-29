@@ -517,9 +517,9 @@ app.use((req, res, next) => {
 
 Use this checklist to track implementation progress:
 
-- [ ] #5: Add input validation library (zod/joi)
-- [ ] #5: Implement rate limiting
-- [ ] #5: Remove sensitive data from logs
+- [x] #5: Add input validation library (zod/joi)
+- [x] #5: Implement rate limiting
+- [x] #5: Remove sensitive data from logs
 - [ ] #2: Add error handling to ChatAgent fetch calls
 - [ ] #2: Add error handling to SynologyClient fetch calls
 - [x] #2: Add error handling to app.ts endpoint handlers

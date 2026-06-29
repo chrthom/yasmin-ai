@@ -1,18 +1,20 @@
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import process from 'node:process';
+import { z } from 'zod';
 import { ChatAgent } from './chat_agent';
 import { SynologyClient } from './synology_client';
 
-interface SynologyRequest {
-  text: string;
-  token: string;
-  user_id: number;
-  username: string;
-  post_id?: number;
-  thread_id?: number;
-  timestamp?: number;
-}
+const SynologyRequestSchema = z.object({
+  text: z.string().min(1).max(10000),
+  token: z.string().min(1),
+  user_id: z.number().int().positive(),
+  username: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
+  post_id: z.number().int().positive().optional(),
+  thread_id: z.number().int().positive().optional(),
+  timestamp: z.number().int().positive().optional(),
+});
 
 const requiredEnv = [
   'MISTRAL_API_KEY',
@@ -41,6 +43,13 @@ const chatIncomingURL =
 export const chatAgent = new ChatAgent(mistralURL, mistralApiKey, agentId);
 export const synologyClient = new SynologyClient(chatIncomingURL, chatTokenBot);
 
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  message: 'Too many requests, please try again later.',
+  headers: true,
+});
+
 async function processRequest(
   userText: string,
   username: string,
@@ -55,14 +64,22 @@ const app = express();
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(limiter);
 
 app.post('/chat/bot', async (req, res) => {
-  const reqBody = <SynologyRequest>req.body;
+  const parseResult = SynologyRequestSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    console.log('WARN Invalid request body:', parseResult.error.format());
+    res.status(400).send({ error: 'Invalid request body' });
+    return;
+  }
+  const reqBody = parseResult.data;
+  const redactedBody = { ...reqBody, token: '***REDACTED***' };
   console.log(
-    `DEBUG Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+    `DEBUG Bot Chat called - Body: ${JSON.stringify(redactedBody)} Headers: ${req.get('Content-Type')}`
   );
   if (reqBody.token != chatTokenBot) {
-    console.log('WARN Previous Bot Chat request has invalid authorization token');
+    console.log('WARN Bot Chat request has invalid authorization token');
     res.sendStatus(401);
     return;
   }
@@ -77,12 +94,19 @@ app.post('/chat/bot', async (req, res) => {
 });
 
 app.post('/chat/slash', async (req, res) => {
-  const reqBody = <SynologyRequest>req.body;
+  const parseResult = SynologyRequestSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    console.log('WARN Invalid request body:', parseResult.error.format());
+    res.status(400).send({ error: 'Invalid request body' });
+    return;
+  }
+  const reqBody = parseResult.data;
+  const redactedBody = { ...reqBody, token: '***REDACTED***' };
   console.log(
-    `DEBUG Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+    `DEBUG Slash Chat called - Body: ${JSON.stringify(redactedBody)} Headers: ${req.get('Content-Type')}`
   );
   if (reqBody.token != chatTokenSlash) {
-    console.log('WARN Previous Slash Chat request has invalid authorization token');
+    console.log('WARN Slash Chat request has invalid authorization token');
     res.sendStatus(401);
     return;
   }
@@ -99,12 +123,19 @@ app.post('/chat/slash', async (req, res) => {
 });
 
 app.post('/chat/group', async (req, res) => {
-  const reqBody = <SynologyRequest>req.body;
+  const parseResult = SynologyRequestSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    console.log('WARN Invalid request body:', parseResult.error.format());
+    res.status(400).send({ error: 'Invalid request body' });
+    return;
+  }
+  const reqBody = parseResult.data;
+  const redactedBody = { ...reqBody, token: '***REDACTED***' };
   console.log(
-    `DEBUG Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
+    `DEBUG Group Chat called - Body: ${JSON.stringify(redactedBody)} Headers: ${req.get('Content-Type')}`
   );
   if (reqBody.token != chatTokenGroup) {
-    console.log('WARN Previous Group Chat request has invalid authorization token');
+    console.log('WARN Group Chat request has invalid authorization token');
     res.sendStatus(401);
     return;
   }
