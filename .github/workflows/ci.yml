@@ -88,6 +88,12 @@ jobs:
 
       - name: Run tests
         run: npm test
+        env:
+          MISTRAL_API_KEY: test-api-key
+          CHAT_TOKEN_BOT: test-bot-token
+          CHAT_TOKEN_SLASH: test-slash-token
+          CHAT_TOKEN_GROUP: test-group-token
+          AGENT_ID: test-agent-id
 
       - name: Upload test results
         if: always()
