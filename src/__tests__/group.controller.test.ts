@@ -25,16 +25,16 @@ describe('Group Controller', () => {
     it('should return 401 for invalid token', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: 'wrong-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'wrong-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -46,15 +46,15 @@ describe('Group Controller', () => {
     it('should return 401 for missing token', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          user_id: 1
+          text: 'Hello',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -68,14 +68,14 @@ describe('Group Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: config.synology.tokens.group
-          user_id: 1
+          token: config.synology.tokens.group,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -88,14 +88,14 @@ describe('Group Controller', () => {
     it('should return 400 for invalid request body - missing user_id', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.group
+          text: 'Hello',
+          token: config.synology.tokens.group,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -108,14 +108,14 @@ describe('Group Controller', () => {
     it('should return 400 for invalid request body - missing username', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.group
+          text: 'Hello',
+          token: config.synology.tokens.group,
           user_id: 1
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -130,12 +130,12 @@ describe('Group Controller', () => {
     it('should return 200 with text response on success', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
@@ -143,15 +143,15 @@ describe('Group Controller', () => {
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.group
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.group,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -164,12 +164,12 @@ describe('Group Controller', () => {
     it('should use shortAnswer=true for group messages', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Short response', type: 'message.output' }]
         })
@@ -177,15 +177,15 @@ describe('Group Controller', () => {
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.group
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.group,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -200,23 +200,23 @@ describe('Group Controller', () => {
     it('should return 500 on ChatAgent error', async () => {
       // Mock conversation fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.group
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.group,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 

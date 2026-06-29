@@ -25,35 +25,35 @@ describe('Integration Tests', () => {
     it('should handle bot chat full flow: request -> ChatAgent -> SynologyClient', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -65,9 +65,9 @@ describe('Integration Tests', () => {
       
       // 2. processRequest was called (second fetch - POST to create conversation)
       expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
-        method: 'post'
+        method: 'post',
         headers: expect.objectContaining({
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
           Authorization: 'Bearer test-api-key'
         })
       }));
@@ -82,12 +82,12 @@ describe('Integration Tests', () => {
     it('should handle slash command full flow with text processing', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Short answer', type: 'message.output' }]
         })
@@ -96,15 +96,15 @@ describe('Integration Tests', () => {
       const slashController = createSlashController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: '/yasmin What is the weather?'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin What is the weather?',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -125,12 +125,12 @@ describe('Integration Tests', () => {
     it('should handle group chat full flow with short answer', async () => {
       // Mock conversation fetch (no active conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Group response', type: 'message.output' }]
         })
@@ -139,15 +139,15 @@ describe('Integration Tests', () => {
       const groupController = createGroupController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello group!'
-          token: config.synology.tokens.group
-          user_id: 1
+          text: 'Hello group!',
+          token: config.synology.tokens.group,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -161,42 +161,42 @@ describe('Integration Tests', () => {
     it('should handle existing conversation flow', async () => {
       // Mock conversation fetch (existing conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([
           {
-            name: 'testuser'
-            id: 'conv-123'
-            updated_at: new Date().toISOString()
+            name: 'testuser',
+            id: 'conv-123',
+            updated_at: new Date().toISOString(),
             agent_id: 'test-agent-id'
           }
         ])
       });
       // Mock processRequest fetch (use existing conversation)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Using existing conversation', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Continue conversation'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Continue conversation',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -212,39 +212,39 @@ describe('Integration Tests', () => {
     it('should handle chunked responses for long answers', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch with long response
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Tell me a long story'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Tell me a long story',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -260,24 +260,24 @@ describe('Integration Tests', () => {
     it('should handle Mistral API 429 rate limit error', async () => {
       // Mock conversation fetch to return 429
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 429
-        statusText: 'Too Many Requests'
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
         json: () => Promise.resolve({})
       });
 
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -290,24 +290,24 @@ describe('Integration Tests', () => {
     it('should handle Mistral API 401 unauthorized error', async () => {
       // Mock conversation fetch to return 401
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 401
-        statusText: 'Unauthorized'
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
         json: () => Promise.resolve({})
       });
 
       const slashController = createSlashController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin Hello',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -320,37 +320,37 @@ describe('Integration Tests', () => {
     it('should handle Synology API error when sending response', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const botController = createBotController(chatAgent, synologyClient);
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 

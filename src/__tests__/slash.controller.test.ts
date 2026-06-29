@@ -25,16 +25,16 @@ describe('Slash Controller', () => {
     it('should return 401 for invalid token', async () => {
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: 'wrong-token'
-          user_id: 1
+          text: '/yasmin Hello',
+          token: 'wrong-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -46,15 +46,15 @@ describe('Slash Controller', () => {
     it('should return 401 for missing token', async () => {
       const req = {
         body: {
-          text: '/yasmin Hello'
-          user_id: 1
+          text: '/yasmin Hello',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -68,14 +68,14 @@ describe('Slash Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: config.synology.tokens.slash
-          user_id: 1
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -88,14 +88,14 @@ describe('Slash Controller', () => {
     it('should return 400 for invalid request body - missing user_id', async () => {
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: config.synology.tokens.slash
+          text: '/yasmin Hello',
+          token: config.synology.tokens.slash,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -108,14 +108,14 @@ describe('Slash Controller', () => {
     it('should return 400 for invalid request body - missing username', async () => {
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: config.synology.tokens.slash
+          text: '/yasmin Hello',
+          token: config.synology.tokens.slash,
           user_id: 1
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -130,12 +130,12 @@ describe('Slash Controller', () => {
     it('should remove /yasmin prefix from text', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
@@ -143,15 +143,15 @@ describe('Slash Controller', () => {
 
       const req = {
         body: {
-          text: '/yasmin Hello there'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin Hello there',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -159,7 +159,7 @@ describe('Slash Controller', () => {
 
       // Verify the text passed to processRequest has /yasmin removed
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything()
+        expect.anything(),
         expect.objectContaining({
           body: JSON.stringify({
             inputs: [{ content: 'Hello there', role: 'user' }]
@@ -171,12 +171,12 @@ describe('Slash Controller', () => {
     it('should handle text with only /yasmin', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
@@ -184,15 +184,15 @@ describe('Slash Controller', () => {
 
       const req = {
         body: {
-          text: '/yasmin'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -200,7 +200,7 @@ describe('Slash Controller', () => {
 
       // Should pass empty string after trimming
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything()
+        expect.anything(),
         expect.objectContaining({
           body: JSON.stringify({
             inputs: [{ content: '', role: 'user' }]
@@ -212,12 +212,12 @@ describe('Slash Controller', () => {
     it('should handle text with /yasmin and extra spaces', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
@@ -225,15 +225,15 @@ describe('Slash Controller', () => {
 
       const req = {
         body: {
-          text: '/yasmin   Hello   '
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin   Hello   ',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -241,7 +241,7 @@ describe('Slash Controller', () => {
 
       // Should pass trimmed text
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything()
+        expect.anything(),
         expect.objectContaining({
           body: JSON.stringify({
             inputs: [{ content: 'Hello', role: 'user' }]
@@ -255,12 +255,12 @@ describe('Slash Controller', () => {
     it('should return 200 with text response on success', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
@@ -268,15 +268,15 @@ describe('Slash Controller', () => {
 
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin Hello',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -289,12 +289,12 @@ describe('Slash Controller', () => {
     it('should use shortAnswer=true for slash commands', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Short response', type: 'message.output' }]
         })
@@ -302,15 +302,15 @@ describe('Slash Controller', () => {
 
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin Hello',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -318,7 +318,7 @@ describe('Slash Controller', () => {
 
       // Verify shortAnswer=true was used (checks for initial prompt with short answer constraint)
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything()
+        expect.anything(),
         expect.objectContaining({
           body: JSON.stringify({
             inputs: [{ content: 'Hello', role: 'user' }]
@@ -332,23 +332,23 @@ describe('Slash Controller', () => {
     it('should return 500 on ChatAgent error', async () => {
       // Mock conversation fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: '/yasmin Hello'
-          token: config.synology.tokens.slash
-          user_id: 1
+          text: '/yasmin Hello',
+          token: config.synology.tokens.slash,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 

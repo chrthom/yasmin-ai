@@ -38,10 +38,10 @@ export class SynologyClient {
         console.log(`DEBUG Send message to synology - ${answers.length} parts remaining`);
         try {
           const response = await fetch(`${this.url}%22${this.token}%22`, {
-            method: 'post'
+            method: 'post',
             body: new URLSearchParams([
               ['payload', JSON.stringify({ text: message, user_ids: [userId] })]
-            ])
+            ]),
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
           });
 

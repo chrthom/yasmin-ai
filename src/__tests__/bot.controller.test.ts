@@ -25,16 +25,16 @@ describe('Bot Controller', () => {
     it('should return 401 for invalid token', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: 'wrong-token'
-          user_id: 1
+          text: 'Hello',
+          token: 'wrong-token',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -46,15 +46,15 @@ describe('Bot Controller', () => {
     it('should return 401 for missing token', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          user_id: 1
+          text: 'Hello',
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -68,14 +68,14 @@ describe('Bot Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: config.synology.tokens.bot
-          user_id: 1
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -88,14 +88,14 @@ describe('Bot Controller', () => {
     it('should return 400 for invalid request body - missing user_id', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
+          text: 'Hello',
+          token: config.synology.tokens.bot,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -108,14 +108,14 @@ describe('Bot Controller', () => {
     it('should return 400 for invalid request body - missing username', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
+          text: 'Hello',
+          token: config.synology.tokens.bot,
           user_id: 1
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -128,15 +128,15 @@ describe('Bot Controller', () => {
     it('should return 400 for empty text', async () => {
       const req = {
         body: {
-          text: ''
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: '',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -148,15 +148,15 @@ describe('Bot Controller', () => {
     it('should return 400 for invalid username format', async () => {
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'invalid username!'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -170,34 +170,34 @@ describe('Bot Controller', () => {
     it('should return 202 and send answer to Synology on success', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -209,38 +209,38 @@ describe('Bot Controller', () => {
     it('should handle chunked responses correctly', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -255,23 +255,23 @@ describe('Bot Controller', () => {
     it('should return 500 on ChatAgent error', async () => {
       // Mock conversation fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        status: jest.fn().mockReturnThis()
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
@@ -284,36 +284,36 @@ describe('Bot Controller', () => {
     it('should return 500 on SynologyClient error', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve([])
       });
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
-        ok: true
+        ok: true,
         json: () => Promise.resolve({
           outputs: [{ content: 'Test response', type: 'message.output' }]
         })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({
-        ok: false
-        status: 500
-        statusText: 'Internal Server Error'
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
         json: () => Promise.resolve({})
       });
 
       const req = {
         body: {
-          text: 'Hello'
-          token: config.synology.tokens.bot
-          user_id: 1
+          text: 'Hello',
+          token: config.synology.tokens.bot,
+          user_id: 1,
           username: 'testuser'
-        }
+        },
         get: jest.fn().mockReturnValue('application/json')
       } as unknown as Request;
       const res = {
-        sendStatus: jest.fn()
-        status: jest.fn().mockReturnThis()
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
         send: jest.fn().mockReturnThis()
       } as unknown as Response;
 
