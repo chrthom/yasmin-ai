@@ -5,9 +5,7 @@ import swaggerUi from 'swagger-ui-express';
 import { config, validateEnv } from './config';
 import { ChatAgent } from './chat_agent';
 import { SynologyClient } from './synology_client';
-import { createBotController } from './controllers/bot.controller';
-import { createSlashController } from './controllers/slash.controller';
-import { createGroupController } from './controllers/group.controller';
+import { createBotController, createSlashController, createGroupController } from './controllers/chat.controller';
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
 

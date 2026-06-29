@@ -140,6 +140,23 @@ describe('ChatAgent', () => {
       const result = await chatAgent['getActiveConversationId']('testuser');
       expect(result).toBe('conv-456');
     });
+
+    it('should handle network errors gracefully', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+      await expect(chatAgent['getActiveConversationId']('testuser')).rejects.toThrow('Network error');
+    });
+
+    it('should handle invalid JSON responses', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.reject(new SyntaxError('Invalid JSON'))
+      });
+
+      await expect(chatAgent['getActiveConversationId']('testuser')).rejects.toThrow();
+    });
   });
 
   describe('convertMultiPart', () => {
@@ -184,6 +201,11 @@ describe('ChatAgent', () => {
     });
 
     it('should return empty string when outputs is empty', () => {
+      const result = chatAgent.convertMultiPart([]);
+      expect(result).toBe('');
+    });
+
+    it('should handle null/undefined outputs', () => {
       const result = chatAgent.convertMultiPart([]);
       expect(result).toBe('');
     });
@@ -270,6 +292,23 @@ describe('ChatAgent', () => {
       const call = mockFetch.mock.calls[0];
       const body = JSON.parse(call[1].body);
       expect(body.inputs[0].content).toBe('Hello');
+    });
+
+    it('should handle network errors', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+      await expect(chatAgent.processRequest('Hello', 'testuser')).rejects.toThrow('Network error');
+    });
+
+    it('should handle API errors', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({})
+      });
+
+      await expect(chatAgent.processRequest('Hello', 'testuser')).rejects.toThrow();
     });
   });
 });
