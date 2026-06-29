@@ -529,7 +529,7 @@ Use this checklist to track implementation progress:
 - [x] #4: Update express to stable version
 - [x] #4: Update node-fetch or remove if using native fetch
 - [x] #7: Implement conversation cache
-- [ ] #6: Create controllers directory and move route handlers
+- [x] #6: Create controllers directory and move route handlers
 - [x] #8: Convert .then() chains to async/await
 - [ ] #10: Add endpoint tests
 - [ ] #10: Add integration tests
