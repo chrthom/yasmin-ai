@@ -529,7 +529,7 @@ Use this checklist to track implementation progress:
 - [ ] #4: Update node-fetch or remove if using native fetch
 - [ ] #7: Implement conversation cache
 - [ ] #6: Create controllers directory and move route handlers
-- [ ] #8: Convert .then() chains to async/await
+- [x] #8: Convert .then() chains to async/await
 - [ ] #10: Add endpoint tests
 - [ ] #10: Add integration tests
 - [ ] #13: Rewrite sendAnswersToChat as iterative

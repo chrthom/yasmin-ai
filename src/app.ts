@@ -46,10 +46,9 @@ async function processRequest(
   username: string,
   shortAnswer: boolean = false
 ): Promise<string> {
-  return chatAgent
-    .processRequest(userText, username, shortAnswer)
-    .then(chatAgent.convertMultiPart)
-    .then(synologyClient.formatAnswer);
+  const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
+  const text = chatAgent.convertMultiPart(outputs);
+  return synologyClient.formatAnswer(text);
 }
 
 const app = express();
