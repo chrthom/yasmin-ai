@@ -4,8 +4,10 @@
   "description": "An AI assistent API for thomsen.in",
   "main": "dist/app.js",
   "scripts": {
-    "s": "npm run start",
-    "start": "npx nodemon src/app.ts",
+    "build": "tsc",
+    "start": "node dist/app.js",
+    "dev": "npx nodemon --watch src --ext ts --exec \"npm run build && npm run start\"",
+    "s": "npm run dev",
     "test": "npx jest",
     "lint": "npx eslint src/*",
     "format": "npx prettier . --write",

@@ -29,11 +29,11 @@ requiredEnv.forEach(key => {
   }
 });
 
-const mistralApiKey = process.env['MISTRAL_API_KEY'];
-const chatTokenBot = process.env['CHAT_TOKEN_BOT'];
-const chatTokenSlash = process.env['CHAT_TOKEN_SLASH'];
-const chatTokenGroup = process.env['CHAT_TOKEN_GROUP'];
-const agentId = process.env['AGENT_ID'];
+const mistralApiKey = process.env['MISTRAL_API_KEY']!;
+const chatTokenBot = process.env['CHAT_TOKEN_BOT']!;
+const chatTokenSlash = process.env['CHAT_TOKEN_SLASH']!;
+const chatTokenGroup = process.env['CHAT_TOKEN_GROUP']!;
+const agentId = process.env['AGENT_ID']!;
 const mistralURL = 'https://api.mistral.ai/v1/conversations';
 const chatIncomingURL =
   'https://thomsen.in/chat/webapi/entry.cgi?api=SYNO.Chat.External&method=chatbot&version=2&token=';
