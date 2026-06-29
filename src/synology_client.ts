@@ -37,13 +37,20 @@ export class SynologyClient {
       if (message) {
         console.log(`DEBUG Send message to synology - ${answers.length} parts remaining`);
         try {
-          await fetch(`${this.url}%22${this.token}%22`, {
+          const response = await fetch(`${this.url}%22${this.token}%22`, {
             method: 'post',
             body: new URLSearchParams([
               ['payload', JSON.stringify({ text: message, user_ids: [userId] })]
             ]),
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
           });
+
+          if (!response.ok) {
+            console.error(`ERROR Failed to send message to Synology: HTTP ${response.status} ${response.statusText}`);
+            throw new Error(`Synology API request failed: HTTP ${response.status}`);
+          }
+
+          await response.json(); // Ensure we consume the response body
         } catch (error) {
           console.error(`ERROR Failed to send message to Synology: ${error}`);
           throw error;
