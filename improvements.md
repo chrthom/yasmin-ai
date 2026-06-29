@@ -534,7 +534,7 @@ Use this checklist to track implementation progress:
 - [ ] #10: Add integration tests
 - [x] #13: Rewrite sendAnswersToChat as iterative
 - [x] #15: Improve health check endpoint
-- [ ] #9: Add structured logger (pino/winston)
+- [ ] #9: Add structured logger (pino/winston) - SKIPPED: requires new dependency
 - [ ] #11: Add build pipeline
 - [ ] #14: Improve chunkText function
 - [ ] #16: Add OpenAPI/Swagger documentation
