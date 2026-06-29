@@ -199,9 +199,10 @@ describe('Group Controller', () => {
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Short answer', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Short answer', type: 'message.output' }]
+          })
       });
 
       const req = {
@@ -235,9 +236,10 @@ describe('Group Controller', () => {
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
@@ -309,9 +311,10 @@ describe('Group Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({

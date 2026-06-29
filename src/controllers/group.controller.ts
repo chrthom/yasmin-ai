@@ -40,10 +40,12 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
         text: answer
       });
       // Send to Synology in fire-and-forget pattern
-      await synologyClient.sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse()).catch((error) => {
-        // Ignore errors when sending to Synology
-        logger.error('Failed to send group response to Synology', { error });
-      });
+      await synologyClient
+        .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse())
+        .catch(error => {
+          // Ignore errors when sending to Synology
+          logger.error('Failed to send group response to Synology', { error });
+        });
     } catch (error) {
       logger.error('Error in group chat processing', { error });
       res.status(500).send({ error: 'Internal server error' });

@@ -54,9 +54,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
@@ -87,9 +88,13 @@ describe('Integration Tests', () => {
       expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
 
       // 2. processRequest was called (second fetch - POST to create conversation)
-      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
-        method: 'post'
-      }));
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://test.url',
+        expect.objectContaining({
+          method: 'post'
+        })
+      );
 
       // 3. sendAnswersToChat was called (third fetch)
       expect(mockFetch).toHaveBeenNthCalledWith(3, expect.stringContaining('test-token'), expect.anything());
@@ -107,9 +112,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Short answer', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Short answer', type: 'message.output' }]
+          })
       });
 
       const slashController = createSlashController(chatAgent, synologyClient);
@@ -134,9 +140,13 @@ describe('Integration Tests', () => {
       expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
 
       // 2. processRequest was called (second fetch - POST to create conversation)
-      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
-        method: 'post'
-      }));
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://test.url',
+        expect.objectContaining({
+          method: 'post'
+        })
+      );
 
       // 3. Response was 200 with answer
       expect(res.status).toHaveBeenCalledWith(200);
@@ -154,9 +164,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Group response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Group response', type: 'message.output' }]
+          })
       });
 
       const groupController = createGroupController(chatAgent, synologyClient);
@@ -181,9 +192,13 @@ describe('Integration Tests', () => {
       expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
 
       // 2. processRequest was called (second fetch - POST to create conversation)
-      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
-        method: 'post'
-      }));
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://test.url',
+        expect.objectContaining({
+          method: 'post'
+        })
+      );
 
       // 3. Response was 200 with answer
       expect(res.status).toHaveBeenCalledWith(200);
