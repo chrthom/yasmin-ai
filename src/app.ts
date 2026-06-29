@@ -7,6 +7,7 @@ import { SynologyClient } from './synology_client';
 import { createBotController } from './controllers/bot.controller';
 import { createSlashController } from './controllers/slash.controller';
 import { createGroupController } from './controllers/group.controller';
+import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 
 validateEnv();
 
@@ -26,6 +27,7 @@ const app = express();
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(requestTracingMiddleware);
 app.use(limiter);
 
 // Controllers
@@ -38,11 +40,13 @@ app.post('/chat/slash', slashController);
 app.post('/chat/group', groupController);
 
 app.get('/health', (req, res) => {
+  const requestId = getRequestId(req);
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     version: '0.1.0',
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    requestId
   });
 });
 

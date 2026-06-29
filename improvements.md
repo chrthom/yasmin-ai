@@ -539,4 +539,4 @@ Use this checklist to track implementation progress:
 - [x] #11: Add build pipeline
 - [x] #14: Improve chunkText function
 - [ ] #16: Add OpenAPI/Swagger documentation
-- [ ] #17: Add request IDs and tracing
+- [x] #17: Add request IDs and tracing
