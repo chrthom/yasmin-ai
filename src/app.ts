@@ -13,10 +13,10 @@ import { openApiSpec } from './openapi';
 
 validateEnv();
 
-const chatIncomingURL = `${config.synology.chatIncomingUrl}?api=SYNO.Chat.External&method=chatbot&version=2&token=`;
+const chatIncomingBaseURL = config.synology.chatIncomingUrl;
 
 export const chatAgent = new ChatAgent(config.mistral.baseUrl, config.mistral.apiKey, config.mistral.agentId);
-export const synologyClient = new SynologyClient(chatIncomingURL, config.synology.tokens.bot);
+export const synologyClient = new SynologyClient(chatIncomingBaseURL, config.synology.tokens.bot);
 
 const limiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
@@ -32,7 +32,6 @@ app.use(express.json());
 app.use(requestTracingMiddleware);
 app.use(limiter);
 
-// API Documentation
 app.use(
   '/api-docs',
   swaggerUi.serve,
@@ -42,7 +41,6 @@ app.use(
   })
 );
 
-// Controllers
 const botController = createBotController(chatAgent, synologyClient);
 const slashController = createSlashController(chatAgent, synologyClient);
 const groupController = createGroupController(chatAgent, synologyClient);
@@ -62,11 +60,27 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.listen(config.server.port, () => {
+const server = app.listen(config.server.port, () => {
   console.log(`INFO Yasmin AI API Server started on port ${config.server.port}`);
   console.log(`INFO API Documentation available at http://localhost:${config.server.port}/api-docs`);
 });
 
 process.on('uncaughtException', err => {
-  console.log(`ERROR: Caught exception: ${err.name} -> ${err.message}${err.stack ? '\n' + err.stack : ''}`);
+  console.error('Uncaught Exception:', err);
+  server.close(() => process.exit(1));
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  server.close(() => process.exit(1));
+});
+
+process.on('SIGTERM', () => {
+  console.log('INFO: SIGTERM received, shutting down');
+  server.close(() => process.exit(0));
+});
+
+process.on('SIGINT', () => {
+  console.log('INFO: SIGINT received, shutting down');
+  server.close(() => process.exit(0));
 });

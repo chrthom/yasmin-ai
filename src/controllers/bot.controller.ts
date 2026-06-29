@@ -12,9 +12,14 @@ async function processRequest(
   username: string,
   shortAnswer: boolean = false
 ): Promise<string> {
-  const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
-  const text = chatAgent.convertMultiPart(outputs);
-  return synologyClient.formatAnswer(text);
+  try {
+    const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
+    const text = chatAgent.convertMultiPart(outputs);
+    return text ? synologyClient.formatAnswer(text) : '';
+  } catch (error) {
+    console.error('Error in processRequest:', error);
+    throw new Error('Failed to process chat request');
+  }
 }
 
 export function createBotController(chatAgent: ChatAgent, synologyClient: SynologyClient) {
