@@ -19,9 +19,9 @@ export const chatAgent = new ChatAgent(config.mistral.baseUrl, config.mistral.ap
 export const synologyClient = new SynologyClient(chatIncomingURL, config.synology.tokens.bot);
 
 const limiter = rateLimit({
-  windowMs: config.rateLimit.windowMs,
-  max: config.rateLimit.max,
-  message: 'Too many requests, please try again later.',
+  windowMs: config.rateLimit.windowMs
+  max: config.rateLimit.max
+  message: 'Too many requests, please try again later.'
   headers: true
 });
 
@@ -34,10 +34,10 @@ app.use(limiter);
 
 // API Documentation
 app.use(
-  '/api-docs',
-  swaggerUi.serve,
+  '/api-docs'
+  swaggerUi.serve
   swaggerUi.setup(openApiSpec, {
-    customCss: '.swagger-ui .topbar { display: none }',
+    customCss: '.swagger-ui .topbar { display: none }'
     customSiteTitle: 'Yasmin AI API Documentation'
   })
 );
@@ -54,10 +54,10 @@ app.post('/chat/group', groupController);
 app.get('/health', (req, res) => {
   const requestId = getRequestId(req);
   res.status(200).json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    version: '0.1.0',
-    uptime: process.uptime(),
+    status: 'healthy'
+    timestamp: new Date().toISOString()
+    version: '0.1.0'
+    uptime: process.uptime()
     requestId
   });
 });

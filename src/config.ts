@@ -3,29 +3,29 @@ import process from 'node:process';
 export const config = {
   server: {
     port: process.env['PORT'] || 5000
-  },
+  }
   mistral: {
-    baseUrl: 'https://api.mistral.ai/v1/conversations',
-    apiKey: process.env['MISTRAL_API_KEY']!,
-    agentId: process.env['AGENT_ID']!,
+    baseUrl: 'https://api.mistral.ai/v1/conversations'
+    apiKey: process.env['MISTRAL_API_KEY']!
+    agentId: process.env['AGENT_ID']!
     conversationTtlMs: 12 * 60 * 60 * 1000
-  },
+  }
   synology: {
-    chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
+    chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi'
     tokens: {
-      bot: process.env['CHAT_TOKEN_BOT']!,
-      slash: process.env['CHAT_TOKEN_SLASH']!,
+      bot: process.env['CHAT_TOKEN_BOT']!
+      slash: process.env['CHAT_TOKEN_SLASH']!
       group: process.env['CHAT_TOKEN_GROUP']!
     }
-  },
+  }
   rateLimit: {
-    windowMs: 60 * 1000,
+    windowMs: 60 * 1000
     max: 15
-  },
+  }
   validation: {
-    maxTextLength: 10000,
+    maxTextLength: 10000
     maxUsernameLength: 100
-  },
+  }
   chunk: {
     maxLength: 1800
   }
@@ -34,10 +34,10 @@ export const config = {
 // Validate required environment variables
 export function validateEnv(): void {
   const requiredEnv = [
-    'MISTRAL_API_KEY',
-    'CHAT_TOKEN_BOT',
-    'CHAT_TOKEN_SLASH',
-    'CHAT_TOKEN_GROUP',
+    'MISTRAL_API_KEY'
+    'CHAT_TOKEN_BOT'
+    'CHAT_TOKEN_SLASH'
+    'CHAT_TOKEN_GROUP'
     'AGENT_ID'
   ] as const;
 

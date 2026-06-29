@@ -54,17 +54,17 @@ describe('ChatAgent', () => {
     it('should return conversation ID for valid recent conversation', async () => {
       const mockResponse = [
         {
-          name: 'testuser',
-          id: 'conv-123',
-          updated_at: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
+          name: 'testuser'
+          id: 'conv-123'
+          updated_at: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
           agent_id: 'test-agent-id'
         }
       ];
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -75,17 +75,17 @@ describe('ChatAgent', () => {
     it('should return undefined for old conversations', async () => {
       const mockResponse = [
         {
-          name: 'testuser',
-          id: 'conv-123',
-          updated_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+          name: 'testuser'
+          id: 'conv-123'
+          updated_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
           agent_id: 'test-agent-id'
         }
       ];
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -96,17 +96,17 @@ describe('ChatAgent', () => {
     it('should return undefined for different agent conversations', async () => {
       const mockResponse = [
         {
-          name: 'testuser',
-          id: 'conv-123',
-          updated_at: new Date().toISOString(),
+          name: 'testuser'
+          id: 'conv-123'
+          updated_at: new Date().toISOString()
           agent_id: 'different-agent-id'
         }
       ];
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -117,23 +117,23 @@ describe('ChatAgent', () => {
     it('should return most recent conversation', async () => {
       const mockResponse = [
         {
-          name: 'testuser',
-          id: 'conv-123',
-          updated_at: new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString(),
+          name: 'testuser'
+          id: 'conv-123'
+          updated_at: new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString()
           agent_id: 'test-agent-id'
-        },
+        }
         {
-          name: 'testuser',
-          id: 'conv-456',
-          updated_at: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+          name: 'testuser'
+          id: 'conv-456'
+          updated_at: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString()
           agent_id: 'test-agent-id'
         }
       ];
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -146,7 +146,7 @@ describe('ChatAgent', () => {
     it('should handle string content', () => {
       const outputs = [
         {
-          content: 'Simple text response',
+          content: 'Simple text response'
           type: 'message.output'
         }
       ];
@@ -159,10 +159,10 @@ describe('ChatAgent', () => {
       const outputs = [
         {
           content: [
-            { type: 'text', text: 'Hello' },
-            { type: 'image', text: '' },
+            { type: 'text', text: 'Hello' }
+            { type: 'image', text: '' }
             { type: 'text', text: 'world!' }
-          ],
+          ]
           type: 'message.output'
         }
       ];
@@ -174,7 +174,7 @@ describe('ChatAgent', () => {
     it('should return empty string when no message.output found', () => {
       const outputs = [
         {
-          content: 'Some content',
+          content: 'Some content'
           type: 'other.type'
         }
       ];
@@ -197,16 +197,16 @@ describe('ChatAgent', () => {
       const mockResponse = {
         outputs: [
           {
-            content: 'Test response',
+            content: 'Test response'
             type: 'message.output'
           }
         ]
       };
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -224,16 +224,16 @@ describe('ChatAgent', () => {
       const mockResponse = {
         outputs: [
           {
-            content: 'Test response',
+            content: 'Test response'
             type: 'message.output'
           }
         ]
       };
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
@@ -251,16 +251,16 @@ describe('ChatAgent', () => {
       const mockResponse = {
         outputs: [
           {
-            content: 'Short response',
+            content: 'Short response'
             type: 'message.output'
           }
         ]
       };
 
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
+        ok: true
+        status: 200
+        statusText: 'OK'
         json: () => Promise.resolve(mockResponse)
       });
 
