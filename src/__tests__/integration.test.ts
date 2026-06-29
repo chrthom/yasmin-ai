@@ -31,9 +31,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Hello from Yasmin!', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
@@ -62,19 +63,23 @@ describe('Integration Tests', () => {
       // Verify the flow:
       // 1. getActiveConversationId was called (first fetch)
       expect(mockFetch).toHaveBeenNthCalledWith(1, 'https://test.url', expect.anything());
-      
+
       // 2. processRequest was called (second fetch - POST to create conversation)
-      expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url', expect.objectContaining({
-        method: 'post',
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer test-api-key'
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://test.url',
+        expect.objectContaining({
+          method: 'post',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer test-api-key'
+          })
         })
-      }));
-      
+      );
+
       // 3. sendAnswersToChat was called (third fetch)
       expect(mockFetch).toHaveBeenNthCalledWith(3, expect.stringContaining('test-token'), expect.anything());
-      
+
       // 4. Response was 202
       expect(res.sendStatus).toHaveBeenCalledWith(202);
     });
@@ -88,9 +93,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Short answer', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Short answer', type: 'message.output' }]
+          })
       });
 
       const slashController = createSlashController(chatAgent, synologyClient);
@@ -111,12 +117,16 @@ describe('Integration Tests', () => {
       await slashController(req, res);
 
       // Verify the text was processed (slash command removed)
-      expect(mockFetch).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
-        body: JSON.stringify({
-          inputs: [{ content: 'What is the weather?', role: 'user' }]
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.objectContaining({
+          body: JSON.stringify({
+            inputs: [{ content: 'What is the weather?', role: 'user' }]
+          })
         })
-      }));
-      
+      );
+
       // Verify response was 200 with text
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalledWith({ text: 'Short answer' });
@@ -131,9 +141,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Group response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Group response', type: 'message.output' }]
+          })
       });
 
       const groupController = createGroupController(chatAgent, synologyClient);
@@ -162,21 +173,23 @@ describe('Integration Tests', () => {
       // Mock conversation fetch (existing conversation)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve([
-          {
-            name: 'testuser',
-            id: 'conv-123',
-            updated_at: new Date().toISOString(),
-            agent_id: 'test-agent-id'
-          }
-        ])
+        json: () =>
+          Promise.resolve([
+            {
+              name: 'testuser',
+              id: 'conv-123',
+              updated_at: new Date().toISOString(),
+              agent_id: 'test-agent-id'
+            }
+          ])
       });
       // Mock processRequest fetch (use existing conversation)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Using existing conversation', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Using existing conversation', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
@@ -204,7 +217,7 @@ describe('Integration Tests', () => {
 
       // Verify existing conversation was used (PUT to conversation endpoint)
       expect(mockFetch).toHaveBeenNthCalledWith(2, 'https://test.url/conv-123', expect.anything());
-      
+
       // Verify response was 202
       expect(res.sendStatus).toHaveBeenCalledWith(202);
     });
@@ -218,9 +231,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch with long response
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
@@ -326,9 +340,10 @@ describe('Integration Tests', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({

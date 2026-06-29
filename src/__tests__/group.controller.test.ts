@@ -136,9 +136,10 @@ describe('Group Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
       });
 
       const req = {
@@ -170,9 +171,10 @@ describe('Group Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Short response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Short response', type: 'message.output' }]
+          })
       });
 
       const req = {

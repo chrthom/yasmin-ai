@@ -30,9 +30,10 @@ This document contains structured recommendations for improving the Yasmin AI pr
 **Impact:** Runtime errors possible if environment variables are not set or have wrong types.
 
 **Recommended Fix:**
+
 ```typescript
 const mistralApiKey = process.env.MISTRAL_API_KEY;
-if (!mistralApiKey) throw new Error('MISTRAL_API_KEY not set');
+if (!mistralApiKey) throw new Error("MISTRAL_API_KEY not set");
 ```
 
 ---
@@ -43,7 +44,8 @@ if (!mistralApiKey) throw new Error('MISTRAL_API_KEY not set');
 
 **Issue:** Minimal error handling - only uncaught exceptions are caught (app.ts lines 104-106). No error handling for fetch failures in `ChatAgent` or `SynologyClient`.
 
-**Location:** 
+**Location:**
+
 - `src/app.ts` lines 54-56 (no catch on fetch)
 - `src/chat_agent.ts` lines 53-58, 89-96 (no catch on fetch)
 - `src/synology_client.ts` lines 36-50 (no catch on fetch)
@@ -51,6 +53,7 @@ if (!mistralApiKey) throw new Error('MISTRAL_API_KEY not set');
 **Impact:** Application crashes on network failures, API rate limits, or invalid responses.
 
 **Recommended Fix:**
+
 - Add `.catch()` handlers to all fetch calls
 - Implement retry logic with exponential backoff
 - Return meaningful error responses to Synology Chat
@@ -69,10 +72,11 @@ if (!mistralApiKey) throw new Error('MISTRAL_API_KEY not set');
 **Impact:** Hard to maintain, no single source of truth for configuration.
 
 **Recommended Fix:** Create a `src/config.ts` module:
+
 ```typescript
 export const config = {
-  mistral: { url: '...', apiKey: process.env.MISTRAL_API_KEY },
-  synology: { url: '...', tokens: { bot: '...', slash: '...', group: '...' }},
+  mistral: { url: "...", apiKey: process.env.MISTRAL_API_KEY },
+  synology: { url: "...", tokens: { bot: "...", slash: "...", group: "..." } },
   server: { port: 5000 },
   conversation: { ttlHours: 12 }
 };
@@ -85,6 +89,7 @@ export const config = {
 **Priority:** High
 
 **Issue:**
+
 - `node-fetch@^2.0.0` is deprecated (v2.x is no longer maintained)
 - `express@^5.0.0` is still in beta (currently at 5.0.0-beta.1)
 - Native `fetch` is used but `@types/node-fetch` is in devDependencies
@@ -94,6 +99,7 @@ export const config = {
 **Impact:** Deprecated dependencies may have security vulnerabilities, beta dependencies may have breaking changes.
 
 **Recommended Fix:**
+
 ```json
 {
   "dependencies": {
@@ -115,18 +121,21 @@ export const config = {
 **Priority:** Critical
 
 **Issue:**
+
 - No input validation on `reqBody.text` and `reqBody.username`
 - No rate limiting on endpoints
 - API keys and tokens are logged in debug mode
 - Environment variables are type-asserted without validation
 
 **Location:**
+
 - `src/app.ts` lines 46-47, 62-64, 80-82 (logging full request bodies)
 - All endpoint handlers (no input validation)
 
 **Impact:** Security vulnerabilities including potential injection attacks, DoS via large messages, token leakage in logs.
 
 **Recommended Fix:**
+
 - Add input validation library (e.g., `zod` or `joi`)
 - Validate string lengths, sanitize inputs
 - Implement rate limiting with `express-rate-limit`
@@ -147,6 +156,7 @@ export const config = {
 **Impact:** Hard to test, hard to modify, violates single responsibility principle.
 
 **Recommended Fix:** Move route handlers to separate `src/controllers/` directory:
+
 ```
 src/
 ├── controllers/
@@ -170,6 +180,7 @@ Each controller should handle request validation, authentication, and response f
 **Impact:** Unnecessary API calls to Mistral, slower response times.
 
 **Recommended Fix:** Implement an in-memory LRU cache:
+
 ```typescript
 interface ConversationCacheEntry {
   conversationId: string;
@@ -184,7 +195,7 @@ private async getActiveConversationId(username: string): Promise<string | undefi
   if (cached && cached.expiresAt > Date.now()) {
     return cached.conversationId;
   }
-  
+
   // Fetch from API
   const conversationId = await this.fetchConversationId(username);
   if (conversationId) {
@@ -206,17 +217,17 @@ private async getActiveConversationId(username: string): Promise<string | undefi
 **Issue:** Mix of `.then()` chains and async/await patterns throughout the codebase.
 
 **Location:**
+
 - `src/app.ts` lines 34-37, 54-56, 71-75, 88-92
 - `src/chat_agent.ts` lines 53-58, 89-96
 
 **Impact:** Inconsistent code style, harder to read and maintain.
 
 **Recommended Fix:** Standardize on async/await:
+
 ```typescript
 // Before
-processRequest(userText, username, shortAnswer)
-  .then(chatAgent.convertMultiPart)
-  .then(synologyClient.formatAnswer);
+processRequest(userText, username, shortAnswer).then(chatAgent.convertMultiPart).then(synologyClient.formatAnswer);
 
 // After
 const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
@@ -237,16 +248,17 @@ return synologyClient.formatAnswer(text);
 **Impact:** Hard to filter logs, no production-ready logging format.
 
 **Recommended Fix:** Use a proper logger like `pino` or `winston`:
-```typescript
-import pino from 'pino';
 
-const logger = pino({ 
-  level: process.env.LOG_LEVEL || 'info',
-  formatters: { level: (label) => ({ level: label.toUpperCase() }) }
+```typescript
+import pino from "pino";
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || "info",
+  formatters: { level: label => ({ level: label.toUpperCase() }) }
 });
 
-logger.debug('Bot Chat called', { body: redactSensitive(reqBody), headers: req.headers });
-logger.error('Authentication failed', { endpoint: '/chat/bot', userId: reqBody.user_id });
+logger.debug("Bot Chat called", { body: redactSensitive(reqBody), headers: req.headers });
+logger.error("Authentication failed", { endpoint: "/chat/bot", userId: reqBody.user_id });
 ```
 
 ---
@@ -264,6 +276,7 @@ logger.error('Authentication failed', { endpoint: '/chat/bot', userId: reqBody.u
 **Impact:** Endpoint behavior not verified, integration issues may go undetected.
 
 **Recommended Fix:** Add tests for:
+
 - Authentication failures (wrong token)
 - Valid/invalid request body validation
 - Error response handling (500, 400, 401)
@@ -283,6 +296,7 @@ logger.error('Authentication failed', { endpoint: '/chat/bot', userId: reqBody.u
 **Impact:** Slower startup, no type checking at runtime, no production build.
 
 **Recommended Fix:**
+
 - Add proper build pipeline with `tsc` compilation to `dist/`
 - Configure nodemon to use the build output in development
 - Add source maps for debugging
@@ -311,14 +325,9 @@ logger.error('Authentication failed', { endpoint: '/chat/bot', userId: reqBody.u
 **Impact:** Application may start but fail on first request with unclear errors.
 
 **Recommended Fix:** Add startup validation:
+
 ```typescript
-const requiredEnv = [
-  'MISTRAL_API_KEY', 
-  'CHAT_TOKEN_BOT', 
-  'CHAT_TOKEN_SLASH', 
-  'CHAT_TOKEN_GROUP', 
-  'AGENT_ID'
-];
+const requiredEnv = ["MISTRAL_API_KEY", "CHAT_TOKEN_BOT", "CHAT_TOKEN_SLASH", "CHAT_TOKEN_GROUP", "AGENT_ID"];
 
 requiredEnv.forEach(key => {
   if (!process.env[key]) {
@@ -343,6 +352,7 @@ requiredEnv.forEach(key => {
 **Impact:** Potential stack overflow, hard to debug.
 
 **Recommended Fix:** Rewrite as iterative:
+
 ```typescript
 async sendAnswersToChat(userId: number, answers: string[]): Promise<void> {
   while (answers.length > 0) {
@@ -377,19 +387,20 @@ async sendAnswersToChat(userId: number, answers: string[]): Promise<void> {
 **Impact:** Potential for malformed chunks or infinite loops.
 
 **Recommended Fix:** Simplify and add tests:
+
 ```typescript
 chunkText(str: string, maxLength: number = 1800): string[] {
   const chunks: string[] = [];
-  
+
   while (str.length > 0) {
     // Try to find a newline within the max length
     let chunkEnd = str.indexOf('\n', maxLength);
     if (chunkEnd === -1) chunkEnd = maxLength;
-    
+
     chunks.push(str.substring(0, chunkEnd));
     str = str.substring(chunkEnd);
   }
-  
+
   return chunks;
 }
 ```
@@ -409,12 +420,13 @@ chunkText(str: string, maxLength: number = 1800): string[] {
 **Impact:** No way to verify dependencies (Mistral API, Synology Chat) are working.
 
 **Recommended Fix:** Add proper health check:
+
 ```typescript
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   res.status(200).json({
-    status: 'healthy',
+    status: "healthy",
     timestamp: new Date().toISOString(),
-    version: process.env.VERSION || '0.1.0',
+    version: process.env.VERSION || "0.1.0",
     uptime: process.uptime()
   });
 });
@@ -433,6 +445,7 @@ Consider adding readiness/liveness probes for containerized deployments.
 **Impact:** Hard for new developers or users to understand the API.
 
 **Recommended Fix:** Add Swagger/OpenAPI documentation:
+
 - Add `src/swagger.ts` with OpenAPI spec
 - Use `swagger-ui-express` to serve API docs at `/api-docs`
 - Document all endpoints with request/response schemas
@@ -448,13 +461,14 @@ Consider adding readiness/liveness probes for containerized deployments.
 **Impact:** Hard to debug issues in production.
 
 **Recommended Fix:** Generate UUID for each request and include in all logs:
+
 ```typescript
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4 } from "uuid";
 
 app.use((req, res, next) => {
   const requestId = uuidv4();
   res.locals.requestId = requestId;
-  logger.info('Request started', { requestId, method: req.method, path: req.path });
+  logger.info("Request started", { requestId, method: req.method, path: req.path });
   next();
 });
 ```
@@ -463,40 +477,43 @@ app.use((req, res, next) => {
 
 ## Summary by Priority
 
-| Priority | ID | Issue | Area |
-|----------|----|-------|------|
-| **Critical** | 2 | No error handling for API failures | Code Quality |
-| **Critical** | 5 | Security issues (input validation, rate limiting, token logging) | Security |
-| **High** | 1 | Type safety bypasses | Code Quality |
-| **High** | 4 | Deprecated/beta dependencies | Dependencies |
-| **High** | 12 | No configuration validation at startup | Code Quality |
-| **Medium** | 3 | Scattered configuration | Architecture |
-| **Medium** | 6 | Poor separation of concerns | Architecture |
-| **Medium** | 7 | Inefficient conversation ID fetching | Performance |
-| **Medium** | 8 | Mixed async styles | Code Quality |
-| **Medium** | 10 | Test coverage gaps | Testing |
-| **Medium** | 13 | Recursive fetch could cause stack overflow | Performance |
-| **Medium** | 15 | Minimal health checks | Operations |
-| **Low** | 9 | Inconsistent logging | Code Quality |
-| **Low** | 11 | No build pipeline | Development |
-| **Low** | 14 | Chunking algorithm could be simplified | Performance |
-| **Low** | 16 | No API documentation | Documentation |
-| **Low** | 17 | No request tracing | Operations |
+| Priority     | ID  | Issue                                                            | Area          |
+| ------------ | --- | ---------------------------------------------------------------- | ------------- |
+| **Critical** | 2   | No error handling for API failures                               | Code Quality  |
+| **Critical** | 5   | Security issues (input validation, rate limiting, token logging) | Security      |
+| **High**     | 1   | Type safety bypasses                                             | Code Quality  |
+| **High**     | 4   | Deprecated/beta dependencies                                     | Dependencies  |
+| **High**     | 12  | No configuration validation at startup                           | Code Quality  |
+| **Medium**   | 3   | Scattered configuration                                          | Architecture  |
+| **Medium**   | 6   | Poor separation of concerns                                      | Architecture  |
+| **Medium**   | 7   | Inefficient conversation ID fetching                             | Performance   |
+| **Medium**   | 8   | Mixed async styles                                               | Code Quality  |
+| **Medium**   | 10  | Test coverage gaps                                               | Testing       |
+| **Medium**   | 13  | Recursive fetch could cause stack overflow                       | Performance   |
+| **Medium**   | 15  | Minimal health checks                                            | Operations    |
+| **Low**      | 9   | Inconsistent logging                                             | Code Quality  |
+| **Low**      | 11  | No build pipeline                                                | Development   |
+| **Low**      | 14  | Chunking algorithm could be simplified                           | Performance   |
+| **Low**      | 16  | No API documentation                                             | Documentation |
+| **Low**      | 17  | No request tracing                                               | Operations    |
 
 ---
 
 ## Implementation Roadmap
 
 ### Phase 1: Critical Fixes (Do First)
+
 1. Add input validation and rate limiting (Issue #5)
 2. Add error handling for all API calls (Issue #2)
 3. Validate environment variables at startup (Issue #12)
 
 ### Phase 2: High Priority
+
 4. Fix type safety issues (Issue #1)
 5. Update dependencies (Issue #4)
 
 ### Phase 3: Medium Priority
+
 6. Implement conversation cache (Issue #7)
 7. Refactor for better separation of concerns (Issue #6)
 8. Standardize async/await style (Issue #8)
@@ -505,6 +522,7 @@ app.use((req, res, next) => {
 11. Improve health checks (Issue #15)
 
 ### Phase 4: Low Priority
+
 12. Add structured logging (Issue #9)
 13. Add build pipeline (Issue #11)
 14. Simplify chunking (Issue #14)

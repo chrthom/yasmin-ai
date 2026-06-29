@@ -17,12 +17,12 @@ describe('Knowledge', () => {
       expect(knowledge.getFamilyRelationTo('helge')).toBe('granddaughter');
       expect(knowledge.getFamilyRelationTo('christine')).toBe('granddaughter');
       expect(knowledge.getFamilyRelationTo('lennard')).toBe('niece');
-      expect(knowledge.getFamilyRelationTo('jonas')).toBe('niece')
+      expect(knowledge.getFamilyRelationTo('jonas')).toBe('niece');
     });
 
     it('should return "distant relative" for unknown users', () => {
       expect(knowledge.getFamilyRelationTo('unknown')).toBe('distant relative');
-      expect(knowledge.getFamilyRelationTo('')).toBe('distant relative')
+      expect(knowledge.getFamilyRelationTo('')).toBe('distant relative');
     });
   });
 
@@ -36,12 +36,12 @@ describe('Knowledge', () => {
       expect(knowledge.getAgeOf('helge')).toBe(57);
       expect(knowledge.getAgeOf('christine')).toBe(56);
       expect(knowledge.getAgeOf('lennard')).toBe(34);
-      expect(knowledge.getAgeOf('jonas')).toBe(29)
+      expect(knowledge.getAgeOf('jonas')).toBe(29);
     });
 
     it('should return default age (30) for unknown users', () => {
       expect(knowledge.getAgeOf('unknown')).toBe(30);
-      expect(knowledge.getAgeOf('')).toBe(30)
+      expect(knowledge.getAgeOf('')).toBe(30);
     });
   });
 });
