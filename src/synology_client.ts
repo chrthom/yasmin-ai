@@ -29,25 +29,24 @@ export class SynologyClient {
     return strs;
   }
 
-  async sendAnswersToChat(userId: number, answers: string[]) {
-    if (answers.length) {
+  async sendAnswersToChat(userId: number, answers: string[]): Promise<void> {
+    while (answers.length > 0) {
       const message = answers.pop();
-      console.log(`DEBUG Send message to synology - ${answers.length} parts remaining`);
-      fetch(`${this.url}%22${this.token}%22`, {
-        method: 'post',
-        body: new URLSearchParams([
-          [
-            'payload',
-            JSON.stringify({
-              text: message,
-              user_ids: [userId]
-            })
-          ]
-        ]),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
+      if (message) {
+        console.log(`DEBUG Send message to synology - ${answers.length} parts remaining`);
+        try {
+          await fetch(`${this.url}%22${this.token}%22`, {
+            method: 'post',
+            body: new URLSearchParams([
+              ['payload', JSON.stringify({ text: message, user_ids: [userId] })]
+            ]),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+          });
+        } catch (error) {
+          console.error(`ERROR Failed to send message to Synology: ${error}`);
+          throw error;
         }
-      }).then(() => this.sendAnswersToChat(userId, answers));
+      }
     }
   }
 }

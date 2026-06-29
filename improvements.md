@@ -532,7 +532,7 @@ Use this checklist to track implementation progress:
 - [x] #8: Convert .then() chains to async/await
 - [ ] #10: Add endpoint tests
 - [ ] #10: Add integration tests
-- [ ] #13: Rewrite sendAnswersToChat as iterative
+- [x] #13: Rewrite sendAnswersToChat as iterative
 - [x] #15: Improve health check endpoint
 - [ ] #9: Add structured logger (pino/winston)
 - [ ] #11: Add build pipeline
