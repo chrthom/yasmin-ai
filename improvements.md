@@ -524,7 +524,7 @@ Use this checklist to track implementation progress:
 - [ ] #2: Add error handling to SynologyClient fetch calls
 - [ ] #2: Add error handling to app.ts endpoint handlers
 - [x] #12: Add environment variable validation at startup
-- [ ] #1: Fix type assertions for environment variables
+- [x] #1: Fix type assertions for environment variables
 - [ ] #4: Update express to stable version
 - [ ] #4: Update node-fetch or remove if using native fetch
 - [ ] #7: Implement conversation cache
