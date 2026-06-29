@@ -8,6 +8,30 @@ import { config } from '../config';
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
+// Mock config for tests
+jest.mock('../config', () => ({
+  config: {
+    server: { port: 5000 },
+    mistral: {
+      baseUrl: 'https://api.mistral.ai/v1/conversations',
+      apiKey: 'test-api-key',
+      agentId: 'test-agent-id',
+      conversationTtlMs: 12 * 60 * 60 * 1000
+    },
+    synology: {
+      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
+      tokens: {
+        bot: 'test-bot-token',
+        slash: 'test-slash-token',
+        group: 'test-group-token'
+      }
+    },
+    rateLimit: { windowMs: 60 * 1000, max: 15 },
+    validation: { maxTextLength: 10000, maxUsernameLength: 100 },
+    chunk: { maxLength: 1800 }
+  }
+}));
+
 describe('Slash Controller', () => {
   let chatAgent: ChatAgent;
   let synologyClient: SynologyClient;
@@ -68,7 +92,7 @@ describe('Slash Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -89,7 +113,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           username: 'testuser'
         },
         get: jest.fn().mockReturnValue('application/json')
@@ -109,7 +133,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1
         },
         get: jest.fn().mockReturnValue('application/json')
@@ -145,7 +169,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello there',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -187,7 +211,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -229,7 +253,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin   Hello   ',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -273,7 +297,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -308,7 +332,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -346,7 +370,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
