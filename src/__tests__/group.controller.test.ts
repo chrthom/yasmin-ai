@@ -340,7 +340,7 @@ describe('Group Controller', () => {
 
       // Should still return 200 even if sending to Synology fails
       // (fire-and-forget pattern)
-      expect(res.sendStatus).toHaveBeenCalledWith(200);
+      expect(res.status).toHaveBeenCalledWith(200);
     });
   });
 });

@@ -3,7 +3,7 @@ import { config } from '../config';
 
 export const SynologyRequestSchema = z.object({
   text: z.string().min(1).max(config.validation.maxTextLength),
-  token: z.string().min(1),
+  token: z.string().min(1).optional(),
   user_id: z.number().int().positive(),
   username: z
     .string()

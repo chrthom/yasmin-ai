@@ -29,7 +29,7 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
     const reqBody = parseResult.data;
     const redactedBody = { ...reqBody, token: '***REDACTED***' };
     logger.debug('Group Chat called', { body: redactedBody, contentType: req.get('Content-Type') });
-    if (reqBody.token != config.synology.tokens.group) {
+    if (!reqBody.token || reqBody.token != config.synology.tokens.group) {
       logger.warn('Group Chat request has invalid authorization token');
       res.sendStatus(401);
       return;
@@ -38,6 +38,11 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
       const answer = await processRequest(chatAgent, synologyClient, reqBody.text, reqBody.username, true);
       res.status(200).send({
         text: answer
+      });
+      // Send to Synology in fire-and-forget pattern
+      await synologyClient.sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse()).catch((error) => {
+        // Ignore errors when sending to Synology
+        logger.error('Failed to send group response to Synology', { error });
       });
     } catch (error) {
       logger.error('Error in group chat processing', { error });

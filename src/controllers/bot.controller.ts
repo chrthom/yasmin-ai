@@ -29,7 +29,7 @@ export function createBotController(chatAgent: ChatAgent, synologyClient: Synolo
     const reqBody = parseResult.data;
     const redactedBody = { ...reqBody, token: '***REDACTED***' };
     logger.debug('Bot Chat called', { body: redactedBody, contentType: req.get('Content-Type') });
-    if (reqBody.token != config.synology.tokens.bot) {
+    if (!reqBody.token || reqBody.token != config.synology.tokens.bot) {
       logger.warn('Bot Chat request has invalid authorization token');
       res.sendStatus(401);
       return;
