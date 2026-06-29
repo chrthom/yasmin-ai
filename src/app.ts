@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
 import { config, validateEnv } from './config';
 import { ChatAgent } from './chat_agent';
 import { SynologyClient } from './synology_client';
@@ -8,6 +9,7 @@ import { createBotController } from './controllers/bot.controller';
 import { createSlashController } from './controllers/slash.controller';
 import { createGroupController } from './controllers/group.controller';
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
+import { openApiSpec } from './openapi';
 
 validateEnv();
 
@@ -29,6 +31,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(requestTracingMiddleware);
 app.use(limiter);
+
+// API Documentation
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'Yasmin AI API Documentation',
+}));
 
 // Controllers
 const botController = createBotController(chatAgent, synologyClient);
@@ -52,6 +60,7 @@ app.get('/health', (req, res) => {
 
 app.listen(config.server.port, () => {
   console.log(`INFO Yasmin AI API Server started on port ${config.server.port}`);
+  console.log(`INFO API Documentation available at http://localhost:${config.server.port}/api-docs`);
 });
 
 process.on('uncaughtException', err => {

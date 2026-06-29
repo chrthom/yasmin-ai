@@ -538,5 +538,5 @@ Use this checklist to track implementation progress:
 - [ ] #9: Add structured logger (pino/winston) - SKIPPED: requires new dependency
 - [x] #11: Add build pipeline
 - [x] #14: Improve chunkText function
-- [ ] #16: Add OpenAPI/Swagger documentation
+- [x] #16: Add OpenAPI/Swagger documentation
 - [x] #17: Add request IDs and tracing
