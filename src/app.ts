@@ -56,7 +56,7 @@ app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-app.post('/chat/bot', (req, res) => {
+app.post('/chat/bot', async (req, res) => {
   const reqBody = <SynologyRequest>req.body;
   console.log(
     `DEBUG Bot Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
@@ -64,15 +64,19 @@ app.post('/chat/bot', (req, res) => {
   if (reqBody.token != chatTokenBot) {
     console.log('WARN Previous Bot Chat request has invalid authorization token');
     res.sendStatus(401);
-  } else {
-    processRequest(reqBody.text, reqBody.username).then(answer => {
-      res.sendStatus(202);
-      synologyClient.sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse());
-    });
+    return;
+  }
+  try {
+    const answer = await processRequest(reqBody.text, reqBody.username);
+    res.sendStatus(202);
+    await synologyClient.sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse());
+  } catch (error) {
+    console.error('ERROR in bot chat processing:', error);
+    res.status(500).send({ error: 'Internal server error' });
   }
 });
 
-app.post('/chat/slash', (req, res) => {
+app.post('/chat/slash', async (req, res) => {
   const reqBody = <SynologyRequest>req.body;
   console.log(
     `DEBUG Slash Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
@@ -80,17 +84,21 @@ app.post('/chat/slash', (req, res) => {
   if (reqBody.token != chatTokenSlash) {
     console.log('WARN Previous Slash Chat request has invalid authorization token');
     res.sendStatus(401);
-  } else {
+    return;
+  }
+  try {
     const userText = reqBody.text.replace('/yasmin', '').trim();
-    processRequest(userText, reqBody.username, true).then(answer =>
-      res.status(200).send({
-        text: answer
-      })
-    );
+    const answer = await processRequest(userText, reqBody.username, true);
+    res.status(200).send({
+      text: answer
+    });
+  } catch (error) {
+    console.error('ERROR in slash chat processing:', error);
+    res.status(500).send({ error: 'Internal server error' });
   }
 });
 
-app.post('/chat/group', (req, res) => {
+app.post('/chat/group', async (req, res) => {
   const reqBody = <SynologyRequest>req.body;
   console.log(
     `DEBUG Group Chat called - Body : ${JSON.stringify(reqBody)} Headers: ${req.get('Content-Type')}`
@@ -98,12 +106,16 @@ app.post('/chat/group', (req, res) => {
   if (reqBody.token != chatTokenGroup) {
     console.log('WARN Previous Group Chat request has invalid authorization token');
     res.sendStatus(401);
-  } else {
-    processRequest(reqBody.text, reqBody.username, true).then(answer =>
-      res.status(200).send({
-        text: answer
-      })
-    );
+    return;
+  }
+  try {
+    const answer = await processRequest(reqBody.text, reqBody.username, true);
+    res.status(200).send({
+      text: answer
+    });
+  } catch (error) {
+    console.error('ERROR in group chat processing:', error);
+    res.status(500).send({ error: 'Internal server error' });
   }
 });
 
