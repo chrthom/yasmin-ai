@@ -14,11 +14,26 @@ interface SynologyRequest {
   timestamp?: number;
 }
 
-const mistralApiKey = <string>process.env['MISTRAL_API_KEY'];
-const chatTokenBot = <string>process.env['CHAT_TOKEN_BOT'];
-const chatTokenSlash = <string>process.env['CHAT_TOKEN_SLASH'];
-const chatTokenGroup = <string>process.env['CHAT_TOKEN_GROUP'];
-const agentId = <string>process.env['AGENT_ID'];
+const requiredEnv = [
+  'MISTRAL_API_KEY',
+  'CHAT_TOKEN_BOT',
+  'CHAT_TOKEN_SLASH',
+  'CHAT_TOKEN_GROUP',
+  'AGENT_ID'
+];
+
+requiredEnv.forEach(key => {
+  if (!process.env[key]) {
+    console.error(`ERROR: Missing required environment variable: ${key}`);
+    process.exit(1);
+  }
+});
+
+const mistralApiKey = process.env['MISTRAL_API_KEY']!;
+const chatTokenBot = process.env['CHAT_TOKEN_BOT']!;
+const chatTokenSlash = process.env['CHAT_TOKEN_SLASH']!;
+const chatTokenGroup = process.env['CHAT_TOKEN_GROUP']!;
+const agentId = process.env['AGENT_ID']!;
 const mistralURL = 'https://api.mistral.ai/v1/conversations';
 const chatIncomingURL =
   'https://thomsen.in/chat/webapi/entry.cgi?api=SYNO.Chat.External&method=chatbot&version=2&token=';
