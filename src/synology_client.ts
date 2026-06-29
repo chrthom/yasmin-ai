@@ -15,18 +15,18 @@ export class SynologyClient {
       .trim();
   }
 
-  chunkText(str: string, l: number = 1800) {
-    const strs = [];
-    while (str.length > l) {
-      let pos = str.substring(0, l).lastIndexOf('\n');
-      pos = pos <= 0 ? l : pos;
-      strs.push(str.substring(0, pos));
-      let i = str.indexOf('\n', pos) + 1;
-      if (i < pos || i > pos + l) i = pos;
-      str = str.substring(i);
+  chunkText(str: string, maxLength: number = 1800): string[] {
+    const chunks: string[] = [];
+    while (str.length > 0) {
+      // Find the last newline before maxLength
+      let chunkEnd = str.lastIndexOf('\n', maxLength);
+      if (chunkEnd === -1) chunkEnd = maxLength;
+      chunks.push(str.substring(0, chunkEnd));
+      // Skip past the newline we found (or use chunkEnd if no newline)
+      const nextPos = chunkEnd < str.length && str[chunkEnd] === '\n' ? chunkEnd + 1 : chunkEnd;
+      str = str.substring(nextPos);
     }
-    strs.push(str);
-    return strs;
+    return chunks;
   }
 
   async sendAnswersToChat(userId: number, answers: string[]): Promise<void> {

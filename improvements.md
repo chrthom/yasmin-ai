@@ -536,6 +536,6 @@ Use this checklist to track implementation progress:
 - [x] #15: Improve health check endpoint
 - [ ] #9: Add structured logger (pino/winston) - SKIPPED: requires new dependency
 - [ ] #11: Add build pipeline
-- [ ] #14: Improve chunkText function
+- [x] #14: Improve chunkText function
 - [ ] #16: Add OpenAPI/Swagger documentation
 - [ ] #17: Add request IDs and tracing
