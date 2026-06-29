@@ -74,7 +74,9 @@ export class ChatAgent {
       });
 
       if (!response.ok) {
-        console.error(`ERROR Failed to fetch conversations for ${username}: HTTP ${response.status} ${response.statusText}`);
+        console.error(
+          `ERROR Failed to fetch conversations for ${username}: HTTP ${response.status} ${response.statusText}`
+        );
         throw new Error(`Failed to fetch conversations: HTTP ${response.status}`);
       }
 

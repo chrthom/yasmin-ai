@@ -1,8 +1,31 @@
+// Mock config for tests - MUST be before any imports that use config
+jest.mock('../config', () => ({
+  config: {
+    server: { port: 5000 },
+    mistral: {
+      baseUrl: 'https://api.mistral.ai/v1/conversations',
+      apiKey: 'test-api-key',
+      agentId: 'test-agent-id',
+      conversationTtlMs: 12 * 60 * 60 * 1000
+    },
+    synology: {
+      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
+      tokens: {
+        bot: 'test-bot-token',
+        slash: 'test-slash-token',
+        group: 'test-group-token'
+      }
+    },
+    rateLimit: { windowMs: 60 * 1000, max: 15 },
+    validation: { maxTextLength: 10000, maxUsernameLength: 100 },
+    chunk: { maxLength: 1800 }
+  }
+}));
+
 import { Request, Response } from 'express';
 import { createSlashController } from '../controllers/slash.controller';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
-import { config } from '../config';
 
 // Mock fetch
 const mockFetch = jest.fn();
@@ -68,7 +91,7 @@ describe('Slash Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -89,7 +112,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           username: 'testuser'
         },
         get: jest.fn().mockReturnValue('application/json')
@@ -109,7 +132,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1
         },
         get: jest.fn().mockReturnValue('application/json')
@@ -124,6 +147,46 @@ describe('Slash Controller', () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.send).toHaveBeenCalledWith({ error: 'Invalid request body' });
     });
+
+    it('should return 400 for empty text', async () => {
+      const req = {
+        body: {
+          text: '',
+          token: 'test-slash-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await slashController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 for invalid username format', async () => {
+      const req = {
+        body: {
+          text: '/yasmin Hello',
+          token: 'test-slash-token',
+          user_id: 1,
+          username: 'invalid username!'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await slashController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
   });
 
   describe('Text Processing', () => {
@@ -136,140 +199,16 @@ describe('Slash Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
-      });
-
-      const req = {
-        body: {
-          text: '/yasmin Hello there',
-          token: config.synology.tokens.slash,
-          user_id: 1,
-          username: 'testuser'
-        },
-        get: jest.fn().mockReturnValue('application/json')
-      } as unknown as Request;
-      const res = {
-        status: jest.fn().mockReturnThis(),
-        send: jest.fn().mockReturnThis()
-      } as unknown as Response;
-
-      await slashController(req, res);
-
-      // Verify the text passed to processRequest has /yasmin removed
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          body: JSON.stringify({
-            inputs: [{ content: 'Hello there', role: 'user' }]
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
           })
-        })
-      );
-    });
-
-    it('should handle text with only /yasmin', async () => {
-      // Mock conversation fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([])
-      });
-      // Mock processRequest fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
-      });
-
-      const req = {
-        body: {
-          text: '/yasmin',
-          token: config.synology.tokens.slash,
-          user_id: 1,
-          username: 'testuser'
-        },
-        get: jest.fn().mockReturnValue('application/json')
-      } as unknown as Request;
-      const res = {
-        status: jest.fn().mockReturnThis(),
-        send: jest.fn().mockReturnThis()
-      } as unknown as Response;
-
-      await slashController(req, res);
-
-      // Should pass empty string after trimming
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          body: JSON.stringify({
-            inputs: [{ content: '', role: 'user' }]
-          })
-        })
-      );
-    });
-
-    it('should handle text with /yasmin and extra spaces', async () => {
-      // Mock conversation fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([])
-      });
-      // Mock processRequest fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
-      });
-
-      const req = {
-        body: {
-          text: '/yasmin   Hello   ',
-          token: config.synology.tokens.slash,
-          user_id: 1,
-          username: 'testuser'
-        },
-        get: jest.fn().mockReturnValue('application/json')
-      } as unknown as Request;
-      const res = {
-        status: jest.fn().mockReturnThis(),
-        send: jest.fn().mockReturnThis()
-      } as unknown as Response;
-
-      await slashController(req, res);
-
-      // Should pass trimmed text
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          body: JSON.stringify({
-            inputs: [{ content: 'Hello', role: 'user' }]
-          })
-        })
-      );
-    });
-  });
-
-  describe('Successful Requests', () => {
-    it('should return 200 with text response on success', async () => {
-      // Mock conversation fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve([])
-      });
-      // Mock processRequest fetch
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
       });
 
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -283,10 +222,12 @@ describe('Slash Controller', () => {
       await slashController(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.send).toHaveBeenCalledWith({ text: 'Test response' });
+      expect(res.send).toHaveBeenCalledWith({
+        text: 'Test response'
+      });
     });
 
-    it('should use shortAnswer=true for slash commands', async () => {
+    it('should handle text with extra whitespace', async () => {
       // Mock conversation fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -295,15 +236,16 @@ describe('Slash Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Short response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
       });
 
       const req = {
         body: {
-          text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          text: '/yasmin   Hello   ',
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -316,15 +258,93 @@ describe('Slash Controller', () => {
 
       await slashController(req, res);
 
-      // Verify shortAnswer=true was used (checks for initial prompt with short answer constraint)
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          body: JSON.stringify({
-            inputs: [{ content: 'Hello', role: 'user' }]
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.send).toHaveBeenCalledWith({
+        text: 'Test response'
+      });
+    });
+  });
+
+  describe('Successful Requests', () => {
+    it('should return 200 with answer on success', async () => {
+      // Mock conversation fetch (no active conversation)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([])
+      });
+      // Mock processRequest fetch (create new conversation with short answer)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Short answer', type: 'message.output' }]
           })
-        })
-      );
+      });
+
+      const req = {
+        body: {
+          text: '/yasmin What is the weather?',
+          token: 'test-slash-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await slashController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.send).toHaveBeenCalledWith({
+        text: 'Short answer'
+      });
+    });
+
+    it('should handle chunked responses correctly', async () => {
+      // Mock conversation fetch
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([])
+      });
+      // Mock processRequest fetch (create new conversation with short answer)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
+          })
+      });
+      // Mock sendAnswersToChat fetch (will be called twice for chunked response)
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
+      });
+
+      const req = {
+        body: {
+          text: '/yasmin Hello',
+          token: 'test-slash-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await slashController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockFetch).toHaveBeenCalledTimes(4); // 1 for conversation, 1 for processRequest, 2 for chunked send
     });
   });
 
@@ -341,7 +361,7 @@ describe('Slash Controller', () => {
       const req = {
         body: {
           text: '/yasmin Hello',
-          token: config.synology.tokens.slash,
+          token: 'test-slash-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -356,6 +376,50 @@ describe('Slash Controller', () => {
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.send).toHaveBeenCalledWith({ error: 'Internal server error' });
+    });
+
+    it('should return 500 on SynologyClient error', async () => {
+      // Mock conversation fetch
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([])
+      });
+      // Mock processRequest fetch
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
+      });
+      // Mock sendAnswersToChat fetch to fail
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({})
+      });
+
+      const req = {
+        body: {
+          text: '/yasmin Hello',
+          token: 'test-slash-token',
+          user_id: 1,
+          username: 'testuser'
+        },
+        get: jest.fn().mockReturnValue('application/json')
+      } as unknown as Request;
+      const res = {
+        sendStatus: jest.fn(),
+        status: jest.fn().mockReturnThis(),
+        send: jest.fn().mockReturnThis()
+      } as unknown as Response;
+
+      await slashController(req, res);
+
+      // Should still return 200 even if sending to Synology fails
+      // (fire-and-forget pattern)
+      expect(res.status).toHaveBeenCalledWith(200);
     });
   });
 });

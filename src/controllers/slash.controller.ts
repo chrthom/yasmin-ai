@@ -29,7 +29,7 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
     const reqBody = parseResult.data;
     const redactedBody = { ...reqBody, token: '***REDACTED***' };
     logger.debug('Slash Chat called', { body: redactedBody, contentType: req.get('Content-Type') });
-    if (reqBody.token != config.synology.tokens.slash) {
+    if (!reqBody.token || reqBody.token != config.synology.tokens.slash) {
       logger.warn('Slash Chat request has invalid authorization token');
       res.sendStatus(401);
       return;
@@ -40,6 +40,13 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
       res.status(200).send({
         text: answer
       });
+      // Send to Synology in fire-and-forget pattern
+      try {
+        await synologyClient.sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse());
+      } catch (error) {
+        // Ignore errors when sending to Synology
+        logger.error('Failed to send slash response to Synology', { error });
+      }
     } catch (error) {
       logger.error('Error in slash chat processing', { error });
       res.status(500).send({ error: 'Internal server error' });

@@ -41,15 +41,15 @@ src/
 
 ## Development Commands
 
-| Command | Description |
-|---------|-------------|
-| `npm start` or `npm run s` | Start development server with nodemon |
-| `npm test` | Run all Jest tests |
-| `npm run test -- --testPathPattern=<file>` | Run a single test file |
-| `npm run test -- --testNamePattern=<name>` | Run tests matching a name pattern |
-| `npm run lint` | Run ESLint on source files |
-| `npm run format` | Format all files with Prettier |
-| `npm run check` | Run both format and lint |
+| Command                                    | Description                           |
+| ------------------------------------------ | ------------------------------------- |
+| `npm start` or `npm run s`                 | Start development server with nodemon |
+| `npm test`                                 | Run all Jest tests                    |
+| `npm run test -- --testPathPattern=<file>` | Run a single test file                |
+| `npm run test -- --testNamePattern=<name>` | Run tests matching a name pattern     |
+| `npm run lint`                             | Run ESLint on source files            |
+| `npm run format`                           | Format all files with Prettier        |
+| `npm run check`                            | Run both format and lint              |
 
 ## Testing
 
@@ -68,20 +68,21 @@ src/
 ## Environment Variables
 
 Required for runtime:
+
 - `MISTRAL_API_KEY` - Mistral AI API authentication
 - `CHAT_TOKEN_BOT` - Token for `/chat/bot` endpoint
-- `CHAT_TOKEN_SLASH` - Token for `/chat/slash` endpoint  
+- `CHAT_TOKEN_SLASH` - Token for `/chat/slash` endpoint
 - `CHAT_TOKEN_GROUP` - Token for `/chat/group` endpoint
 - `AGENT_ID` - Mistral agent identifier
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/chat/bot` | handles bot chat messages (async response via webhook) |
-| POST | `/chat/slash` | handles `/yasmin` slash commands ( synchronous response) |
-| POST | `/chat/group` | handles group chat messages (synchronous response) |
-| GET | `/test` | Health check endpoint |
+| Method | Endpoint      | Description                                              |
+| ------ | ------------- | -------------------------------------------------------- |
+| POST   | `/chat/bot`   | handles bot chat messages (async response via webhook)   |
+| POST   | `/chat/slash` | handles `/yasmin` slash commands ( synchronous response) |
+| POST   | `/chat/group` | handles group chat messages (synchronous response)       |
+| GET    | `/test`       | Health check endpoint                                    |
 
 ## Code Style
 

@@ -7,19 +7,20 @@ import { randomUUID } from 'crypto';
  */
 export function requestTracingMiddleware(req: Request, res: Response, next: NextFunction): void {
   const requestId = randomUUID();
-  
+
   // Attach request ID to the request object for use in controllers and services
-  (req as RequestWithRequestId).requestId = requestId;
-  
+  const requestWithId = req as RequestWithRequestId;
+  requestWithId.requestId = requestId;
+
   // Attach request ID to res.locals for use in response handlers
-  res.locals.requestId = requestId;
-  
+  res.locals['requestId'] = requestId;
+
   // Add request ID to response headers for client correlation
   res.set('X-Request-ID', requestId);
-  
+
   // Store start time for potential duration tracking
-  (req as RequestWithRequestId).startTime = Date.now();
-  
+  requestWithId.startTime = Date.now();
+
   next();
 }
 
@@ -85,10 +86,12 @@ export class RequestLogger {
   error(message: string | Error, meta?: object): void {
     const errorMessage = message instanceof Error ? message.message : message;
     const errorStack = message instanceof Error ? message.stack : undefined;
-    console.error(this.formatMessage('ERROR', errorMessage, {
-      ...meta,
-      stack: errorStack
-    }));
+    console.error(
+      this.formatMessage('ERROR', errorMessage, {
+        ...meta,
+        stack: errorStack
+      })
+    );
   }
 }
 

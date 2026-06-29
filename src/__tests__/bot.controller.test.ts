@@ -1,8 +1,31 @@
+// Mock config for tests - MUST be before any imports that use config
+jest.mock('../config', () => ({
+  config: {
+    server: { port: 5000 },
+    mistral: {
+      baseUrl: 'https://api.mistral.ai/v1/conversations',
+      apiKey: 'test-api-key',
+      agentId: 'test-agent-id',
+      conversationTtlMs: 12 * 60 * 60 * 1000
+    },
+    synology: {
+      chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
+      tokens: {
+        bot: 'test-bot-token',
+        slash: 'test-slash-token',
+        group: 'test-group-token'
+      }
+    },
+    rateLimit: { windowMs: 60 * 1000, max: 15 },
+    validation: { maxTextLength: 10000, maxUsernameLength: 100 },
+    chunk: { maxLength: 1800 }
+  }
+}));
+
 import { Request, Response } from 'express';
 import { createBotController } from '../controllers/bot.controller';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
-import { config } from '../config';
 
 // Mock fetch
 const mockFetch = jest.fn();
@@ -68,7 +91,7 @@ describe('Bot Controller', () => {
     it('should return 400 for invalid request body - missing text', async () => {
       const req = {
         body: {
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -89,7 +112,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           username: 'testuser'
         },
         get: jest.fn().mockReturnValue('application/json')
@@ -109,7 +132,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1
         },
         get: jest.fn().mockReturnValue('application/json')
@@ -129,7 +152,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: '',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -149,7 +172,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'invalid username!'
         },
@@ -176,9 +199,10 @@ describe('Bot Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch
       mockFetch.mockResolvedValueOnce({
@@ -189,7 +213,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -212,12 +236,13 @@ describe('Bot Controller', () => {
         ok: true,
         json: () => Promise.resolve([])
       });
-      // Mock processRequest fetch
+      // Mock processRequest fetch (create new conversation with short answer)
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'A'.repeat(2000), type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch (will be called twice for chunked response)
       mockFetch.mockResolvedValueOnce({
@@ -232,7 +257,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -264,7 +289,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
         },
@@ -290,9 +315,10 @@ describe('Bot Controller', () => {
       // Mock processRequest fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve({
-          outputs: [{ content: 'Test response', type: 'message.output' }]
-        })
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Test response', type: 'message.output' }]
+          })
       });
       // Mock sendAnswersToChat fetch to fail
       mockFetch.mockResolvedValueOnce({
@@ -305,7 +331,7 @@ describe('Bot Controller', () => {
       const req = {
         body: {
           text: 'Hello',
-          token: config.synology.tokens.bot,
+          token: 'test-bot-token',
           user_id: 1,
           username: 'testuser'
         },

@@ -22,7 +22,7 @@ const limiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.max,
   message: 'Too many requests, please try again later.',
-  headers: true,
+  headers: true
 });
 
 const app = express();
@@ -33,10 +33,14 @@ app.use(requestTracingMiddleware);
 app.use(limiter);
 
 // API Documentation
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec, {
-  customCss: '.swagger-ui .topbar { display: none }',
-  customSiteTitle: 'Yasmin AI API Documentation',
-}));
+app.use(
+  '/api-docs',
+  swaggerUi.serve,
+  swaggerUi.setup(openApiSpec, {
+    customCss: '.swagger-ui .topbar { display: none }',
+    customSiteTitle: 'Yasmin AI API Documentation'
+  })
+);
 
 // Controllers
 const botController = createBotController(chatAgent, synologyClient);
