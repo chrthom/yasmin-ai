@@ -23,15 +23,16 @@ export class ContextService {
     loadedTitles: Set<string> | string[]
   ): Promise<ContextRetrievalResult> {
     const loadedSet = loadedTitles instanceof Set ? loadedTitles : new Set(loadedTitles);
-    const titles = await dbProxy.getAllTitles();
+    const entries = await dbProxy.getAllEntries();
+    const titles = entries.map(e => e.title);
 
     // 1. Mandatorily match sender background (case-insensitive)
     const userBackgroundTitle = `background on ${username.toLowerCase()}`;
     const matchedUserTitle = titles.find(t => t.toLowerCase() === userBackgroundTitle);
 
-    // 2. Query matching using TF-IDF on the other titles
-    const otherTitles = titles.filter(t => t.toLowerCase() !== userBackgroundTitle);
-    const tfidfMatches = tfIdfService.matchTitles(prompt, otherTitles, 2);
+    // 2. Query matching using TF-IDF on title + content for the other entries
+    const otherEntries = entries.filter(e => e.title.toLowerCase() !== userBackgroundTitle);
+    const tfidfMatches = tfIdfService.matchDocuments(prompt, otherEntries, 2);
 
     // Identify candidate titles for injection
     const candidateTitles: string[] = [];

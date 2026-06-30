@@ -99,7 +99,7 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
     token: config.synology.tokens.slash,
     responseStatus: 200,
     stripPrefix: '/yasmin',
-    sendToSynology: true
+    sendToSynology: false
   });
 }
 
@@ -107,6 +107,6 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.group,
     responseStatus: 200,
-    sendToSynology: true
+    sendToSynology: false
   });
 }

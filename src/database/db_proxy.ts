@@ -1,5 +1,5 @@
 /* eslint-disable quotes */
-import { getAllTitlesFromDb, getContentByTitleFromDb } from './models/context.model';
+import { getAllEntriesFromDb, getAllTitlesFromDb, getContentByTitleFromDb } from './models/context.model';
 
 export interface DbRecord {
   title: string;
@@ -54,6 +54,20 @@ export class DbProxy {
 
   constructor(useRealDb: boolean = false) {
     this.useRealDb = useRealDb;
+  }
+
+  /**
+   * Eagerly loads all entries (title + content) from the database/proxy
+   */
+  async getAllEntries(): Promise<DbRecord[]> {
+    if (this.useRealDb) {
+      try {
+        return await getAllEntriesFromDb();
+      } catch (error) {
+        console.error('Error fetching entries from real DB, falling back to proxy:', error);
+      }
+    }
+    return PROXY_DATA;
   }
 
   /**

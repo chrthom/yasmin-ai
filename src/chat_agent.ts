@@ -12,6 +12,7 @@ interface MistralConversationResponseOutput {
 }
 
 interface MistralConversationResponse {
+  id?: string;
   outputs: MistralConversationResponseOutput[];
 }
 
@@ -130,8 +131,8 @@ export class ChatAgent {
         promptContent = `${formattedContext}\n\n${userText}`;
       }
 
-      // Add short answer constraint on initial prompt if requested
-      if (!conversationId && shortAnswer) {
+      // Add short answer constraint if requested
+      if (shortAnswer) {
         promptContent = `${promptContent}\n\nYour answer must be shorter than 1500 characters.`;
       }
 
@@ -167,9 +168,17 @@ export class ChatAgent {
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = <MistralConversationResponse>await response.json();
       console.log(`DEBUG Received raw answer from mistral: ${JSON.stringify(data)}`);
-      return (<MistralConversationResponse>data).outputs;
+
+      // Cache the new conversation ID so next turn skips the list re-fetch
+      if (!conversationId && data.id) {
+        cached.conversationId = data.id;
+        cached.expiresAt = Date.now() + this.conversationTtlMs;
+        console.log(`DEBUG Cached new conversation ${data.id} for ${username}`);
+      }
+
+      return data.outputs;
     } catch (error) {
       console.error(`ERROR Failed to process request for ${username}: ${error}`);
       throw error;
