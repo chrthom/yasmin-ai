@@ -6,6 +6,19 @@ export interface ContextEntry {
 }
 
 /**
+ * Retrieves all entries (title + content) from the database
+ */
+export async function getAllEntriesFromDb(): Promise<ContextEntry[]> {
+  try {
+    const [rows]: any = await executeQuery('SELECT title, content FROM context_entries');
+    return rows.map((row: any) => ({ title: row.title, content: row.content }));
+  } catch (error) {
+    console.error('Error retrieving all entries:', error);
+    return [];
+  }
+}
+
+/**
  * Retrieves all titles from the database
  */
 export async function getAllTitlesFromDb(): Promise<string[]> {

@@ -305,10 +305,11 @@ describe('ChatAgent', () => {
 
       await chatAgent.processRequest('Hello', 'testuser', true);
 
-      // Check that the request body contains the user text directly (not the full prompt)
+      // Check that the short answer constraint is appended regardless of conversation state
       const call = mockFetch.mock.calls[0];
       const body = JSON.parse(call[1].body);
-      expect(body.inputs[0].content).toBe('Hello');
+      expect(body.inputs[0].content).toContain('Hello');
+      expect(body.inputs[0].content).toContain('Your answer must be shorter than 1500 characters.');
     });
 
     it('should handle network errors', async () => {

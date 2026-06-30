@@ -152,6 +152,72 @@ export class TfIdfService {
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
   }
+
+  /**
+   * Matches a prompt against documents using TF-IDF on both title and content fields,
+   * combining scores with configurable weights (title weighted higher by default).
+   * @param prompt The incoming user prompt/message
+   * @param docs List of documents with title and content
+   * @param topK Number of top matching documents to return
+   * @param titleWeight Weight for title similarity (0–1)
+   * @param contentWeight Weight for content similarity (0–1)
+   * @returns Array of matched titles sorted by combined score descending
+   */
+  public matchDocuments(
+    prompt: string,
+    docs: Array<{ title: string; content: string }>,
+    topK: number = 2,
+    titleWeight: number = 0.7,
+    contentWeight: number = 0.3
+  ): Array<{ title: string; score: number }> {
+    if (docs.length === 0) return [];
+
+    const queryTokens = tokenize(prompt);
+    if (queryTokens.length === 0) {
+      return docs.map(doc => ({ title: doc.title, score: 0 }));
+    }
+
+    const titleScores = this.matchTitles(
+      prompt,
+      docs.map(d => d.title),
+      docs.length
+    );
+    const titleScoreMap = new Map(titleScores.map(r => [r.title, r.score]));
+
+    // Build content corpus and score
+    const contentTexts = docs.map(d => d.content);
+    const contentTokens = contentTexts.map(c => tokenize(c));
+    const contentVocabulary = new Set<string>();
+    for (const tokens of contentTokens) {
+      for (const token of tokens) contentVocabulary.add(token);
+    }
+    for (const token of queryTokens) contentVocabulary.add(token);
+
+    const contentIdf = this.getInverseDocumentFrequencies(contentTokens, contentVocabulary);
+
+    const queryTf = this.getTermFrequencies(queryTokens);
+    const queryVector = new Map<string, number>();
+    for (const term of contentVocabulary) {
+      queryVector.set(term, (queryTf.get(term) || 0) * (contentIdf.get(term) || 0));
+    }
+
+    const results = docs.map((doc, index) => {
+      const docTf = this.getTermFrequencies(contentTokens[index]);
+      const docVector = new Map<string, number>();
+      for (const term of contentVocabulary) {
+        docVector.set(term, (docTf.get(term) || 0) * (contentIdf.get(term) || 0));
+      }
+      const contentSim = this.cosineSimilarity(queryVector, docVector, contentVocabulary);
+      const titleSim = titleScoreMap.get(doc.title) || 0;
+      const score = titleWeight * titleSim + contentWeight * contentSim;
+      return { title: doc.title, score };
+    });
+
+    return results
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
 }
 
 export const tfIdfService = new TfIdfService();
