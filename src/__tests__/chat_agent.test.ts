@@ -26,27 +26,44 @@ describe('ChatAgent', () => {
     });
   });
 
-  describe('buildInitialPrompt', () => {
-    it('should build correct prompt for normal conversation', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.buildInitialPrompt('Hello there', 'christopher', false);
-      expect(result).toContain('You are talking to Christopher');
-      expect(result).toContain('who is 36 years old');
-      expect(result).toContain('You are the daughter of Christopher');
-      expect(result).toContain('Hello there');
+  describe('processRequest prompt builder', () => {
+    it('should build correct prompt with prepended XML context for normal conversation', async () => {
+      // Mock getActiveConversationId to return undefined (new conversation)
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ outputs: [] })
+      });
+
+      await chatAgent.processRequest('Hello there', 'christopher', false);
+
+      const fetchArgs = mockFetch.mock.calls[0];
+      const body = JSON.parse(fetchArgs[1].body);
+      const promptContent = body.inputs[0].content;
+
+      expect(promptContent).toContain('<context_entry title="Background on christopher">');
+      expect(promptContent).toContain('Christopher is 36 years old and is the user of the AI assistant.');
+      expect(promptContent).toContain('Hello there');
     });
 
-    it('should include short answer constraint when requested', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.buildInitialPrompt('Hello', 'anjali', true);
-      expect(result).toContain('Your answer must be shorter than 1500 characters');
-    });
+    it('should include short answer constraint when requested for new conversation', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
 
-    it('should handle unknown user', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.buildInitialPrompt('Hello', 'unknown', false);
-      expect(result).toContain('who is 30 years old');
-      expect(result).toContain('You are the distant relative of Unknown');
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ outputs: [] })
+      });
+
+      await chatAgent.processRequest('Hello', 'anjali', true);
+
+      const fetchArgs = mockFetch.mock.calls[0];
+      const body = JSON.parse(fetchArgs[1].body);
+      const promptContent = body.inputs[0].content;
+
+      expect(promptContent).toContain('Your answer must be shorter than 1500 characters');
     });
   });
 

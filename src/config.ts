@@ -1,4 +1,4 @@
-import process from 'node:process';
+import * as process from 'node:process';
 
 export const config = {
   server: {
@@ -17,6 +17,13 @@ export const config = {
       slash: process.env['CHAT_TOKEN_SLASH']!,
       group: process.env['CHAT_TOKEN_GROUP']!
     }
+  },
+  database: {
+    host: process.env['DB_HOST'] || 'localhost',
+    port: parseInt(process.env['DB_PORT'] || '3306', 10),
+    user: process.env['DB_USER']!,
+    password: process.env['DB_PASSWORD']!,
+    name: process.env['DB_NAME']!
   },
   rateLimit: {
     windowMs: 60 * 1000,
@@ -38,7 +45,11 @@ export function validateEnv(): void {
     'CHAT_TOKEN_BOT',
     'CHAT_TOKEN_SLASH',
     'CHAT_TOKEN_GROUP',
-    'AGENT_ID'
+    'AGENT_ID',
+    'DB_HOST',
+    'DB_USER',
+    'DB_PASSWORD',
+    'DB_NAME'
   ] as const;
 
   requiredEnv.forEach(key => {

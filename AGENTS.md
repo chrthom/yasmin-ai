@@ -13,50 +13,69 @@ This is a TypeScript/Node.js Express application that provides a chatbot interfa
 ### Source Structure
 
 ```
+database/
+└── schema.sql          # Database schema for the 2-column context model
+scripts/
+└── manage-context.ts   # CLI administration utility for context CRUD
 src/
 ├── app.ts              # Express server entry point with route handlers
-├── chat_agent.ts       # Mistral AI API client - manages conversations and prompts
+├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
-├── knowledge.ts        # Domain knowledge - family relations and ages for prompt context
+├── database/
+│   ├── connection.ts   # Connection pooling and execution with retry logic
+│   ├── db_proxy.ts     # Database proxy loaded with mock background entries
+│   └── models/
+│       └── context.model.ts  # Context model query methods
+├── services/
+│   ├── tfidf.service.ts      # Pure TF-IDF tokenization and similarity calculation
+│   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
 └── __tests__/
     ├── app.test.ts
     ├── chat_agent.test.ts
     ├── synology_client.test.ts
-    └── knowledge.test.ts
+    ├── database.test.ts
+    └── tfidf.test.ts
 ```
 
 ### Data Flow
 
 1. **Incoming Request** → Synology Chat sends a webhook to `/chat/bot`, `/chat/slash`, or `/chat/group`
 2. **Authentication** → Each endpoint validates its respective token (`CHAT_TOKEN_BOT`, `CHAT_TOKEN_SLASH`, `CHAT_TOKEN_GROUP`)
-3. **Processing** → `ChatAgent` builds context-aware prompts using `Knowledge` (family relations, ages), calls Mistral API, manages conversation state (12-hour validity)
+3. **Processing & Matching** → `ChatAgent` invokes `ContextService` on _every turn_ of the conversation.
+   - Computes TF-IDF similarity between prompt and eagerly loaded document titles.
+   - Mandatorily fetches the sender's background (e.g. `Background on zara`).
+   - Filters out already loaded titles using the session's active conversation cache.
+   - Wraps newly loaded context pieces in structured XML tags (`<context_entry title="...">...</context_entry>`) and prepends them to the prompt.
+   - Calls the Mistral API and manages 12-hour session state.
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
 
-### Key Classes
+### Key Classes & Services
 
-- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Handles conversation lifecycle (create/new), prompt construction with personalization, and response parsing (multipart text extraction). Uses conversation ID cache with 12-hour TTL.
-- **`SynologyClient`** (`src/synology_client.ts`): Outbound message delivery. Formats responses for Synology Chat by removing markdown, chunks messages at newlines or 1800 characters, and sends via recursive fetch calls.
-- **`Knowledge`** (`src/knowledge.ts`): Static knowledge base mapping usernames to family relations and ages. Used for prompt personalization.
+- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, and formats/prepends new context turn-by-turn.
+- **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, executing TF-IDF matches, filtering out duplicates, and formatting them into XML.
+- **`TfIdfService`** (`src/services/tfidf.service.ts`): Pure calculations including term frequency (TF), Inverse Document Frequency (IDF), and cosine similarity between user prompts and document titles.
+- **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 
 ## Development Commands
 
-| Command                                    | Description                           |
-| ------------------------------------------ | ------------------------------------- |
-| `npm start` or `npm run s`                 | Start development server with nodemon |
-| `npm test`                                 | Run all Jest tests                    |
-| `npm run test -- --testPathPattern=<file>` | Run a single test file                |
-| `npm run test -- --testNamePattern=<name>` | Run tests matching a name pattern     |
-| `npm run lint`                             | Run ESLint on source files            |
-| `npm run format`                           | Format all files with Prettier        |
-| `npm run check`                            | Run both format and lint              |
+| Command                                    | Description                                           |
+| ------------------------------------------ | ----------------------------------------------------- |
+| `npm start` or `npm run s`                 | Start development server with nodemon                 |
+| `npm test`                                 | Run all Jest tests                                    |
+| `npm run test -- --testPathPattern=<file>` | Run a single test file                                |
+| `npm run test -- --testNamePattern=<name>` | Run tests matching a name pattern                     |
+| `npm run lint`                             | Run ESLint on source files                            |
+| `npm run format`                           | Format all files with Prettier                        |
+| `npm run check`                            | Run both format and lint                              |
+| `npm run manage-context <command>`         | Run context administration commands (list, create...) |
 
 ## Testing
 
 - Tests use Jest with `ts-jest` preset
 - `fetch` is mocked globally for `ChatAgent` tests
 - Test files follow pattern `src/__tests__/<module>.test.ts`
-- Code coverage includes: prompt building, conversation management, response parsing, markdown stripping, text chunking
+- Code coverage includes: TF-IDF similarity, XML context injection, connection pool retry logic, conversation management, response parsing, markdown stripping, text chunking
 
 ## Build Configuration
 
@@ -74,6 +93,10 @@ Required for runtime:
 - `CHAT_TOKEN_SLASH` - Token for `/chat/slash` endpoint
 - `CHAT_TOKEN_GROUP` - Token for `/chat/group` endpoint
 - `AGENT_ID` - Mistral agent identifier
+- `DB_HOST` - Database host
+- `DB_USER` - Database user
+- `DB_PASSWORD` - Database password
+- `DB_NAME` - Database name
 
 ## API Endpoints
 
