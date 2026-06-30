@@ -21,9 +21,9 @@ export const config = {
   database: {
     host: process.env['DB_HOST'] || 'localhost',
     port: parseInt(process.env['DB_PORT'] || '3306', 10),
-    user: process.env['DB_USER']!,
-    password: process.env['DB_PASSWORD']!,
-    name: process.env['DB_NAME']!
+    user: process.env['DB_USER'] || '',
+    password: process.env['DB_PASSWORD'] || '',
+    name: process.env['DB_NAME'] || ''
   },
   rateLimit: {
     windowMs: 60 * 1000,
@@ -45,11 +45,7 @@ export function validateEnv(): void {
     'CHAT_TOKEN_BOT',
     'CHAT_TOKEN_SLASH',
     'CHAT_TOKEN_GROUP',
-    'AGENT_ID',
-    'DB_HOST',
-    'DB_USER',
-    'DB_PASSWORD',
-    'DB_NAME'
+    'AGENT_ID'
   ] as const;
 
   requiredEnv.forEach(key => {
@@ -58,4 +54,18 @@ export function validateEnv(): void {
       process.exit(1);
     }
   });
+
+  // Database environment variables are only required if running the CLI context manager or if real DB is explicitly enabled
+  const isCli = process.argv[1] && process.argv[1].includes('manage-context');
+  const isRealDbEnabled = process.env['USE_REAL_DB'] === 'true';
+
+  if (isCli || isRealDbEnabled) {
+    const requiredDbEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'] as const;
+    requiredDbEnv.forEach(key => {
+      if (!process.env[key]) {
+        console.error(`ERROR: Missing required database environment variable: ${key}`);
+        process.exit(1);
+      }
+    });
+  }
 }
