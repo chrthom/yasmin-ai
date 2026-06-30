@@ -18,31 +18,33 @@ export class SynologyClient {
   }
 
   chunkText(str: string, maxLength: number = config.chunk.maxLength): string[] {
+    if (str.length <= maxLength) return [str];
+
     const chunks: string[] = [];
-    let remaining = str;
+    let pos = 0;
 
-    while (remaining.length > 0) {
-      let chunkEnd = Math.min(maxLength, remaining.length);
-      // Try to break at newline if possible
-      const lastNewline = remaining.lastIndexOf('\n', chunkEnd);
-      if (lastNewline > 0) chunkEnd = lastNewline;
+    while (pos < str.length) {
+      const chunk = str.substring(pos, pos + maxLength);
+      const lastNewline = chunk.lastIndexOf('\n');
+      const actualEnd = lastNewline > 0 ? lastNewline : chunk.length;
 
-      chunks.push(remaining.substring(0, chunkEnd));
-      remaining = remaining.substring(chunkEnd + (remaining[chunkEnd] === '\n' ? 1 : 0));
+      chunks.push(chunk.substring(0, actualEnd));
+      pos += actualEnd + (str[pos + actualEnd] === '\n' ? 1 : 0);
     }
+
     return chunks;
   }
 
   async sendAnswersToChat(userId: number, answers: string[]): Promise<void> {
-    const answersCopy = [...answers];
     const url = new URL(this.baseUrl);
     url.searchParams.append('api', 'SYNO.Chat.External');
     url.searchParams.append('method', 'chatbot');
     url.searchParams.append('version', '2');
     url.searchParams.append('token', this.token);
 
-    while (answersCopy.length > 0) {
-      const message = answersCopy.pop();
+    // Process messages in reverse order (LIFO) to maintain existing behavior
+    for (let i = answers.length - 1; i >= 0; i--) {
+      const message = answers[i];
       if (!message) continue;
 
       try {
