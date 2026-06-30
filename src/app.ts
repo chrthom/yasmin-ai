@@ -12,8 +12,12 @@ import {
 } from './controllers/chat.controller';
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
+import { getDatabasePool } from './database/connection';
 
 validateEnv();
+
+// Initialize database pool
+getDatabasePool();
 
 const chatIncomingBaseURL = config.synology.chatIncomingUrl;
 

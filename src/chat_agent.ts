@@ -1,4 +1,4 @@
-import { Knowledge } from './knowledge';
+import { contextService } from './services/context.service';
 import { config } from './config';
 
 interface MistralConversationResponseOutputPart {
@@ -25,13 +25,13 @@ interface MistralConversationMeta {
 interface CachedConversation {
   conversationId: string;
   expiresAt: number;
+  loadedContextTitles: string[];
 }
 
 export class ChatAgent {
   private url: string;
   private apiKey: string;
   private agentId: string;
-  private knowledge = new Knowledge();
   private conversationCache = new Map<string, CachedConversation>();
   private conversationTtlMs = config.mistral.conversationTtlMs;
 
@@ -45,22 +45,10 @@ export class ChatAgent {
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  private buildInitialPrompt(userText: string, username: string, shortAnswer: boolean): string {
-    const capitalizedUsername = this.capitalize(username);
-    return `
-      You are talking to ${capitalizedUsername}, who is ${this.knowledge.getAgeOf(username)} years old.
-      You are the ${this.knowledge.getFamilyRelationTo(username)} of ${capitalizedUsername}.
-      ${shortAnswer ? 'Your answer must be shorter than 1500 characters' : ''}.
-
-      Request from ${capitalizedUsername}:
-      ${userText}
-    `;
-  }
-
   private async getActiveConversationId(username: string): Promise<string | undefined> {
     // Check cache first
     const cached = this.conversationCache.get(username);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (cached && cached.expiresAt > Date.now() && cached.conversationId) {
       console.log(`DEBUG Cached conversation ${cached.conversationId} for ${username}`);
       return cached.conversationId;
     }
@@ -91,11 +79,13 @@ export class ChatAgent {
         .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at))
         .pop()?.id;
 
-      // Cache the result if found
+      // Cache the result if found, preserving any already loaded context titles
       if (conversationId) {
+        const loadedTitles = cached ? cached.loadedContextTitles : [];
         this.conversationCache.set(username, {
           conversationId,
-          expiresAt: Date.now() + this.conversationTtlMs
+          expiresAt: Date.now() + this.conversationTtlMs,
+          loadedContextTitles: loadedTitles
         });
         console.log(`DEBUG Cached conversation ${conversationId} for ${username}`);
       }
@@ -115,13 +105,48 @@ export class ChatAgent {
     try {
       const conversationId = await this.getActiveConversationId(username);
       console.log(`DEBUG Existing conversation ${conversationId}`);
+
+      // Get or initialize cached conversation for this user
+      let cached = this.conversationCache.get(username);
+      if (!cached) {
+        cached = {
+          conversationId: conversationId || '',
+          expiresAt: Date.now() + this.conversationTtlMs,
+          loadedContextTitles: []
+        };
+        this.conversationCache.set(username, cached);
+      }
+
+      // Query ContextService to find newly relevant context
+      const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
+        userText,
+        username,
+        cached.loadedContextTitles
+      );
+
+      // Prepend dynamic XML context to user text if present
+      let promptContent = userText;
+      if (formattedContext) {
+        promptContent = `${formattedContext}\n\n${userText}`;
+      }
+
+      // Add short answer constraint on initial prompt if requested
+      if (!conversationId && shortAnswer) {
+        promptContent = `${promptContent}\n\nYour answer must be shorter than 1500 characters.`;
+      }
+
+      // Track newly loaded titles to avoid duplicates on future turns
+      if (newlyLoadedTitles.length > 0) {
+        cached.loadedContextTitles.push(...newlyLoadedTitles);
+      }
+
       const body = {
         agent_id: conversationId ? undefined : this.agentId,
         name: conversationId ? undefined : username,
         inputs: [
           {
             role: 'user',
-            content: conversationId ? userText : this.buildInitialPrompt(userText, username, shortAnswer)
+            content: promptContent
           }
         ]
       };

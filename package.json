@@ -11,7 +11,8 @@
     "test": "npx jest",
     "lint": "npx eslint src/*",
     "format": "npx prettier . --write",
-    "check": "npm run format; npm run lint"
+    "check": "npm run format; npm run lint",
+    "manage-context": "npx ts-node scripts/manage-context.ts"
   },
   "private": true,
   "author": "Christopher Thomsen",
@@ -19,6 +20,7 @@
     "cors": "^2.0.0",
     "express": "^4.18.0",
     "express-rate-limit": "^7.0.0",
+    "mysql2": "^3.22.5",
     "nodemon": "^3.0.0",
     "swagger-ui-express": "^5.0.0",
     "zod": "^3.22.0"
