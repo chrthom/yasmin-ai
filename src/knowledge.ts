@@ -24,10 +24,10 @@ export class Knowledge {
   ]);
 
   getFamilyRelationTo(username: string): string {
-    return this.familyRelations.get(username) ?? 'distant relative';
+    return this.familyRelations.get(username) || 'distant relative';
   }
 
   getAgeOf(username: string): number {
-    return this.userAges.get(username) ?? 30;
+    return this.userAges.get(username) || 30;
   }
 }
