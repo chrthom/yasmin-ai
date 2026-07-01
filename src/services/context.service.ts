@@ -1,5 +1,4 @@
 import { dbProxy } from '../database/db_proxy';
-import { tfIdfService } from './tfidf.service';
 
 export interface ContextRetrievalResult {
   formattedContext: string;
@@ -23,36 +22,33 @@ export class ContextService {
     loadedTitles: Set<string> | string[]
   ): Promise<ContextRetrievalResult> {
     const loadedSet = loadedTitles instanceof Set ? loadedTitles : new Set(loadedTitles);
-    const titles = await dbProxy.getAllTitles();
+    const entries = await dbProxy.getAllEntries();
+    const titles = entries.map(e => e.title);
 
     // 1. Mandatorily match sender background (case-insensitive)
     const userBackgroundTitle = `background on ${username.toLowerCase()}`;
     const matchedUserTitle = titles.find(t => t.toLowerCase() === userBackgroundTitle);
 
-    // 2. Query matching using TF-IDF on the other titles
-    const otherTitles = titles.filter(t => t.toLowerCase() !== userBackgroundTitle);
-    const tfidfMatches = tfIdfService.matchTitles(prompt, otherTitles, 2);
+    // Mandatorily match Yasmin's own background (case-insensitive)
+    const yasminBackgroundTitle = 'background on yasmin';
+    const matchedYasminTitle = titles.find(t => t.toLowerCase() === yasminBackgroundTitle);
+
+    // Mandatorily match Family relations background (case-insensitive)
+    const familyBackgroundTitle = 'background on the family';
+    const matchedFamilyTitle = titles.find(t => t.toLowerCase() === familyBackgroundTitle);
 
     // Identify candidate titles for injection
     const candidateTitles: string[] = [];
+    if (matchedYasminTitle && !loadedSet.has(matchedYasminTitle)) {
+      candidateTitles.push(matchedYasminTitle);
+    }
+
+    if (matchedFamilyTitle && !loadedSet.has(matchedFamilyTitle)) {
+      candidateTitles.push(matchedFamilyTitle);
+    }
+
     if (matchedUserTitle && !loadedSet.has(matchedUserTitle)) {
       candidateTitles.push(matchedUserTitle);
-    }
-
-    for (const match of tfidfMatches) {
-      if (!loadedSet.has(match.title)) {
-        candidateTitles.push(match.title);
-      }
-    }
-
-    // Fallback: if no matches and sender's background is not loaded yet, try fuzzy match on username
-    if (candidateTitles.length === 0 && !loadedSet.has(userBackgroundTitle)) {
-      const fallbackTitle = titles.find(
-        t => t.toLowerCase().includes(username.toLowerCase()) && !loadedSet.has(t)
-      );
-      if (fallbackTitle) {
-        candidateTitles.push(fallbackTitle);
-      }
     }
 
     // 3. Load actual contents and format as clean XML
