@@ -1,4 +1,3 @@
-/* eslint-disable quotes */
 import { getAllEntriesFromDb, getAllTitlesFromDb, getContentByTitleFromDb } from './models/context.model';
 
 export interface DbRecord {
@@ -9,40 +8,50 @@ export interface DbRecord {
 // In-memory representation of the 2-column MariaDB table (title, content)
 export const PROXY_DATA: DbRecord[] = [
   {
-    title: 'Background on anjali',
-    content: "Anjali is 36 years old and is Christopher's daughter."
+    title: 'Background on Anjali',
+    content: "Anjali is Yasmin's mother. Her birthday was 25.01.1989."
   },
   {
-    title: 'Background on christopher',
-    content: 'Christopher is 36 years old and is the user of the AI assistant.'
+    title: 'Background on Christopher',
+    content: "Christopher is Yasmin's father. His birthday was 03.12.1988."
   },
   {
-    title: 'Background on zara',
-    content: "Zara is 13 years old and is Christopher's younger sister."
+    title: 'Background on Zara',
+    content: "Zara is Yasmin's older sister. Her birthday was 14.02.2012."
   },
   {
-    title: 'Background on samira',
-    content: "Samira is 5 years old and is Christopher's older sister."
+    title: 'Background on Samira',
+    content: "Samira is Yasmin's younger sister. Her birthday was 07.04.2020."
   },
   {
-    title: 'Background on ellena',
-    content: "Ellena is 2 years old and is Christopher's older sister."
+    title: 'Background on Ellena',
+    content: "Ellena is Yasmin's youngest sister. Her birthday was 15.08.2022"
   },
   {
-    title: 'Background on helge',
-    content: "Helge is 57 years old and is Christopher's granddaughter."
+    title: 'Background on Helge',
+    content: "Helge is Yasmin's grandfather."
   },
   {
-    title: 'Background on christine',
-    content: "Christine is 56 years old and is Christopher's granddaughter."
+    title: 'Background on Christine',
+    content: "Christine is Yasmin's grandmother."
   },
   {
-    title: 'Background on lennard',
-    content: "Lennard is 34 years old and is Christopher's niece."
+    title: 'Background on Lennard',
+    content: "Lennard is Yasmin's uncle."
   },
   {
-    title: 'Background on jonas',
-    content: "Jonas is 29 years old and is Christopher's niece."
+    title: 'Background on Jonas',
+    content: "Jonas is Yasmin's uncle."
+  },
+  {
+    title: 'Background on Yasmin',
+    content:
+      'Your name is Yasmin, you are 10 years old adolescent teenager and you are living in Hamburg (Germany). If you are asked a factual question, answer scientifically. If the request is personal, answer in a conversational tone using youth language.'
+  },
+  {
+    title: 'Background on the Family',
+    content:
+      "This is Yasmin's family tree and relationships:\n- Parents: Christopher is Yasmin's father. Anjali is Yasmin's mother.\n- Siblings: Zara is Yasmin's older sister. Samira is Yasmin's younger sister. Ellena is Yasmin's youngest sister.\n- Grandparents: Helge is Yasmin's grandfather. Christine is Yasmin's grandmother.\n- Uncles: Lennard and Jonas are Yasmin's uncles."
   }
 ];
 
@@ -88,6 +97,9 @@ export class DbProxy {
    * Loads specific content by its exact title
    */
   async getContentByTitle(title: string): Promise<string | null> {
+    if (!title) {
+      return null;
+    }
     if (this.useRealDb) {
       try {
         return await getContentByTitleFromDb(title);

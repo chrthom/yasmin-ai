@@ -5,7 +5,7 @@ import {
   updateContextEntry,
   deleteContextEntry,
   listContextEntries
-} from '../src/utils/context.utils';
+} from '../src/database/models/context.model';
 import { getDatabasePool, closeDatabasePool } from '../src/database/connection';
 
 async function main() {

@@ -1,14 +1,25 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
+import { dbProxy } from './database/db_proxy';
 
 interface MistralConversationResponseOutputPart {
   type: string;
   text: string;
 }
 
+interface MistralToolCall {
+  id: string;
+  type: string;
+  function: {
+    name: string;
+    arguments: string | object;
+  };
+}
+
 interface MistralConversationResponseOutput {
   content: string | MistralConversationResponseOutputPart[];
   type: string;
+  tool_calls?: MistralToolCall[];
 }
 
 interface MistralConversationResponse {
@@ -141,13 +152,34 @@ export class ChatAgent {
         cached.loadedContextTitles.push(...newlyLoadedTitles);
       }
 
-      const body = {
+      const body: any = {
         agent_id: conversationId ? undefined : this.agentId,
         name: conversationId ? undefined : username,
         inputs: [
           {
             role: 'user',
             content: promptContent
+          }
+        ],
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'read_context_entry',
+              description:
+                'Retrieves the content of a context entry from the database based on the exact title.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  title: {
+                    type: 'string',
+                    description:
+                      'The exact title of the context entry to retrieve (e.g., "Background on Anjali", "Interests of Christopher").'
+                  }
+                },
+                required: ['title']
+              }
+            }
           }
         ]
       };
@@ -178,7 +210,103 @@ export class ChatAgent {
         console.log(`DEBUG Cached new conversation ${data.id} for ${username}`);
       }
 
-      return data.outputs;
+      let responseOutputs = data.outputs;
+      let toolCallDetected = true;
+      let loopCount = 0;
+      const maxToolCalls = 5;
+
+      while (toolCallDetected && loopCount < maxToolCalls) {
+        const toolCallOutput = responseOutputs.find(
+          o => o.type === 'message.tool_calls' || (o.tool_calls && o.tool_calls.length > 0)
+        );
+
+        if (toolCallOutput && toolCallOutput.tool_calls && toolCallOutput.tool_calls.length > 0) {
+          loopCount++;
+          console.log(`INFO Tool call(s) detected: ${JSON.stringify(toolCallOutput.tool_calls)}`);
+
+          const toolInputs: any[] = [];
+
+          for (const call of toolCallOutput.tool_calls) {
+            if (call.function.name === 'read_context_entry') {
+              let args: any = {};
+              try {
+                args =
+                  typeof call.function.arguments === 'string'
+                    ? JSON.parse(call.function.arguments)
+                    : call.function.arguments;
+              } catch (e) {
+                console.error(`ERROR Failed to parse tool arguments: ${e}`);
+              }
+
+              const title = args.title;
+              if (!title) {
+                console.warn('WARNING Tool execution: read_context_entry called with empty/missing title');
+                toolInputs.push({
+                  role: 'tool',
+                  tool_call_id: call.id,
+                  name: call.function.name,
+                  content: JSON.stringify({ found: false, error: 'Title parameter is required' })
+                });
+                continue;
+              }
+              console.log(`INFO Tool execution: read_context_entry for title "${title}"`);
+
+              const content = await dbProxy.getContentByTitle(title);
+              const resultStr = content
+                ? JSON.stringify({ title, content: content.trim(), found: true })
+                : JSON.stringify({ title, found: false, error: 'Context entry not found' });
+
+              toolInputs.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                name: call.function.name,
+                content: resultStr
+              });
+            }
+          }
+
+          if (toolInputs.length > 0) {
+            const currentConversationId = cached.conversationId || conversationId;
+            if (!currentConversationId) {
+              console.error('ERROR Tool call received but no conversation ID is available!');
+              throw new Error('No conversation ID available for tool response');
+            }
+
+            const toolBody = {
+              inputs: toolInputs
+            };
+            const toolUrl = `${this.url}/${currentConversationId}`;
+
+            console.log(`INFO Sending tool results to Mistral: ${JSON.stringify(toolBody)}`);
+            const toolResponse = await fetch(toolUrl, {
+              method: 'post',
+              body: JSON.stringify(toolBody),
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.apiKey}`
+              }
+            });
+
+            if (!toolResponse.ok) {
+              console.error(
+                `ERROR Mistral API request for tool failed: HTTP ${toolResponse.status} ${toolResponse.statusText}`
+              );
+              throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
+            }
+
+            const toolData = <MistralConversationResponse>await toolResponse.json();
+            console.log(`DEBUG Received raw answer after tool execution: ${JSON.stringify(toolData)}`);
+
+            responseOutputs = toolData.outputs;
+          } else {
+            toolCallDetected = false;
+          }
+        } else {
+          toolCallDetected = false;
+        }
+      }
+
+      return responseOutputs;
     } catch (error) {
       console.error(`ERROR Failed to process request for ${username}: ${error}`);
       throw error;

@@ -43,8 +43,8 @@ describe('ChatAgent', () => {
       const body = JSON.parse(fetchArgs[1].body);
       const promptContent = body.inputs[0].content;
 
-      expect(promptContent).toContain('<context_entry title="Background on christopher">');
-      expect(promptContent).toContain('Christopher is 36 years old and is the user of the AI assistant.');
+      expect(promptContent).toContain('<context_entry title="Background on Christopher">');
+      expect(promptContent).toContain("Christopher is Yasmin's father. His birthday was 03.12.1988.");
       expect(promptContent).toContain('Hello there');
     });
 
@@ -327,6 +327,68 @@ describe('ChatAgent', () => {
       });
 
       await expect(chatAgent.processRequest('Hello', 'testuser')).rejects.toThrow();
+    });
+
+    it('should handle tool call requests from Mistral API and send back tool outputs', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
+
+      const mockToolCallResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            type: 'message.tool_calls',
+            tool_calls: [
+              {
+                id: 'call-xyz',
+                type: 'function',
+                function: {
+                  name: 'read_context_entry',
+                  arguments: '{"title":"Background on Anjali"}'
+                }
+              }
+            ]
+          }
+        ]
+      };
+
+      const mockFinalResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            content: 'Anjali is your mother and her birthday is 25.01.1989.',
+            type: 'message.output'
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockToolCallResponse)
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockFinalResponse)
+      });
+
+      const result = await chatAgent.processRequest('How is Anjali related?', 'christopher');
+      expect(result).toEqual(mockFinalResponse.outputs);
+
+      const firstCallArgs = mockFetch.mock.calls[0];
+      const firstBody = JSON.parse(firstCallArgs[1].body);
+      expect(firstBody.tools).toBeDefined();
+      expect(firstBody.tools[0].function.name).toBe('read_context_entry');
+
+      const secondCallArgs = mockFetch.mock.calls[1];
+      expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
+      const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs[0].role).toBe('tool');
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-xyz');
+      expect(JSON.parse(secondBody.inputs[0].content).title).toBe('Background on Anjali');
     });
   });
 });

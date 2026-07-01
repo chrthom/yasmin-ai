@@ -27,14 +27,13 @@ src/
 │   └── models/
 │       └── context.model.ts  # Context model query methods
 ├── services/
-│   ├── tfidf.service.ts      # Pure TF-IDF tokenization and similarity calculation
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
 └── __tests__/
     ├── app.test.ts
     ├── chat_agent.test.ts
     ├── synology_client.test.ts
     ├── database.test.ts
-    └── tfidf.test.ts
+    └── context.test.ts
 ```
 
 ### Data Flow
@@ -42,19 +41,17 @@ src/
 1. **Incoming Request** → Synology Chat sends a webhook to `/chat/bot`, `/chat/slash`, or `/chat/group`
 2. **Authentication** → Each endpoint validates its respective token (`CHAT_TOKEN_BOT`, `CHAT_TOKEN_SLASH`, `CHAT_TOKEN_GROUP`)
 3. **Processing & Matching** → `ChatAgent` invokes `ContextService` on _every turn_ of the conversation.
-   - Computes TF-IDF similarity between prompt and eagerly loaded document titles.
-   - Mandatorily fetches the sender's background (e.g. `Background on zara`).
+   - Mandatorily fetches the sender's background (e.g. `Background on Zara`) and Yasmin's identity profiles on the initial turn.
    - Filters out already loaded titles using the session's active conversation cache.
    - Wraps newly loaded context pieces in structured XML tags (`<context_entry title="...">...</context_entry>`) and prepends them to the prompt.
-   - Calls the Mistral API and manages 12-hour session state.
+   - Calls the Mistral API with custom Tool Calling configuration and manages 12-hour session state.
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
 
 ### Key Classes & Services
 
-- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, and formats/prepends new context turn-by-turn.
-- **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, executing TF-IDF matches, filtering out duplicates, and formatting them into XML.
-- **`TfIdfService`** (`src/services/tfidf.service.ts`): Pure calculations including term frequency (TF), Inverse Document Frequency (IDF), and cosine similarity between user prompts and document titles.
+- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading.
+- **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 
 ## Development Commands
@@ -75,7 +72,7 @@ src/
 - Tests use Jest with `ts-jest` preset
 - `fetch` is mocked globally for `ChatAgent` tests
 - Test files follow pattern `src/__tests__/<module>.test.ts`
-- Code coverage includes: TF-IDF similarity, XML context injection, connection pool retry logic, conversation management, response parsing, markdown stripping, text chunking
+- Code coverage includes: XML context injection, connection pool retry logic, conversation management, response parsing, markdown stripping, text chunking, and sequential Tool Calling execution loops
 
 ## Build Configuration
 
