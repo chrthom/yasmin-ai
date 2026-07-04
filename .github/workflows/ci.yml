@@ -2,16 +2,21 @@ name: CI
 
 on:
   pull_request:
-    branches:
 
 jobs:
   format:
-    name: Formatting checks
+    name: Formatting checks and auto-fix
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -22,8 +27,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Prettier check
-        run: npx prettier --check src/
+      - name: Run Prettier with auto-fix
+        run: npx prettier --write src/
+
+      - name: Check for format changes
+        id: format-changes
+        run: |
+          git diff --exit-code || echo "changes_detected=true" >> $GITHUB_OUTPUT
+
+      - name: Commit format changes if any
+        if: steps.format-changes.outputs.changes_detected == 'true'
+        run: |
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add .
+          git commit -m "chore: auto-format"
+          git push origin HEAD:"${BRANCH_NAME}"
 
   lint:
     name: Linting
