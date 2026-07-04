@@ -57,6 +57,9 @@ export class ContextService {
 
     let formattedContext = xmlBlocks.join('\n\n');
 
+    // Identify the user Yasmin is talking to
+    formattedContext += `\n\nYou are talking to ${username}.`;
+
     // 4. On the initial turn, inject the manifest of all other available titles
     if (loadedSet.size === 0) {
       const allTitles = await dbProxy.getAllTitles();

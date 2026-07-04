@@ -106,4 +106,4 @@ export class DbProxy {
   }
 }
 
-export const dbProxy = new DbProxy(false); // Set to false initially to use the proxy
+export const dbProxy = new DbProxy(process.env['NODE_ENV'] !== 'test');

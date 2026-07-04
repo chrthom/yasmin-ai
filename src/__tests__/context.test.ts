@@ -38,7 +38,7 @@ describe('Context Service', () => {
         'christopher',
         alreadyLoaded
       );
-      expect(formattedContext).toBe('');
+      expect(formattedContext).toBe('\n\nYou are talking to christopher.');
       expect(newlyLoadedTitles).toEqual([]);
     });
 

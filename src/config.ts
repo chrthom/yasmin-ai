@@ -19,11 +19,11 @@ export const config = {
     }
   },
   database: {
-    host: process.env['DB_HOST'] || 'localhost',
-    port: parseInt(process.env['DB_PORT'] || '3306', 10),
-    user: process.env['DB_USER'] || '',
+    host: '192.168.0.2',
+    port: 3307,
+    user: 'yasmin',
     password: process.env['DB_PASSWORD'] || '',
-    name: process.env['DB_NAME'] || ''
+    name: 'yasmin'
   },
   rateLimit: {
     windowMs: 60 * 1000,
@@ -60,7 +60,7 @@ export function validateEnv(): void {
   const isRealDbEnabled = process.env['USE_REAL_DB'] === 'true';
 
   if (isCli || isRealDbEnabled) {
-    const requiredDbEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'] as const;
+    const requiredDbEnv = ['DB_PASSWORD'] as const;
     requiredDbEnv.forEach(key => {
       if (!process.env[key]) {
         console.error(`ERROR: Missing required database environment variable: ${key}`);

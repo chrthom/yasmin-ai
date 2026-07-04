@@ -14,7 +14,7 @@ export async function getAllEntriesFromDb(): Promise<ContextEntry[]> {
     return rows.map((row: any) => ({ title: row.title, content: row.content }));
   } catch (error) {
     console.error('Error retrieving all entries:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -27,7 +27,7 @@ export async function getAllTitlesFromDb(): Promise<string[]> {
     return rows.map((row: any) => row.title);
   } catch (error) {
     console.error('Error retrieving all titles:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -45,7 +45,7 @@ export async function getContentByTitleFromDb(title: string): Promise<string | n
     return null;
   } catch (error) {
     console.error(`Error retrieving content for title "${title}":`, error);
-    return null;
+    throw error;
   }
 }
 
