@@ -239,10 +239,9 @@ export class ChatAgent {
               if (!title) {
                 console.warn('WARNING Tool execution: read_context_entry called with empty/missing title');
                 toolInputs.push({
-                  role: 'tool',
+                  type: 'function.result',
                   tool_call_id: call.id,
-                  name: call.name,
-                  content: JSON.stringify({ found: false, error: 'Title parameter is required' })
+                  result: JSON.stringify({ found: false, error: 'Title parameter is required' })
                 });
                 continue;
               }
@@ -254,10 +253,9 @@ export class ChatAgent {
                 : JSON.stringify({ title, found: false, error: 'Context entry not found' });
 
               toolInputs.push({
-                role: 'tool',
+                type: 'function.result',
                 tool_call_id: call.id,
-                name: call.name,
-                content: resultStr
+                result: resultStr
               });
             }
           }

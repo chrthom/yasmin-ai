@@ -385,9 +385,9 @@ describe('ChatAgent', () => {
       const secondCallArgs = mockFetch.mock.calls[1];
       expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
       const secondBody = JSON.parse(secondCallArgs[1].body);
-      expect(secondBody.inputs[0].role).toBe('tool');
+      expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-xyz');
-      expect(JSON.parse(secondBody.inputs[0].content).title).toBe('Background on Anjali');
+      expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Background on Anjali');
     });
 
     it('should handle flat function.call response structures from Mistral API and send back tool outputs', async () => {
@@ -436,9 +436,9 @@ describe('ChatAgent', () => {
       const secondCallArgs = mockFetch.mock.calls[1];
       expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
       const secondBody = JSON.parse(secondCallArgs[1].body);
-      expect(secondBody.inputs[0].role).toBe('tool');
+      expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-flat-xyz');
-      expect(JSON.parse(secondBody.inputs[0].content).title).toBe('Background on Anjali');
+      expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Background on Anjali');
     });
 
     it('should clear the conversation cache if Mistral API returns HTTP 400 or HTTP 404', async () => {
