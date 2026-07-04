@@ -45,13 +45,7 @@ export const PROXY_DATA: DbRecord[] = [
   },
   {
     title: 'Background on Yasmin',
-    content:
-      'Your name is Yasmin, you are an adolescent teenager (born 10.10.2015) and you are living in Hamburg (Germany). If you are asked a factual question, answer scientifically. If the request is personal, answer in a conversational tone using youth language.'
-  },
-  {
-    title: 'Background on the Family',
-    content:
-      "This is Yasmin's family tree and relationships:\n- Parents: Christopher is Yasmin's father. Anjali is Yasmin's mother.\n- Siblings: Zara is Yasmin's older sister. Samira is Yasmin's younger sister. Ellena is Yasmin's youngest sister.\n- Grandparents: Helge is Yasmin's grandfather. Christine is Yasmin's grandmother.\n- Uncles: Lennard and Jonas are Yasmin's uncles."
+    content: 'Yasmin is interested in arts and science.'
   }
 ];
 
