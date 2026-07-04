@@ -176,6 +176,10 @@ export class ChatAgent {
 
       if (!response.ok) {
         console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
+        if (response.status === 400 || response.status === 404) {
+          this.conversationCache.delete(username);
+          console.log(`INFO Cleared cached conversation for ${username} due to HTTP ${response.status}`);
+        }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
 

@@ -440,5 +440,25 @@ describe('ChatAgent', () => {
       expect(secondBody.inputs[0].tool_call_id).toBe('call-flat-xyz');
       expect(JSON.parse(secondBody.inputs[0].content).title).toBe('Background on Anjali');
     });
+
+    it('should clear the conversation cache if Mistral API returns HTTP 400 or HTTP 404', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found'
+      });
+
+      // Warm up cache first to simulate a cached hit
+      (chatAgent as any).conversationCache.set('christopher', {
+        conversationId: 'conv-123',
+        expiresAt: Date.now() + 100000,
+        loadedContextTitles: []
+      });
+
+      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow();
+      expect((chatAgent as any).conversationCache.has('christopher')).toBe(false);
+    });
   });
 });
