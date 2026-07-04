@@ -24,6 +24,7 @@ interface MistralConversationResponseOutput {
 
 interface MistralConversationResponse {
   id?: string;
+  conversation_id?: string;
   outputs: MistralConversationResponseOutput[];
 }
 
@@ -186,11 +187,12 @@ export class ChatAgent {
       const data = <MistralConversationResponse>await response.json();
       console.log(`DEBUG Received raw answer from mistral: ${JSON.stringify(data)}`);
 
+      const returnedId = data.conversation_id || data.id;
       // Cache the new conversation ID so next turn skips the list re-fetch
-      if (!conversationId && data.id) {
-        cached.conversationId = data.id;
+      if (!conversationId && returnedId) {
+        cached.conversationId = returnedId;
         cached.expiresAt = Date.now() + this.conversationTtlMs;
-        console.log(`DEBUG Cached new conversation ${data.id} for ${username}`);
+        console.log(`DEBUG Cached new conversation ${returnedId} for ${username}`);
       }
 
       let responseOutputs = data.outputs;
