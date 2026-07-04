@@ -3,6 +3,13 @@
 # Exit on error
 set -e
 
+# Determine script directory and project root directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Change directory to project root so relative paths are resolved correctly
+cd "$PROJECT_ROOT"
+
 ARCHIVE_NAME="yasmin-ai-deploy.zip"
 
 echo "📦 Creating deployment archive..."
