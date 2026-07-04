@@ -43,7 +43,7 @@ describe('ChatAgent', () => {
       const body = JSON.parse(fetchArgs[1].body);
       const promptContent = body.inputs[0].content;
 
-      expect(promptContent).toContain('<context_entry title="Background on Christopher">');
+      expect(promptContent).toContain('<context_entry title="Profile of Christopher">');
       expect(promptContent).toContain("Christopher is Yasmin's father. His birthday was 03.12.1988.");
       expect(promptContent).toContain('Hello there');
     });
@@ -343,7 +343,7 @@ describe('ChatAgent', () => {
                 type: 'function',
                 function: {
                   name: 'read_context_entry',
-                  arguments: '{"title":"Background on Anjali"}'
+                  arguments: '{"title":"Profile of Anjali"}'
                 }
               }
             ]
@@ -387,7 +387,7 @@ describe('ChatAgent', () => {
       const secondBody = JSON.parse(secondCallArgs[1].body);
       expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-xyz');
-      expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Background on Anjali');
+      expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
     });
 
     it('should handle flat function.call response structures from Mistral API and send back tool outputs', async () => {
@@ -401,7 +401,7 @@ describe('ChatAgent', () => {
             type: 'function.call',
             tool_call_id: 'call-flat-xyz',
             name: 'read_context_entry',
-            arguments: '{"title":"Background on Anjali"}'
+            arguments: '{"title":"Profile of Anjali"}'
           }
         ]
       };
@@ -438,7 +438,163 @@ describe('ChatAgent', () => {
       const secondBody = JSON.parse(secondCallArgs[1].body);
       expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-flat-xyz');
-      expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Background on Anjali');
+      expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
+    });
+
+    it('should handle update_context_entry tool call and return success result', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
+
+      const mockToolCallResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            object: 'entry',
+            type: 'function.call',
+            tool_call_id: 'call-update-xyz',
+            name: 'update_context_entry',
+            arguments: '{"title":"Journal with Christopher","content":"Christopher is building Yasmin AI with me."}'
+          }
+        ]
+      };
+
+      const mockFinalResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            content: 'Got it, noted in my memory.',
+            type: 'message.output'
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockToolCallResponse)
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockFinalResponse)
+      });
+
+      const result = await chatAgent.processRequest('Remember this about Christopher', 'christopher');
+      expect(result).toEqual(mockFinalResponse.outputs);
+
+      const secondCallArgs = mockFetch.mock.calls[1];
+      expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
+      const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs[0].type).toBe('function.result');
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-update-xyz');
+      const resultData = JSON.parse(secondBody.inputs[0].result);
+      expect(resultData.success).toBe(true);
+      expect(resultData.title).toBe('Journal with Christopher');
+      expect(resultData.content).toBe('Christopher is building Yasmin AI with me.');
+    });
+
+    it('should return error result when update_context_entry is called with missing title', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
+
+      const mockToolCallResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            object: 'entry',
+            type: 'function.call',
+            tool_call_id: 'call-update-missing',
+            name: 'update_context_entry',
+            arguments: '{"content":"Some content"}'
+          }
+        ]
+      };
+
+      const mockFinalResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            content: 'Done',
+            type: 'message.output'
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockToolCallResponse)
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockFinalResponse)
+      });
+
+      await chatAgent.processRequest('Update something', 'christopher');
+
+      const secondCallArgs = mockFetch.mock.calls[1];
+      const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs[0].type).toBe('function.result');
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-update-missing');
+      const resultData = JSON.parse(secondBody.inputs[0].result);
+      expect(resultData.success).toBe(false);
+      expect(resultData.error).toBe('Title parameter is required');
+    });
+
+    it('should return error result when update_context_entry is called with missing content', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
+
+      const mockToolCallResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            object: 'entry',
+            type: 'function.call',
+            tool_call_id: 'call-update-no-content',
+            name: 'update_context_entry',
+            arguments: '{"title":"Journal with Christopher"}'
+          }
+        ]
+      };
+
+      const mockFinalResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            content: 'Done',
+            type: 'message.output'
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockToolCallResponse)
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockFinalResponse)
+      });
+
+      await chatAgent.processRequest('Update something', 'christopher');
+
+      const secondCallArgs = mockFetch.mock.calls[1];
+      const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs[0].type).toBe('function.result');
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-update-no-content');
+      const resultData = JSON.parse(secondBody.inputs[0].result);
+      expect(resultData.success).toBe(false);
+      expect(resultData.error).toBe('Content parameter is required');
     });
 
     it('should clear the conversation cache if Mistral API returns HTTP 400 or HTTP 404', async () => {

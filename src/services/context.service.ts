@@ -25,31 +25,40 @@ export class ContextService {
     const entries = await dbProxy.getAllEntries();
     const titles = entries.map(e => e.title);
 
-    // 1. Mandatorily match sender background (case-insensitive)
-    const userBackgroundTitle = `background on ${username.toLowerCase()}`;
-    const matchedUserTitle = titles.find(t => t.toLowerCase() === userBackgroundTitle);
+    // 1. Mandatorily match eager-loaded entries for the first turn
+    // Profile of the sender, Session with sender, Family notes, and Profile of Yasmin
+    const profileOfSenderTitle = `Profile of ${username}`;
+    const sessionWithSenderTitle = `Session with ${username}`;
+    const familyNotesTitle = 'Family notes';
+    const profileOfYasminTitle = 'Profile of Yasmin';
 
-    // Mandatorily match Yasmin's own background (case-insensitive)
-    const yasminBackgroundTitle = 'background on yasmin';
-    const matchedYasminTitle = titles.find(t => t.toLowerCase() === yasminBackgroundTitle);
+    const matchedProfileSender = titles.find(t => t.toLowerCase() === profileOfSenderTitle.toLowerCase());
+    const matchedSessionSender = titles.find(t => t.toLowerCase() === sessionWithSenderTitle.toLowerCase());
+    const matchedFamilyNotes = titles.find(t => t.toLowerCase() === familyNotesTitle.toLowerCase());
+    const matchedProfileYasmin = titles.find(t => t.toLowerCase() === profileOfYasminTitle.toLowerCase());
 
     // Identify candidate titles for injection
     const candidateTitles: string[] = [];
-    if (matchedYasminTitle && !loadedSet.has(matchedYasminTitle)) {
-      candidateTitles.push(matchedYasminTitle);
+    if (matchedProfileYasmin && !loadedSet.has(matchedProfileYasmin)) {
+      candidateTitles.push(matchedProfileYasmin);
+    }
+    if (matchedFamilyNotes && !loadedSet.has(matchedFamilyNotes)) {
+      candidateTitles.push(matchedFamilyNotes);
+    }
+    if (matchedProfileSender && !loadedSet.has(matchedProfileSender)) {
+      candidateTitles.push(matchedProfileSender);
+    }
+    if (matchedSessionSender && !loadedSet.has(matchedSessionSender)) {
+      candidateTitles.push(matchedSessionSender);
     }
 
-    if (matchedUserTitle && !loadedSet.has(matchedUserTitle)) {
-      candidateTitles.push(matchedUserTitle);
-    }
-
-    // 3. Load actual contents and format as clean XML
+    // 2. Load actual contents and format as clean XML
     const xmlBlocks: string[] = [];
     const newlyLoadedTitles: string[] = [];
 
     for (const title of candidateTitles) {
       const content = await dbProxy.getContentByTitle(title);
-      if (content) {
+      if (content !== null && content !== undefined) {
         xmlBlocks.push(`<context_entry title="${title}">\n${content.trim()}\n</context_entry>`);
         newlyLoadedTitles.push(title);
       }
@@ -60,7 +69,7 @@ export class ContextService {
     // Identify the user Yasmin is talking to
     formattedContext += `\n\nYou are talking to ${username}.`;
 
-    // 4. On the initial turn, inject the manifest of all other available titles
+    // 3. On the initial turn, inject the manifest of all other available titles
     if (loadedSet.size === 0) {
       const allTitles = await dbProxy.getAllTitles();
       const eagerlyLoadedSet = new Set(candidateTitles.map(t => t.toLowerCase()));

@@ -260,6 +260,52 @@ export class ChatAgent {
                 result: resultStr
               });
             }
+            if (call.name === 'update_context_entry') {
+              let args: any = {};
+              try {
+                args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
+              } catch (e) {
+                console.error(`ERROR Failed to parse tool arguments: ${e}`);
+              }
+
+              const title = args.title;
+              const content = args.content;
+              if (!title) {
+                console.warn('WARNING Tool execution: update_context_entry called with empty/missing title');
+                toolInputs.push({
+                  type: 'function.result',
+                  tool_call_id: call.id,
+                  result: JSON.stringify({ success: false, error: 'Title parameter is required' })
+                });
+                continue;
+              }
+              if (!content) {
+                console.warn('WARNING Tool execution: update_context_entry called with empty/missing content');
+                toolInputs.push({
+                  type: 'function.result',
+                  tool_call_id: call.id,
+                  result: JSON.stringify({ success: false, error: 'Content parameter is required' })
+                });
+                continue;
+              }
+              console.log(`INFO Tool execution: update_context_entry for title "${title}"`);
+
+              try {
+                await dbProxy.updateEntry(title, content);
+                toolInputs.push({
+                  type: 'function.result',
+                  tool_call_id: call.id,
+                  result: JSON.stringify({ success: true, title, content: content.trim() })
+                });
+              } catch (err) {
+                console.error(`ERROR Tool execution: update_context_entry failed for title "${title}": ${err}`);
+                toolInputs.push({
+                  type: 'function.result',
+                  tool_call_id: call.id,
+                  result: JSON.stringify({ success: false, title, error: 'Failed to update context entry' })
+                });
+              }
+            }
           }
 
           if (toolInputs.length > 0) {

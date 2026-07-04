@@ -2,37 +2,43 @@ import { contextService } from '../services/context.service';
 
 describe('Context Service', () => {
   describe('getRelevantContext', () => {
-    it('should retrieve background on the sender and format as XML', async () => {
+    it('should retrieve profile on the sender and yasmin and format as XML', async () => {
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
         'Hello',
         'zara',
         []
       );
-      expect(formattedContext).toContain('<context_entry title="Background on Yasmin">');
-      expect(formattedContext).toContain('<context_entry title="Background on Zara">');
-      expect(formattedContext).toContain("Zara is Yasmin's older sister.");
-      expect(newlyLoadedTitles).toContain('Background on Yasmin');
-      expect(newlyLoadedTitles).toContain('Background on Zara');
+      expect(formattedContext).toContain('<context_entry title="Profile of Yasmin">');
+      expect(formattedContext).toContain('<context_entry title="Profile of Zara">');
+      expect(formattedContext).toContain('Zara is Yasmin\'s older sister');
+      expect(newlyLoadedTitles).toContain('Profile of Yasmin');
+      expect(newlyLoadedTitles).toContain('Profile of Zara');
+      expect(newlyLoadedTitles).toContain('Session with Zara');
+      expect(newlyLoadedTitles).toContain('Family notes');
     });
 
-    it('should retrieve only mandatory context entries (Yasmin and Sender) even if other people are mentioned', async () => {
+    it('should retrieve only eager-loaded entries (Profile, Session, Family notes, Yasmin) even if other people are mentioned', async () => {
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
         'Tell me about samira and ellena',
         'christopher',
         []
       );
-      expect(formattedContext).toContain('<context_entry title="Background on Yasmin">');
-      expect(formattedContext).toContain('<context_entry title="Background on Christopher">');
-      expect(formattedContext).not.toContain('<context_entry title="Background on Samira">');
-      expect(formattedContext).not.toContain('<context_entry title="Background on Ellena">');
-      expect(newlyLoadedTitles).toContain('Background on Yasmin');
-      expect(newlyLoadedTitles).toContain('Background on Christopher');
-      expect(newlyLoadedTitles).not.toContain('Background on Samira');
-      expect(newlyLoadedTitles).not.toContain('Background on Ellena');
+      expect(formattedContext).toContain('<context_entry title="Profile of Yasmin">');
+      expect(formattedContext).toContain('<context_entry title="Profile of Christopher">');
+      expect(formattedContext).toContain('<context_entry title="Session with Christopher">');
+      expect(formattedContext).toContain('<context_entry title="Family notes">');
+      expect(formattedContext).not.toContain('<context_entry title="Profile of Samira">');
+      expect(formattedContext).not.toContain('<context_entry title="Profile of Ellena">');
+      expect(newlyLoadedTitles).toContain('Profile of Yasmin');
+      expect(newlyLoadedTitles).toContain('Profile of Christopher');
+      expect(newlyLoadedTitles).toContain('Session with Christopher');
+      expect(newlyLoadedTitles).toContain('Family notes');
+      expect(newlyLoadedTitles).not.toContain('Profile of Samira');
+      expect(newlyLoadedTitles).not.toContain('Profile of Ellena');
     });
 
-    it('should not load already loaded context titles', async () => {
-      const alreadyLoaded = ['Background on Christopher', 'Background on Yasmin'];
+    it('should not reload already loaded context titles', async () => {
+      const alreadyLoaded = ['Profile of Christopher', 'Profile of Yasmin', 'Session with Christopher', 'Family notes'];
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
         'Tell me about samira',
         'christopher',
@@ -45,13 +51,16 @@ describe('Context Service', () => {
     it('should inject all other available titles in an XML block on the initial turn', async () => {
       const { formattedContext } = await contextService.getRelevantContext('Hello', 'zara', []);
       expect(formattedContext).toContain('<available_context_entries>');
-      expect(formattedContext).toContain('- Background on Anjali');
-      expect(formattedContext).toContain('- Background on Samira');
-      expect(formattedContext).toContain('- Background on Ellena');
+      expect(formattedContext).toContain('- Profile of Anjali');
+      expect(formattedContext).toContain('- Profile of Samira');
+      expect(formattedContext).toContain('- Profile of Ellena');
+      expect(formattedContext).toContain('- Journal with Anjali');
 
-      // Eagerly loaded background on the user and yasmin should be excluded from the directory
-      expect(formattedContext).not.toContain('- Background on Zara');
-      expect(formattedContext).not.toContain('- Background on Yasmin');
+      // Eagerly loaded entries should be excluded from the directory
+      expect(formattedContext).not.toContain('- Profile of Zara');
+      expect(formattedContext).not.toContain('- Profile of Yasmin');
+      expect(formattedContext).not.toContain('- Session with Zara');
+      expect(formattedContext).not.toContain('- Family notes');
     });
   });
 });

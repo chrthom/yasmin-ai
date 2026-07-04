@@ -1,0 +1,11 @@
+// Description for Mistral Console: Retrieves the content of a context entry from the database based on exact title.
+{
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "The exact title of the context entry to retrieve (e.g., \"Profile of Christopher\", \"Journal with Zara\")."
+    }
+  }
+}
