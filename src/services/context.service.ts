@@ -33,18 +33,10 @@ export class ContextService {
     const yasminBackgroundTitle = 'background on yasmin';
     const matchedYasminTitle = titles.find(t => t.toLowerCase() === yasminBackgroundTitle);
 
-    // Mandatorily match Family relations background (case-insensitive)
-    const familyBackgroundTitle = 'background on the family';
-    const matchedFamilyTitle = titles.find(t => t.toLowerCase() === familyBackgroundTitle);
-
     // Identify candidate titles for injection
     const candidateTitles: string[] = [];
     if (matchedYasminTitle && !loadedSet.has(matchedYasminTitle)) {
       candidateTitles.push(matchedYasminTitle);
-    }
-
-    if (matchedFamilyTitle && !loadedSet.has(matchedFamilyTitle)) {
-      candidateTitles.push(matchedFamilyTitle);
     }
 
     if (matchedUserTitle && !loadedSet.has(matchedUserTitle)) {
@@ -63,8 +55,24 @@ export class ContextService {
       }
     }
 
+    let formattedContext = xmlBlocks.join('\n\n');
+
+    // 4. On the initial turn, inject the manifest of all other available titles
+    if (loadedSet.size === 0) {
+      const allTitles = await dbProxy.getAllTitles();
+      const eagerlyLoadedSet = new Set(candidateTitles.map(t => t.toLowerCase()));
+      const availableTitles = allTitles.filter(t => !eagerlyLoadedSet.has(t.toLowerCase()));
+
+      if (availableTitles.length > 0) {
+        const titleListXml = `<available_context_entries>\n${availableTitles
+          .map(t => `- ${t}`)
+          .join('\n')}\n</available_context_entries>`;
+        formattedContext = formattedContext ? `${titleListXml}\n\n${formattedContext}` : titleListXml;
+      }
+    }
+
     return {
-      formattedContext: xmlBlocks.join('\n\n'),
+      formattedContext,
       newlyLoadedTitles
     };
   }
