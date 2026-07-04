@@ -46,7 +46,7 @@ export const PROXY_DATA: DbRecord[] = [
   {
     title: 'Background on Yasmin',
     content:
-      'Your name is Yasmin, you are 10 years old adolescent teenager and you are living in Hamburg (Germany). If you are asked a factual question, answer scientifically. If the request is personal, answer in a conversational tone using youth language.'
+      'Your name is Yasmin, you are an adolescent teenager (born 10.10.2015) and you are living in Hamburg (Germany). If you are asked a factual question, answer scientifically. If the request is personal, answer in a conversational tone using youth language.'
   },
   {
     title: 'Background on the Family',
