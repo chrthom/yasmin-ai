@@ -160,27 +160,6 @@ export class ChatAgent {
             role: 'user',
             content: promptContent
           }
-        ],
-        tools: [
-          {
-            type: 'function',
-            function: {
-              name: 'read_context_entry',
-              description:
-                'Retrieves the content of a context entry from the database based on the exact title.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                    description:
-                      'The exact title of the context entry to retrieve (e.g., "Background on Anjali", "Interests of Christopher").'
-                  }
-                },
-                required: ['title']
-              }
-            }
-          }
         ]
       };
       console.log(`INFO Sending prompt to LLM agent: ${JSON.stringify(body)}`);
@@ -216,24 +195,38 @@ export class ChatAgent {
       const maxToolCalls = 5;
 
       while (toolCallDetected && loopCount < maxToolCalls) {
-        const toolCallOutput = responseOutputs.find(
-          o => o.type === 'message.tool_calls' || (o.tool_calls && o.tool_calls.length > 0)
-        );
+        const toolCalls: Array<{ id: string; name: string; arguments: any }> = [];
 
-        if (toolCallOutput && toolCallOutput.tool_calls && toolCallOutput.tool_calls.length > 0) {
+        for (const o of responseOutputs) {
+          if (o.type === 'message.tool_calls' && o.tool_calls) {
+            for (const tc of o.tool_calls) {
+              toolCalls.push({
+                id: tc.id,
+                name: tc.function.name,
+                arguments: tc.function.arguments
+              });
+            }
+          } else if (o.type === 'function.call' || o.type === 'function_call') {
+            const flatCall = o as any;
+            toolCalls.push({
+              id: flatCall.tool_call_id || flatCall.id,
+              name: flatCall.name,
+              arguments: flatCall.arguments
+            });
+          }
+        }
+
+        if (toolCalls.length > 0) {
           loopCount++;
-          console.log(`INFO Tool call(s) detected: ${JSON.stringify(toolCallOutput.tool_calls)}`);
+          console.log(`INFO Tool call(s) detected: ${JSON.stringify(toolCalls)}`);
 
           const toolInputs: any[] = [];
 
-          for (const call of toolCallOutput.tool_calls) {
-            if (call.function.name === 'read_context_entry') {
+          for (const call of toolCalls) {
+            if (call.name === 'read_context_entry') {
               let args: any = {};
               try {
-                args =
-                  typeof call.function.arguments === 'string'
-                    ? JSON.parse(call.function.arguments)
-                    : call.function.arguments;
+                args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
               } catch (e) {
                 console.error(`ERROR Failed to parse tool arguments: ${e}`);
               }
@@ -244,7 +237,7 @@ export class ChatAgent {
                 toolInputs.push({
                   role: 'tool',
                   tool_call_id: call.id,
-                  name: call.function.name,
+                  name: call.name,
                   content: JSON.stringify({ found: false, error: 'Title parameter is required' })
                 });
                 continue;
@@ -259,7 +252,7 @@ export class ChatAgent {
               toolInputs.push({
                 role: 'tool',
                 tool_call_id: call.id,
-                name: call.function.name,
+                name: call.name,
                 content: resultStr
               });
             }

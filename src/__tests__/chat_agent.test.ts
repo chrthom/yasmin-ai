@@ -380,14 +380,64 @@ describe('ChatAgent', () => {
 
       const firstCallArgs = mockFetch.mock.calls[0];
       const firstBody = JSON.parse(firstCallArgs[1].body);
-      expect(firstBody.tools).toBeDefined();
-      expect(firstBody.tools[0].function.name).toBe('read_context_entry');
+      expect(firstBody.tools).toBeUndefined();
 
       const secondCallArgs = mockFetch.mock.calls[1];
       expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
       const secondBody = JSON.parse(secondCallArgs[1].body);
       expect(secondBody.inputs[0].role).toBe('tool');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-xyz');
+      expect(JSON.parse(secondBody.inputs[0].content).title).toBe('Background on Anjali');
+    });
+
+    it('should handle flat function.call response structures from Mistral API and send back tool outputs', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
+
+      const mockToolCallResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            object: 'entry',
+            type: 'function.call',
+            tool_call_id: 'call-flat-xyz',
+            name: 'read_context_entry',
+            arguments: '{"title":"Background on Anjali"}'
+          }
+        ]
+      };
+
+      const mockFinalResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            content: 'Anjali is your mother and her birthday is 25.01.1989.',
+            type: 'message.output'
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockToolCallResponse)
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockFinalResponse)
+      });
+
+      const result = await chatAgent.processRequest('How is Anjali related?', 'christopher');
+      expect(result).toEqual(mockFinalResponse.outputs);
+
+      const secondCallArgs = mockFetch.mock.calls[1];
+      expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
+      const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs[0].role).toBe('tool');
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-flat-xyz');
       expect(JSON.parse(secondBody.inputs[0].content).title).toBe('Background on Anjali');
     });
   });
