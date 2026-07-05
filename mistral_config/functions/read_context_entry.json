@@ -1,11 +1,13 @@
-// Description for Mistral Console: Retrieves the content of a context entry from the database based on exact title.
+// Description for Mistral Console: Retrieves the content of a context/memory entry from the database based on exact title match.
+// Use this tool to look up existing information before making updates or when you need to reference past conversations, profiles, or notes.
+// Always check if an entry exists before attempting to update it.
 {
   "type": "object",
   "required": ["title"],
   "properties": {
     "title": {
       "type": "string",
-      "description": "The exact title of the context entry to retrieve (e.g., \"Profile of Christopher\", \"Journal with Zara\")."
+      "description": "The exact title of the context entry to retrieve. Must match exactly including case and punctuation. Examples: 'Profile of Christopher', 'Session with Zara', 'Journal with Samira', 'Family notes', 'Profile of Yasmin'."
     }
   }
 }
