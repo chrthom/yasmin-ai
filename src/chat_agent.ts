@@ -280,7 +280,9 @@ export class ChatAgent {
                 continue;
               }
               if (!content) {
-                console.warn('WARNING Tool execution: update_context_entry called with empty/missing content');
+                console.warn(
+                  'WARNING Tool execution: update_context_entry called with empty/missing content'
+                );
                 toolInputs.push({
                   type: 'function.result',
                   tool_call_id: call.id,
@@ -298,7 +300,9 @@ export class ChatAgent {
                   result: JSON.stringify({ success: true, title, content: content.trim() })
                 });
               } catch (err) {
-                console.error(`ERROR Tool execution: update_context_entry failed for title "${title}": ${err}`);
+                console.error(
+                  `ERROR Tool execution: update_context_entry failed for title "${title}": ${err}`
+                );
                 toolInputs.push({
                   type: 'function.result',
                   tool_call_id: call.id,

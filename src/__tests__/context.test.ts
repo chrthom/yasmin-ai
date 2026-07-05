@@ -10,7 +10,7 @@ describe('Context Service', () => {
       );
       expect(formattedContext).toContain('<context_entry title="Profile of Yasmin">');
       expect(formattedContext).toContain('<context_entry title="Profile of Zara">');
-      expect(formattedContext).toContain('Zara is Yasmin\'s older sister');
+      expect(formattedContext).toContain("Zara is Yasmin's older sister");
       expect(newlyLoadedTitles).toContain('Profile of Yasmin');
       expect(newlyLoadedTitles).toContain('Profile of Zara');
       expect(newlyLoadedTitles).toContain('Session with Zara');
@@ -38,7 +38,12 @@ describe('Context Service', () => {
     });
 
     it('should not reload already loaded context titles', async () => {
-      const alreadyLoaded = ['Profile of Christopher', 'Profile of Yasmin', 'Session with Christopher', 'Family notes'];
+      const alreadyLoaded = [
+        'Profile of Christopher',
+        'Profile of Yasmin',
+        'Session with Christopher',
+        'Family notes'
+      ];
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
         'Tell me about samira',
         'christopher',

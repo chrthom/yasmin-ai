@@ -1,4 +1,9 @@
-import { getAllEntriesFromDb, getAllTitlesFromDb, getContentByTitleFromDb, updateContextEntry as updateContextEntryInDb } from './models/context.model';
+import {
+  getAllEntriesFromDb,
+  getAllTitlesFromDb,
+  getContentByTitleFromDb,
+  updateContextEntry as updateContextEntryInDb
+} from './models/context.model';
 
 export interface DbRecord {
   title: string;
@@ -9,7 +14,8 @@ export interface DbRecord {
 export const PROXY_DATA: DbRecord[] = [
   {
     title: 'Profile of Yasmin',
-    content: 'Yasmin is a half-German, half-Indian adolescent teenager born 10.10.2015 in Hamburg. Yasmin is interested in arts and science.'
+    content:
+      'Yasmin is a half-German, half-Indian adolescent teenager born 10.10.2015 in Hamburg. Yasmin is interested in arts and science.'
   },
   {
     title: 'Profile of Anjali',
@@ -25,11 +31,13 @@ export const PROXY_DATA: DbRecord[] = [
   },
   {
     title: 'Profile of Samira',
-    content: "Samira is Yasmin's younger sister. Her birthday was 07.04.2020. She lives with Yasmin in Hamburg."
+    content:
+      "Samira is Yasmin's younger sister. Her birthday was 07.04.2020. She lives with Yasmin in Hamburg."
   },
   {
     title: 'Profile of Ellena',
-    content: "Ellena is Yasmin's youngest sister. Her birthday was 15.08.2022. She lives with Yasmin in Hamburg."
+    content:
+      "Ellena is Yasmin's youngest sister. Her birthday was 15.08.2022. She lives with Yasmin in Hamburg."
   },
   {
     title: 'Profile of Helge',

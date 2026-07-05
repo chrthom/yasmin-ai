@@ -452,7 +452,8 @@ describe('ChatAgent', () => {
             type: 'function.call',
             tool_call_id: 'call-update-xyz',
             name: 'update_context_entry',
-            arguments: '{"title":"Journal with Christopher","content":"Christopher is building Yasmin AI with me."}'
+            arguments:
+              '{"title":"Journal with Christopher","content":"Christopher is building Yasmin AI with me."}'
           }
         ]
       };
