@@ -1,15 +1,19 @@
-// Description for Mistral Console: Updates the content of an existing context memory entry. Use it when facts change, you learn new information, or feelings shift. Always read the existing entry first to check its content. You cannot create new entries or change titles — only update existing content.
+// Description for Mistral Console: Updates the content of an existing context memory entry with new or corrected information.
+// Use this tool when: facts change, you learn new verified information, feelings shift, or you have new questions to ask.
+// IMPORTANT: Always use read_context_entry first to check the existing content before updating.
+// You CANNOT create new entries or change titles - only update existing content with the full replacement text.
+// When updating with second-hand information, include attribution using: "[Claimed by [source_person]]"
 {
   "type": "object",
   "required": ["title", "content"],
   "properties": {
     "title": {
       "type": "string",
-      "description": "The exact title of the existing entry to update (e.g., \"Profile of Christopher\", \"Journal with Zara\")."
+      "description": "The exact title of the existing entry to update. Must match exactly including case and punctuation. Examples: 'Profile of Christopher', 'Session with Zara', 'Journal with Samira'."
     },
     "content": {
       "type": "string",
-      "description": "The new full content to replace the existing entry."
+      "description": "The complete new content to replace the existing entry. Include all existing information plus your updates. For second-hand information, add attribution like: 'Christopher likes hiking [Claimed by Zara]'."
     }
   }
 }
