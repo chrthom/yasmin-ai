@@ -26,13 +26,13 @@ Two memory levels, each with a real reader (unchanged from v3):
 | Store | Content | Reader | Writer |
 |-------|---------|--------|--------|
 | **Mistral library "memory"** | verbose long-term (profiles, self-reflection, journals, general) | **conversation agent** via console-wired RAG | nightly job |
-| **MariaDB `context_entries`** | compressed, sensitive-free grounding | conversation agent, turn 1 (eager) | nightly job (regeneration) + live `update_context_entry` |
+| **MariaDB `context_entries`** | compressed, sensitive-free grounding | conversation agent, turn 1 (eager) | **nightly job (sole writer)** |
 | **MariaDB `memory_archive`** | full verbose copy, versioned (incl. sensitive) | nightly job (read + recovery) | nightly job |
 
 **Refinement vs v3 (robustness, per feedback §1):** the nightly job **reads current verbose content from `memory_archive` (local MariaDB), not from Mistral `text_content`.** We store that copy for backup anyway, so the core update loop has **no runtime dependency on the Mistral read API**. `text_content` remains verified (v3 §5) and is kept only as a recovery/verification tool. Net effect: Mistral is *written* by the pipeline and *read* only by the conversation agent's RAG; MariaDB is the durable content source the pipeline works against.
 
 ```
-day:   conversations → (live) update_context_entry
+day:   conversations happen; live agent READS only (eager + RAG); TODOs stay in the thread
 03:00: collect → journal → integrate(read memory_archive) → review
        → write memory_archive (txn) → upload changed files to Mistral
        → regenerate context_entries (compress + strip privacy) → cleanup
@@ -53,13 +53,13 @@ Creates: `memory_archive`, `nightly_job_log`, `processing_lock`. Non-destructive
 
 ### 2.2 MariaDB (bootstrap migration — CRITICAL)
 The library is empty. Phase 6 regenerates `context_entries` **from** the verbose store, so if the verbose store is empty on first run it would **wipe the existing profiles**. Before enabling the cron, run the one-time bootstrap (`scripts/bootstrap-memory.ts`, §7.3):
-> Reads current `context_entries` → composes initial verbose files (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`) → inserts them as `memory_archive` v1 → uploads them to the Mistral library.
+> Reads current `context_entries` → **merges each `Profile of X` + `Session with X` into one `people/<name>.md`** (5-section template), composes `self-reflection/profile.md` (from `Profile of Yasmin`) and `general/family.md` (from `Family notes`) → inserts them as `memory_archive` v1 → uploads them to the Mistral library.
 
 Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entries` row that has no verbose source** (see §8.4), so a missed bootstrap degrades to "no change," never data loss.
 
 ### 2.3 Mistral Console
 1. **Library** — the `memory` library already exists in the production workspace. Obtain its **library id** and put it in `MISTRAL_LIBRARY_ID` (§10). *Do not* reuse the temporary test id from earlier spikes.
-2. **Conversation agent** (`AGENT_ID`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/system_prompt.txt`) with the privacy-enforcement block (§9) and a note that long-term recall now comes from memory.
+2. **Conversation agent** (`AGENT_ID`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (this step happens at cutover, §13 — after the nightly job is verified).
 3. **Nightly agent** — create a new agent `yasmin-nightly` with the memory-processor system prompt (§6.3). Library wiring **optional** (only for cross-file discovery; see v3 §1.2). Put its id in `AGENT_ID_NIGHTLY`.
 4. **API key** — issue a **production** key with access to the library + both agents; set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
 
@@ -89,6 +89,9 @@ New (`+`) and changed (`~`) files, following existing conventions (`src/**` → 
 + src/database/models/memory_archive.model.ts
 + src/database/models/nightly_job.model.ts   job log + lock
 ~ src/database/models/context.model.ts    (reuse insert/update; add upsert helper)
+~ src/chat_agent.ts                        remove update_context_entry + Session handling (read-only; at cutover, §13)
+~ src/services/context.service.ts          eager set: drop 'Session with X' (sender Profile + Yasmin + Family notes)
+- mistral_config/functions/update_context_entry.json   retired (agent read-only)
 + src/nightly/pipeline.ts                 phase orchestrator
 + src/nightly/tools.ts                    integration tool set (stage_update, …)
 + src/nightly/reflection.ts              prompts + agent calls (journal, integrate, review, compact)
@@ -98,7 +101,7 @@ New (`+`) and changed (`~`) files, following existing conventions (`src/**` → 
 + scripts/bootstrap-memory.ts            one-time context_entries → verbose seeding
 + scripts/nightly-memory-job.sh          cron wrapper
 ~ src/config.ts                          add mistral.libraryId, mistral.nightlyAgentId, nightly.*
-~ mistral_config/system_prompt.txt       privacy enforcement block
+~ mistral_config/system_prompt.txt       + privacy block; remove write/Session instructions (read-only)
 + mistral_config/nightly_system_prompt.txt   yasmin-nightly agent prompt
 + src/__tests__/… (see §12)
 ```
@@ -222,7 +225,7 @@ Orchestrates phases; each writes `last_completed_phase` for resume. Wrapper catc
 - Phase 2 accesses transcripts via `getConversationMessages` and feeds the nightly agent (decouples from the conversation agent).
 
 ### 6.4 Live-vs-nightly write race
-Low risk at 03:00. Mitigation: Phase 6 upserts are last-writer-wins; optionally skip regeneration for a user whose `context_entries` changed in the last 15 min (they're mid-chat). Documented, not enforced in v1.
+**Eliminated by design.** The nightly job is the sole writer of `context_entries`; the live conversation agent is read-only (memory reads = eager load + RAG). Within-day TODOs live in the conversation thread and are consolidated at night, so there is no concurrent writer to race with.
 
 ---
 
@@ -247,13 +250,15 @@ stage_update(path, content, isNew)  // append to in-run staged list  ← the ONL
 - Mistral's auto-generated per-doc `summary` (v3 §5) is offered to the compactor as a starting point.
 
 ### 8.2 Mapping (`src/nightly/mapping.ts`)
+**One eager entry per person.** `Session with X` and `Journal with X` are **retired** (facts + proactive topics merge into `Profile of X`; deep history lives in Mistral journals via RAG).
+
 | Verbose path | Eager title | Transform |
 |---|---|---|
-| `people/<name>.md` | `Profile of <Name>` | compact facts/attitude, strip privacy |
-| `people/<name>.md` + `journals/<name>/*` | `Journal with <Name>` | compact recent history |
+| `people/<name>.md` | `Profile of <Name>` | LLM-compact to the 5-section template (Core Facts, Current Attitude, Recent Happenings, Open Topics, Yasmin's Intentions); strip `[PRIVACY:SENSITIVE]`; cap 2 KB |
 | `self-reflection/profile.md` | `Profile of Yasmin` | compact (first-person) |
 | `general/family.md` | `Family notes` | compact |
-| — | `Session with <Name>` | **not regenerated** — owned by the live agent |
+
+Eager set loaded on turn 1 = `Profile of <sender>` + `Profile of Yasmin` + `Family notes`.
 
 ### 8.3 Name/case
 `people/christopher.md` → `Profile of Christopher` (capitalize file stem). Multi-word stems use existing title casing (`anjali.md`→`Anjali`). Mapping is table-driven and unit-tested.
@@ -268,7 +273,7 @@ stage_update(path, content, isNew)  // append to in-run staged list  ← the ONL
 - **Eager cache: always sensitive-free.** `[PRIVACY:SENSITIVE]` blocks stripped in Phase 6 before compaction. Non-negotiable (eager is injected unconditionally).
 - **`memory_archive`: full content** including sensitive (durable truth).
 - **Mistral library (default): keeps sensitive**, with **answer-time enforcement** via the conversation agent's system prompt (block added in 2.3): *"Content marked [PRIVACY:SENSITIVE]: use only as a direct answer when the user explicitly asks about that exact topic; never proactively, for creative connections, or for inferences."*
-  - **Hardening option (flagged decision):** strip sensitive from the Mistral upload too (so RAG can never surface it). Then sensitive lives only in `memory_archive`. Costs: the assistant can't recall sensitive facts on explicit request unless a gated lookup tool is added. Default = keep-with-enforcement for usability; switch if leakage risk outweighs it.
+  - ⚠️ **Known residual risk (accepted):** the library is shared across family members and RAG has no per-person access control, so enforcement relies on the LLM not surfacing person A's sensitive chunk while chatting with person B. Accepted for usability (Yasmin can recall e.g. a surprise-party plan for the right person). **Future hardening:** strip sensitive from the upload + add a gated recall tool that checks the requester against the person the fact concerns.
 - Journals inherit the same handling (they can contain sensitive context).
 - Broader PII auto-detection (phone/address) is a future enhancement, not v1.
 
@@ -334,6 +339,7 @@ Existing harness: Jest + ts-jest, global `fetch` mocked, `dbProxy` uses `PROXY_D
 - **mistral_api.withRetry**: 429→429→200 succeeds after backoff; 400 fails immediately; pagination assembles 2 pages; `replaceDocument` calls delete-then-upload in order.
 - **tools**: `stage_update` accumulates; `get_long_term_file` reads archive (no fetch call).
 - **safety**: `upsertContextEntry` leaves a source-less title untouched.
+- **read-only agent** (post-cutover): `chat_agent` exposes no `update_context_entry`; eager set = sender `Profile` + `Profile of Yasmin` + `Family notes` (no `Session with X`).
 
 ### 12.2 Integration (mocked Mistral, test DB/proxy)
 - **Happy path**: 3 mock conversations ⇒ 3 journals, archive versions written, `context_entries` regenerated (sensitive-free, ≤ cap), conversations deleted, `status='completed'`.
@@ -366,21 +372,24 @@ Run once against a scratch library before go-live:
 6. `dist/nightly/run.js --dry-run`; inspect log (no writes in dry-run).
 7. One real manual run; verify journals, archive, regenerated eager cache, cleanup.
 8. Install cron/timer; monitor `nightly_job_log` for a week.
+9. **Cutover to read-only agent** (only after the nightly job is verified over several nights): update the conversation agent's system prompt (remove write/Session instructions), retire the `update_context_entry` tool in `chat_agent.ts`, and drop `Session with X` from the eager set in `context.service.ts`. Until this step, live writes keep memory fresh — do not remove them earlier (avoids a consolidation gap).
 
 ---
 
-## 14. Decisions taken (defaults — confirm) & open items
+## 14. Decisions (finalized 2026-07-06)
 
-| # | Decision (default) | Alternative |
-|---|---|---|
-| Read source (Phase 3) | **`memory_archive`** (robust, no Mistral read dependency) | `text_content` (keeps archive strictly passive) |
-| Compression (Phase 6) | **LLM compaction**, 2000-char cap, truncate fallback | deterministic section-extraction |
-| Sensitive in library | **keep + answer-time enforcement**; always strip from eager | strip from library too (needs gated lookup) |
-| Journals | per-conversation in Mistral + aggregated `Journal with X` eager | Mistral only (no eager journal) |
-| `Session with X` | **live agent owns it** (not regenerated) | regenerate from verbose |
-| Reflection | dedicated `yasmin-nightly` agent; transcripts via `getConversationMessages` | `[REFLECTION_TRIGGER]` on chat agent |
+| Topic | Decision |
+|---|---|
+| Read source (Phase 3) | **`memory_archive`** (local, exact) — no runtime dependency on the Mistral read API. MariaDB is the durable content source; Mistral is a derived search projection. |
+| Compression (Phase 6) | **LLM compaction** by the nightly agent to the 5-section template; 2000-char cap; deterministic truncate fallback. |
+| Sensitive in library | **Keep in library + answer-time prompt enforcement**; always stripped from the eager cache. Residual shared-RAG risk accepted (§9); gated per-person recall is future hardening. |
+| Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Recent Happenings, Open Topics, Yasmin's Intentions). **`Session with X` retired.** |
+| Journals | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings. |
+| Live agent | **Read-only** for memory; nightly job is the **sole writer**. `update_context_entry` retired. Keep live writes until the nightly job ships, then flip (§13). |
+| Reflection | Dedicated **`yasmin-nightly`** agent; transcripts via `getConversationMessages` (no `[REFLECTION_TRIGGER]`). |
+| Scheduling | **cron** + failure email; systemd timer an optional later upgrade. |
 
-Still needs your input only where the deployment reality decides it: the sensitive-in-library hardening (§9) and whether to use systemd vs cron (§11).
+No open defaults remain.
 
 ---
 
