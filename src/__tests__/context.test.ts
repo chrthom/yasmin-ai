@@ -51,10 +51,11 @@ describe('Context Service', () => {
       expect(formattedContext).toContain('- Profile of Anjali');
       expect(formattedContext).toContain('- Profile of Samira');
       expect(formattedContext).toContain('- Profile of Ellena');
-      expect(formattedContext).toContain('- Journal with Anjali');
 
-      // Session entries are no longer eagerly loaded, so they now appear in the directory
-      expect(formattedContext).toContain('- Session with Zara');
+      // Stale 'Session with X' / 'Journal with X' rows have been removed entirely -- only Profile
+      // entries and Family notes remain in the underlying data now.
+      expect(formattedContext).not.toContain('Session with');
+      expect(formattedContext).not.toContain('Journal with');
 
       // Eagerly loaded entries should be excluded from the directory
       expect(formattedContext).not.toContain('- Profile of Zara');
