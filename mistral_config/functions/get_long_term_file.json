@@ -1,0 +1,13 @@
+// Description for Mistral Console: Retrieves the full current verbose content of a long-term memory file by its exact path.
+// Use this tool to read an existing file before revising it with stage_update, so your update is a full,
+// consistent replacement rather than a guess at what the file already contains.
+{
+  "type": "object",
+  "required": ["path"],
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "The exact path of the long-term memory file to retrieve. Examples: 'people/christopher.md', 'people/yasmin.md'."
+    }
+  }
+}

@@ -122,6 +122,25 @@ export async function deleteContextEntry(title: string): Promise<boolean> {
 }
 
 /**
+ * Inserts a context entry if it doesn't exist yet, otherwise updates its content
+ */
+export async function upsertContextEntry(title: string, content: string): Promise<'inserted' | 'updated'> {
+  try {
+    const existing = await getContentByTitleFromDb(title);
+    if (existing === null) {
+      await insertContextEntry(title, content);
+      return 'inserted';
+    }
+
+    await updateContextEntry(title, content);
+    return 'updated';
+  } catch (error) {
+    console.error(`Error upserting context entry "${title}":`, error);
+    throw error;
+  }
+}
+
+/**
  * Lists all context entries
  * @returns Promise<Array<{title: string, content: string}>>
  */
