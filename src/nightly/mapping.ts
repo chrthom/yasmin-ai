@@ -43,7 +43,15 @@ export function pathToTitle(path: string): string | null {
 
   const peopleMatch = PEOPLE_PATH_PATTERN.exec(path);
   if (peopleMatch && peopleMatch[2].toLowerCase() === 'md') {
-    return `Profile of ${stemToName(peopleMatch[1])}`;
+    const name = stemToName(peopleMatch[1]);
+    // "yasmin" is reserved for the fixed self-reflection mapping above -- a people/ file that
+    // happens to be named yasmin.md must not resolve to the same "Profile of Yasmin" title, or it
+    // would silently overwrite Yasmin's own self-reflection context entry (see bootstrap-memory.ts,
+    // which excludes this exact name for the same reason).
+    if (name.toLowerCase() === 'yasmin') {
+      return null;
+    }
+    return `Profile of ${name}`;
   }
 
   return null;

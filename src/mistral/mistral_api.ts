@@ -434,10 +434,14 @@ function mapLibraryDocument(d: z.infer<typeof LibraryDocumentResponseSchema>): L
  */
 export async function listDocuments(): Promise<LibraryDocument[]> {
   const pageSize = 1000;
+  // Hard cap independent of the server's has_more flag -- at single-family scale even a handful of
+  // pages is already implausible, so this only ever kicks in to stop a misbehaving/misconfigured
+  // response (e.g. has_more: true forever) from looping forever while the nightly lock is held.
+  const maxPages = 100;
   const results: LibraryDocument[] = [];
   let page = 0;
 
-  for (;;) {
+  for (; page < maxPages; page++) {
     const data = await requestJson(
       'GET',
       '/libraries/' + config.mistral.libraryId + '/documents?page=' + page + '&page_size=' + pageSize,
@@ -453,11 +457,13 @@ export async function listDocuments(): Promise<LibraryDocument[]> {
     const hasMore =
       data.has_more === true || (data.has_more === undefined && pageDocuments.length >= pageSize);
     if (!hasMore) {
-      break;
+      return results;
     }
-    page++;
   }
 
+  console.error(
+    'ERROR listDocuments hit the ' + maxPages + '-page safety cap; returning what was fetched so far'
+  );
   return results;
 }
 

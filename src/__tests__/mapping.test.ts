@@ -21,6 +21,14 @@ describe('nightly/mapping', () => {
     it('returns null for an unmapped path', () => {
       expect(pathToTitle('journals/christopher/conv123.md')).toBeNull();
     });
+
+    it('returns null for people/yasmin.md, since that title is reserved for the fixed self-reflection mapping', () => {
+      expect(pathToTitle('people/yasmin.md')).toBeNull();
+    });
+
+    it('returns null for people/yasmin.md with a differently-cased extension too', () => {
+      expect(pathToTitle('people/yasmin.MD')).toBeNull();
+    });
   });
 
   describe('titleToPath', () => {

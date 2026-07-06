@@ -317,7 +317,10 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   it('change detection: an identical staged update is a no-op, not an error or a counted change', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
-    await archive.seed('people/alice.md', 'Existing alice content');
+    const seeded = await archive.seed('people/alice.md', 'Existing alice content');
+    // Mark the seeded row as already synced -- otherwise Phase 5 would re-upload it regardless of
+    // whether Phase 4 detected a content change, and this test couldn't tell the two apart.
+    await archive.markSynced(seeded.id, 'doc-existing-alice');
 
     mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
       await executeTool('stage_update', {
@@ -339,6 +342,10 @@ describe('nightly pipeline integration', () => {
     expect(archivePhaseUpdate).toBeDefined();
     expect(archivePhaseUpdate![1].filesUpdated).toBe(0);
     expect(archivePhaseUpdate![1].filesCreated).toBe(0);
+
+    // Identical content ⇒ no new version ⇒ the already-synced row stays synced ⇒ no upload call for
+    // it specifically (the run's own new journal for conv-1 is separately and correctly uploaded).
+    expect(mockReplaceDocument.mock.calls.some(call => call[0] === 'people/alice.md')).toBe(false);
 
     // Not treated as an error: the update was approved, just a no-op.
     expect(result.status).toBe('completed');
@@ -415,6 +422,47 @@ describe('nightly pipeline integration', () => {
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
     expect(mockDeleteConversation).not.toHaveBeenCalledWith('conv-999');
+
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('resume: does not re-journal (or re-fetch messages for) a conversation already journaled before the crash', async () => {
+    const orphan: NightlyJobLog = {
+      id: 77,
+      startedAt: new Date('2026-07-05T22:00:00Z'),
+      completedAt: null,
+      status: 'running',
+      lastCompletedPhase: '2-journal',
+      processedConversationIds: ['conv-9', 'conv-10'],
+      skippedConversationIds: [],
+      retryCount: 0,
+      errorMessage: null,
+      conversationsProcessed: 0,
+      filesUpdated: 0,
+      filesCreated: 0
+    };
+    mockFindRunningJob.mockResolvedValueOnce(orphan);
+    mockListConversations.mockResolvedValueOnce([conversation('conv-999', 'Someone Else')]);
+    // conv-9's journal was already written and archived in the crashed run, BEFORE it died -- this is
+    // the state that Phase 2's `if (!existing)` anti-duplication guard is supposed to detect and skip.
+    await archive.seed('journals/conv-9/conv-9.md', 'Already-written journal for conv-9');
+
+    await runNightlyPipeline();
+
+    // conv-9: already journaled -- must be skipped entirely, not just re-inserted with the same content.
+    expect(mockGetConversationMessages).not.toHaveBeenCalledWith('conv-9');
+    expect(mockRunJournal).not.toHaveBeenCalledWith('conv-9', expect.anything());
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'journals/conv-9/conv-9.md')).toBe(
+      false
+    );
+
+    // conv-10: not yet journaled -- must still be journaled fresh this run.
+    expect(mockGetConversationMessages).toHaveBeenCalledWith('conv-10');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-10/conv-10.md', 'journal text');
+
+    // Both conversations are still cleaned up in Phase 7 regardless of which path journaled them.
+    expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');
+    expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
 
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
@@ -514,6 +562,28 @@ describe('nightly pipeline integration', () => {
     const titlesUpserted = mockUpsertContextEntry.mock.calls.map(call => call[0]);
     expect(titlesUpserted).not.toContain('journals/alice/conv-1.md');
     expect(mockUpsertContextEntry).toHaveBeenCalledTimes(3);
+
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. Phase 6 privacy wiring
+  // -------------------------------------------------------------------------
+  it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'people/bob.md',
+      'Public fact about Bob.\n[PRIVACY:SENSITIVE]\nBob secretly hates broccoli.\n[/PRIVACY:SENSITIVE]\nMore public info.'
+    );
+
+    await runNightlyPipeline();
+
+    expect(mockRunCompact).toHaveBeenCalledTimes(1);
+    const [, , strippedContentPassedToCompact] = mockRunCompact.mock.calls[0];
+    expect(strippedContentPassedToCompact).not.toContain('PRIVACY:SENSITIVE');
+    expect(strippedContentPassedToCompact).not.toContain('secretly hates broccoli');
+    expect(strippedContentPassedToCompact).toContain('Public fact about Bob.');
+    expect(strippedContentPassedToCompact).toContain('More public info.');
 
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });

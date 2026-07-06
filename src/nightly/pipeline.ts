@@ -119,10 +119,22 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     const orphan = await findRunningJob();
     let conversations: { id: string; name: string }[];
     const skippedIds: string[] = [];
+    // The watermark for the NEXT run must reflect when THIS run's Phase-1 snapshot was taken, not
+    // whenever the whole job eventually finishes minutes later -- otherwise any conversation updated
+    // in that gap is invisible to this run (already snapshotted) AND permanently invisible to every
+    // future run (its updated_at will never again clear a later watermark). See computeSinceIso/
+    // getWatermark for the read side of this contract.
+    let collectedAt: Date;
 
-    if (orphan) {
+    // Only treat the orphan as a genuine resume if Phase 1 had already durably recorded its
+    // conversation batch (processedConversationIds is non-empty). If the process crashed between
+    // createJobLog() and that write, there is nothing safe to resume -- fall through to the same
+    // fresh-collection path as a brand-new job (still reusing the orphan's row/id, so we don't leave
+    // it dangling), rather than silently treating an empty id list as "nothing to process".
+    if (orphan && orphan.processedConversationIds.length > 0) {
       jobId = orphan.id;
       resetNightlyToolsState();
+      collectedAt = orphan.startedAt;
 
       // Recover usernames for the reused id list by re-listing with the same watermark-derived
       // sinceIso and filtering down to just the ids we already know about -- the id list itself is
@@ -143,10 +155,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         return { id, name: id };
       });
     } else {
-      jobId = await createJobLog();
+      jobId = orphan ? orphan.id : await createJobLog();
       resetNightlyToolsState();
 
       const sinceIso = await computeSinceIso();
+      collectedAt = new Date();
       const allConversations = await listConversations(sinceIso);
       // Filter to the LIVE family chat agent's id -- NOT the nightly agent's id -- so the nightly
       // job's own scratch conversations (created below in phases 2-4) never get picked up as if
@@ -156,7 +169,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       if (filtered.length === 0) {
         await updateJobLog(jobId, {
           status: 'completed',
-          completedAt: true,
+          completedAt: collectedAt,
           lastCompletedPhase: '1-collect',
           conversationsProcessed: 0
         });
@@ -215,7 +228,15 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
     // -----------------------------------------------------------------------
-    await runIntegrate(executeIntegrateTool);
+    const integrateResult = await runIntegrate(executeIntegrateTool);
+    const integrateTruncated = integrateResult.iterations >= config.nightly.maxIterations;
+    if (integrateTruncated) {
+      console.warn(
+        'WARN Phase 3 integrate tool loop hit maxIterations (' +
+          config.nightly.maxIterations +
+          '); staged updates for this run may be incomplete'
+      );
+    }
     const stagedUpdates: StagedUpdate[] = getStagedUpdates();
     await updateJobLog(jobId, { lastCompletedPhase: '3-integrate' });
 
@@ -225,23 +246,31 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let filesUpdatedFromReview = 0;
     let filesCreatedFromReview = 0;
     let anyRejected = false;
+    let anyReviewFailed = false;
 
     for (const update of stagedUpdates) {
-      const currentVersion = await getCurrentVersion(update.path);
-      const currentContent = currentVersion ? currentVersion.content : null;
+      try {
+        const currentVersion = await getCurrentVersion(update.path);
+        const currentContent = currentVersion ? currentVersion.content : null;
 
-      const verdict = await runReview(update, currentContent, todaysJournals);
+        const verdict = await runReview(update, currentContent, todaysJournals);
 
-      if (verdict.approved) {
-        const { created } = await insertNextVersion(update.path, update.content);
-        if (created && update.isNew) {
-          filesCreatedFromReview++;
-        } else if (created && !update.isNew) {
-          filesUpdatedFromReview++;
+        if (verdict.approved) {
+          const { created } = await insertNextVersion(update.path, update.content);
+          // Classify create-vs-update from whether an archived version already existed, not from
+          // the AI-supplied isNew flag, which is never cross-checked against real archive state.
+          if (created && currentContent === null) {
+            filesCreatedFromReview++;
+          } else if (created) {
+            filesUpdatedFromReview++;
+          }
+        } else {
+          console.warn('WARN Rejected staged update for ' + update.path + ': ' + verdict.reason);
+          anyRejected = true;
         }
-      } else {
-        console.warn('WARN Rejected staged update for ' + update.path + ': ' + verdict.reason);
-        anyRejected = true;
+      } catch (error) {
+        console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
+        anyReviewFailed = true;
       }
     }
 
@@ -255,6 +284,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // Phase 5 -- Upload
     // -----------------------------------------------------------------------
     let anyUploadFailed = false;
+    let anyDeleteFailed = false;
     const unsynced = await listUnsynced();
 
     for (const row of unsynced) {
@@ -278,6 +308,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           await deleteDocument(doc.id);
         } catch (error) {
           console.error('ERROR Failed to delete orphaned Mistral document "' + doc.path + '": ' + error);
+          anyDeleteFailed = true;
         }
       }
     }
@@ -287,8 +318,10 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 6 -- Regenerate eager cache (always fully re-runs -- cheap, idempotent, purely local)
     // -----------------------------------------------------------------------
-    let filesUpdatedFromEager = 0;
-    let filesCreatedFromEager = 0;
+    // NOTE: this phase's upserts are NOT counted into the job log's filesUpdated/filesCreated --
+    // it unconditionally rewrites every current file every night regardless of whether anything
+    // actually changed, so it is not a meaningful "how much changed" signal (see Phase 4, which is).
+    let anyEagerFailed = false;
     const allCurrentVersions = await listCurrentVersions();
 
     for (const row of allCurrentVersions) {
@@ -309,17 +342,17 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         personName = title.replace('Profile of ', '');
       }
 
-      const stripped = stripSensitive(row.content);
-      let compacted = await runCompact(kind, personName, stripped);
-      if (isOverCap(compacted, config.nightly.eagerMaxChars)) {
-        compacted = truncateToCap(compacted, config.nightly.eagerMaxChars);
-      }
+      try {
+        const stripped = stripSensitive(row.content);
+        let compacted = await runCompact(kind, personName, stripped);
+        if (isOverCap(compacted, config.nightly.eagerMaxChars)) {
+          compacted = truncateToCap(compacted, config.nightly.eagerMaxChars);
+        }
 
-      const outcome = await upsertContextEntry(title, compacted);
-      if (outcome === 'inserted') {
-        filesCreatedFromEager++;
-      } else {
-        filesUpdatedFromEager++;
+        await upsertContextEntry(title, compacted);
+      } catch (error) {
+        console.error('ERROR Failed to regenerate eager cache entry for "' + row.filePath + '": ' + error);
+        anyEagerFailed = true;
       }
     }
 
@@ -334,6 +367,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         await deleteConversation(id);
       } catch (error) {
         console.error('ERROR Failed to delete conversation ' + id + ': ' + error);
+        anyDeleteFailed = true;
       }
     }
 
@@ -352,14 +386,22 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
 
     const finalStatus: NightlyJobStatus =
-      skippedIds.length === 0 && !anyRejected && !anyUploadFailed ? 'completed' : 'partial';
+      skippedIds.length === 0 &&
+      !anyRejected &&
+      !anyReviewFailed &&
+      !anyUploadFailed &&
+      !anyDeleteFailed &&
+      !anyEagerFailed &&
+      !integrateTruncated
+        ? 'completed'
+        : 'partial';
     const conversationsProcessed = conversations.length;
-    const filesUpdated = filesUpdatedFromReview + filesUpdatedFromEager;
-    const filesCreated = filesCreatedFromReview + filesCreatedFromEager;
+    const filesUpdated = filesUpdatedFromReview;
+    const filesCreated = filesCreatedFromReview;
 
     await updateJobLog(jobId, {
       status: finalStatus,
-      completedAt: true,
+      completedAt: collectedAt,
       lastCompletedPhase: '7-cleanup',
       conversationsProcessed,
       filesUpdated,
@@ -369,10 +411,24 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     return { jobId, status: finalStatus, conversationsProcessed, filesUpdated, filesCreated };
   } catch (error) {
     if (jobId !== undefined) {
-      await updateJobLog(jobId, { status: 'failed', errorMessage: String(error), completedAt: true });
+      // Best-effort: if this write itself fails (e.g. DB outage), do not let that error replace the
+      // real root cause being propagated below -- just log it and keep going.
+      try {
+        await updateJobLog(jobId, { status: 'failed', errorMessage: String(error), completedAt: true });
+      } catch (logError) {
+        console.error(
+          'ERROR Failed to persist failed status to nightly_job_log for job ' + jobId + ': ' + logError
+        );
+      }
     }
     throw error;
   } finally {
-    await releaseLock('nightly');
+    // Same reasoning: a failure here must not mask whatever error is already propagating out of the
+    // try/catch above (JS finally-throw semantics would otherwise silently replace it).
+    try {
+      await releaseLock('nightly');
+    } catch (releaseError) {
+      console.error('ERROR Failed to release the nightly processing lock: ' + releaseError);
+    }
   }
 }
