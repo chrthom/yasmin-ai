@@ -147,6 +147,61 @@ export async function pruneOldJobLogs(olderThanDays: number): Promise<number> {
 }
 
 /**
+ * Maps a raw snake_case nightly_job_log DB row into a camelCase NightlyJobLog
+ */
+function mapJobLogRow(row: any): NightlyJobLog {
+  return {
+    id: row.id,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    status: row.status,
+    lastCompletedPhase: row.last_completed_phase,
+    processedConversationIds: parseIdArrayColumn(row.processed_conversation_ids),
+    skippedConversationIds: parseIdArrayColumn(row.skipped_conversation_ids),
+    retryCount: row.retry_count,
+    errorMessage: row.error_message,
+    conversationsProcessed: row.conversations_processed,
+    filesUpdated: row.files_updated,
+    filesCreated: row.files_created
+  };
+}
+
+/** Normalizes a JSON id-array column to a string array, tolerating null/string/already-parsed shapes */
+function parseIdArrayColumn(value: any): string[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      console.error('Error parsing nightly_job_log id array column:', error);
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * Returns the single most recent 'running' job row (an orphan from a crashed process), or null if none exists
+ */
+export async function findRunningJob(): Promise<NightlyJobLog | null> {
+  try {
+    const [rows]: any = await executeQuery(
+      "SELECT * FROM nightly_job_log WHERE status = 'running' ORDER BY id DESC LIMIT 1"
+    );
+    if (rows && rows.length > 0) {
+      return mapJobLogRow(rows[0]);
+    }
+    return null;
+  } catch (error) {
+    console.error('Error finding running nightly_job_log row:', error);
+    throw error;
+  }
+}
+
+/**
  * Attempts to acquire the named processing lock, stealing it if the existing lock is stale
  */
 export async function acquireLock(lockName: string, owner: string, staleMs: number): Promise<boolean> {
