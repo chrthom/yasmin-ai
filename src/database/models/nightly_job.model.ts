@@ -27,7 +27,14 @@ export interface NightlyJobLogPatch {
   conversationsProcessed?: number;
   filesUpdated?: number;
   filesCreated?: number;
-  completedAt?: boolean;
+  /**
+   * true: sets completed_at = NOW() (current wall-clock time).
+   * Date: sets completed_at to that specific instant -- used by the nightly pipeline to record when
+   * Phase 1's conversation-listing snapshot was actually taken, not whenever the whole job (which can
+   * run for several more minutes across phases 2-7) eventually finishes. See pipeline.ts's
+   * `collectedAt` for why this distinction matters for the next run's watermark.
+   */
+  completedAt?: boolean | Date;
 }
 
 /**
@@ -99,6 +106,9 @@ export async function updateJobLog(id: number, patch: NightlyJobLogPatch): Promi
 
     if (patch.completedAt === true) {
       fields.push('completed_at = NOW()');
+    } else if (patch.completedAt instanceof Date) {
+      fields.push('completed_at = ?');
+      values.push(patch.completedAt);
     }
 
     if (fields.length === 0) {
@@ -224,11 +234,14 @@ export async function acquireLock(lockName: string, owner: string, staleMs: numb
     const elapsedMs = Date.now() - acquiredAt.getTime();
 
     if (elapsedMs > staleMs) {
-      await executeQuery('UPDATE processing_lock SET acquired_at = NOW(), owner = ? WHERE lock_name = ?', [
-        owner,
-        lockName
-      ]);
-      return true;
+      // Compare-and-swap on the previously-read acquired_at so two callers racing to steal the same
+      // stale lock cannot both succeed -- whichever UPDATE runs first changes acquired_at, so the
+      // second one's WHERE no longer matches and affectedRows is 0.
+      const [result]: any = await executeQuery(
+        'UPDATE processing_lock SET acquired_at = NOW(), owner = ? WHERE lock_name = ? AND acquired_at = ?',
+        [owner, lockName, acquiredAt]
+      );
+      return result.affectedRows === 1;
     }
 
     return false;

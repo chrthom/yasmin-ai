@@ -316,6 +316,23 @@ describe('mistral_api', () => {
         'https://api.test/v1/libraries/lib-1/documents?page=1&page_size=1000'
       );
     });
+
+    it('stops at the hard page-count safety cap instead of looping forever on a server that always says has_more: true', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{ id: 'd1', name: 'Profile of Alice.md', process_status: 'done', summary: null }],
+          has_more: true
+        })
+      });
+
+      const result = await listDocuments();
+
+      // Never throws/hangs, and the fetch call count is bounded rather than infinite.
+      expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(100);
+      expect(result.length).toBe(mockFetch.mock.calls.length);
+    });
   });
 
   describe('uploadDocument', () => {

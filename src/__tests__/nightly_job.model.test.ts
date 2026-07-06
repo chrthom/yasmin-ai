@@ -126,11 +126,12 @@ describe('nightly_job.model', () => {
       expect(calls.some(q => q.startsWith('UPDATE'))).toBe(false);
     });
 
-    it('steals a stale lock by issuing an UPDATE and returns true', async () => {
+    it('steals a stale lock by issuing a compare-and-swap UPDATE and returns true', async () => {
+      const staleAcquiredAt = new Date(Date.now() - 120000);
       const dupError: any = new Error('Duplicate entry');
       dupError.code = 'ER_DUP_ENTRY';
       mockExecuteQuery.mockRejectedValueOnce(dupError);
-      mockExecuteQuery.mockResolvedValueOnce([[{ acquired_at: new Date(Date.now() - 120000) }]]);
+      mockExecuteQuery.mockResolvedValueOnce([[{ acquired_at: staleAcquiredAt }]]);
       mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 1 }]);
 
       const acquired = await acquireLock('nightly', 'host:456', 60000);
@@ -138,8 +139,22 @@ describe('nightly_job.model', () => {
       expect(acquired).toBe(true);
       expect(mockExecuteQuery).toHaveBeenCalledTimes(3);
       const [updateQuery, updateParams] = mockExecuteQuery.mock.calls[2];
-      expect(updateQuery).toMatch(/^UPDATE processing_lock SET acquired_at = NOW\(\), owner = \?/);
-      expect(updateParams).toEqual(['host:456', 'nightly']);
+      expect(updateQuery).toMatch(
+        /^UPDATE processing_lock SET acquired_at = NOW\(\), owner = \? WHERE lock_name = \? AND acquired_at = \?/
+      );
+      expect(updateParams).toEqual(['host:456', 'nightly', staleAcquiredAt]);
+    });
+
+    it('loses the steal race when a concurrent caller already stole the stale lock (CAS affectedRows 0)', async () => {
+      const dupError: any = new Error('Duplicate entry');
+      dupError.code = 'ER_DUP_ENTRY';
+      mockExecuteQuery.mockRejectedValueOnce(dupError);
+      mockExecuteQuery.mockResolvedValueOnce([[{ acquired_at: new Date(Date.now() - 120000) }]]);
+      mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 0 }]);
+
+      const acquired = await acquireLock('nightly', 'host:456', 60000);
+
+      expect(acquired).toBe(false);
     });
 
     it('rethrows non-duplicate-key errors', async () => {
