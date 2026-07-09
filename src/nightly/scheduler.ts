@@ -85,9 +85,19 @@ async function runAndReschedule(): Promise<void> {
   scheduleNext();
 }
 
+/** Retry delay used when computing the next run time itself fails (e.g. an invalid MEMORY_TZ) */
+const SCHEDULE_RETRY_MS = 60 * 60 * 1000;
+
 function scheduleNext(): void {
-  const delayMs =
-    nextRunAt(new Date(), config.nightly.tz, NIGHTLY_HOUR, NIGHTLY_MINUTE).getTime() - Date.now();
+  let delayMs: number;
+  try {
+    delayMs = nextRunAt(new Date(), config.nightly.tz, NIGHTLY_HOUR, NIGHTLY_MINUTE).getTime() - Date.now();
+  } catch (error) {
+    console.error('ERROR Failed to compute the next nightly run time; retrying in 1h: ' + error);
+    timer = setTimeout(scheduleNext, SCHEDULE_RETRY_MS);
+    return;
+  }
+
   timer = setTimeout(() => {
     runAndReschedule().catch(error => console.error('ERROR Nightly scheduler tick crashed: ' + error));
   }, delayMs);
@@ -98,6 +108,11 @@ function scheduleNext(): void {
  * inherits the exact same environment/config, with no external cron daemon or wrapper script needed.
  */
 export function startNightlyScheduler(): void {
+  if (timer) {
+    console.warn('WARN startNightlyScheduler() called again while already armed; ignoring');
+    return;
+  }
+
   console.log(
     'INFO Nightly scheduler started (tz=' +
       config.nightly.tz +

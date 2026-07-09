@@ -10,7 +10,7 @@
 
 ## 0. Scope & non-goals
 
-This targets the **actual deployment**: a single-family, self-hosted assistant with a handful of conversations per day, one MariaDB instance, one Mistral workspace, one cron host.
+This targets the **actual deployment**: a single-family, self-hosted assistant with a handful of conversations per day, one MariaDB instance, one Mistral workspace, one app container.
 
 **In scope:** the nightly consolidation job, its MariaDB tables, its Mistral integration, the eager-cache regeneration bridge, retries, locking, recovery, and tests.
 
@@ -52,7 +52,7 @@ mysql -h 192.168.0.2 -P 3307 -u yasmin -p yasmin < database/schema_memory.sql
 Creates: `memory_archive`, `nightly_job_log`, `processing_lock`. Non-destructive; `context_entries` is untouched.
 
 ### 2.2 MariaDB (bootstrap migration — CRITICAL)
-The library is empty. Phase 6 regenerates `context_entries` **from** the verbose store, so if the verbose store is empty on first run it would **wipe the existing profiles**. Before enabling the cron, run the one-time bootstrap (`scripts/bootstrap-memory.ts`, §7.3):
+The library is empty. Phase 6 regenerates `context_entries` **from** the verbose store, so if the verbose store is empty on first run it would **wipe the existing profiles**. Before the scheduler's first automatic run, run the one-time bootstrap (`scripts/bootstrap-memory.ts`, §7.3):
 > Reads current `context_entries` → **merges each `Profile of X` + `Session with X` into one `people/<name>.md`** (5-section template), composes `self-reflection/profile.md` (from `Profile of Yasmin`) and `general/family.md` (from `Family notes`) → inserts them as `memory_archive` v1 → uploads them to the Mistral library.
 
 Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entries` row that has no verbose source** (see §8.4), so a missed bootstrap degrades to "no change," never data loss.
@@ -75,7 +75,7 @@ Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entr
 - [ ] Conversation agent: library attached + privacy prompt updated
 - [ ] `yasmin-nightly` agent created; `AGENT_ID_NIGHTLY` set
 - [ ] Bootstrap migration run; `memory_archive` seeded; library populated
-- [ ] `dist/` built; cron installed; dry-run reviewed
+- [ ] `dist/` built; app (re)started so the scheduler arms itself; dry-run reviewed
 
 ---
 
@@ -200,7 +200,7 @@ deleteDocument(docId: string): Promise<void>                     // DELETE …/d
 
 ## 6. Nightly pipeline (`src/nightly/pipeline.ts`)
 
-Orchestrates phases; each writes `last_completed_phase` for resume. Wrapper catches, marks `failed`/`partial`, releases lock, exits non-zero (cron mails on failure, §11).
+Orchestrates phases; each writes `last_completed_phase` for resume. The caller (the scheduler, or the CLI entry point for a manual run) catches, marks `failed`/`partial`, releases lock; a failure just surfaces as an `ERROR` log line (§11) -- there is no separate alerting step.
 
 ### 6.1 Phases
 
@@ -305,13 +305,20 @@ nightly: {
 ## 11. Scheduling & ops runbook
 
 **In-process scheduler** `src/nightly/scheduler.ts`, started from `app.ts` alongside the API server (no
-external cron/systemd unit, no wrapper script): it computes the next 03:00 (or whatever `MEMORY_TZ`
+external cron/systemd unit, no wrapper script): it computes the next 23:00 (or whatever `MEMORY_TZ`
 resolves to) using the container's own clock/timezone data, `setTimeout`s to it, calls the exact same
 `runNightlyPipeline()` the manual CLI (`src/nightly/run.ts`) calls, logs the result, and reschedules for
 the next day. Running in the same process as the server means it always has the exact same env vars and
 `node` executable — nothing extra to wire up when the app is deployed as a container. `src/nightly/run.ts`
 (`npm run nightly` / `npm run nightly:dry-run`) remains available for a manual one-off run or preflight
 check; it is no longer how the nightly recurrence itself is triggered.
+
+**Container base image note:** `nextRunAt`'s timezone math uses `Intl.DateTimeFormat` with an IANA zone
+name (`MEMORY_TZ`, default `Europe/Berlin`) -- this throws a `RangeError` at scheduler startup on a Node
+build without full ICU data (some minimal/slim base images ship Node with small-icu only). Verify
+`node -e "new Intl.DateTimeFormat('en-US',{timeZone:process.env.MEMORY_TZ||'Europe/Berlin'})"` succeeds in
+whatever image this actually deploys to; if not, install the `full-icu` package or use a base image built
+with full ICU.
 
 **Runbook:**
 | Symptom | Action |
@@ -386,7 +393,7 @@ Run once against a scratch library before go-live:
 | Journals | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings. |
 | Live agent | **Read-only** for memory; nightly job is the **sole writer**. `update_context_entry` retired. Keep live writes until the nightly job ships, then flip (§13). |
 | Reflection | Dedicated **`yasmin-nightly`** agent; transcripts via `getConversationMessages` (no `[REFLECTION_TRIGGER]`). |
-| Scheduling | **cron** + failure email; systemd timer an optional later upgrade. |
+| Scheduling | **Revised:** in-process scheduler (`src/nightly/scheduler.ts`, started from `app.ts`) instead of cron + failure email -- no external unit/wrapper script, and a failure is just an `ERROR` log line rather than a separate alert. |
 
 No open defaults remain.
 
@@ -394,7 +401,7 @@ No open defaults remain.
 
 ## Appendix A — Sequence (happy path)
 ```
-cron → run.js → acquireLock
+scheduler (23:00) → runNightlyPipeline → acquireLock
  P1 list(since watermark) ─ persist ids
  P2 for conv: getMessages → nightly.journal → archive(v1) + upload
  P3 nightly.integrate [get_long_term_file(archive), read_todays_journals, stage_update*] → staged[]

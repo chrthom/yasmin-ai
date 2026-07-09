@@ -68,8 +68,8 @@ async function main(): Promise<void> {
   try {
     const result = await runNightlyPipeline();
     console.log('INFO Nightly pipeline finished: ' + JSON.stringify(result));
-    // A 'partial' status still needs operator attention, so exit non-zero to trip the cron
-    // wrapper's failure-email check just like a hard 'failed' would.
+    // A 'partial' status still needs operator attention, so exit non-zero here too (this only
+    // matters for a manual run -- the scheduler itself just logs the result, see scheduler.ts).
     process.exit(result.status === 'completed' ? 0 : 1);
   } catch (error) {
     if (error instanceof LockHeldError) {

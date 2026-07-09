@@ -11,7 +11,13 @@ jest.mock('../config', () => ({
   }
 }));
 
-import { nextRunAt } from '../nightly/scheduler';
+jest.mock('../nightly/pipeline', () => ({
+  LockHeldError: class LockHeldError extends Error {},
+  runNightlyPipeline: jest.fn()
+}));
+
+import { config } from '../config';
+import { nextRunAt, startNightlyScheduler, stopNightlyScheduler } from '../nightly/scheduler';
 
 describe('nextRunAt', () => {
   it('schedules later today (UTC) when the target time has not yet passed', () => {
@@ -44,5 +50,35 @@ describe('nextRunAt', () => {
     const now = new Date('2026-01-09T00:00:00Z');
     const result = nextRunAt(now, 'Europe/Berlin', 3, 0);
     expect(result.toISOString()).toBe('2026-01-09T02:00:00.000Z');
+  });
+});
+
+describe('startNightlyScheduler', () => {
+  afterEach(() => {
+    stopNightlyScheduler();
+    jest.useRealTimers();
+  });
+
+  it('arms exactly one timer, and ignores a second call while already armed', () => {
+    jest.useFakeTimers();
+
+    startNightlyScheduler();
+    expect(jest.getTimerCount()).toBe(1);
+
+    startNightlyScheduler();
+    expect(jest.getTimerCount()).toBe(1);
+  });
+
+  it('falls back to a retry timer instead of throwing if computing the next run time fails', () => {
+    jest.useFakeTimers();
+    const originalTz = config.nightly.tz;
+    (config.nightly as { tz: string }).tz = 'Not/ARealTimeZone';
+
+    try {
+      expect(() => startNightlyScheduler()).not.toThrow();
+      expect(jest.getTimerCount()).toBe(1);
+    } finally {
+      (config.nightly as { tz: string }).tz = originalTz;
+    }
   });
 });
