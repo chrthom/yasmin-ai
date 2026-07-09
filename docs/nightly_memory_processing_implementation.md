@@ -33,7 +33,7 @@ Two memory levels, each with a real reader (unchanged from v3):
 
 ```
 day:   conversations happen; live agent READS only (eager + RAG); TODOs stay in the thread
-03:00: collect → journal → integrate(read memory_archive) → review
+23:00: collect → journal → integrate(read memory_archive) → review
        → write memory_archive (txn) → upload changed files to Mistral
        → regenerate context_entries (compress + strip privacy) → cleanup
 ```
@@ -66,7 +66,7 @@ Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entr
 ### 2.4 Environment / deployment
 1. Add env vars (§10): `MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, `MEMORY_TZ` (default `Europe/Berlin`), optional `NIGHTLY_MAX_RETRIES`.
 2. `npm run build` so `dist/nightly/run.js` exists.
-3. Install the cron/systemd trigger (§11) at 03:00 `MEMORY_TZ`.
+3. Start/restart the app (§11) — the in-process scheduler arms itself for the next 23:00 `MEMORY_TZ` automatically; no separate trigger to install.
 4. First: run `dist/nightly/run.js --dry-run` once and inspect the log.
 
 ### 2.5 Checklist
@@ -321,7 +321,7 @@ check; it is no longer how the nightly recurrence itself is triggered.
 | Mistral out of sync / manual edit | Re-run: Phase 5 re-uploads `synced_at IS NULL`; orphan-reconcile removes strays. Full rebuild: re-upload all current `memory_archive` versions. |
 | Bad AI update to a file | Restore a **chosen prior** version from `memory_archive` (keep ≥2), set `synced_at=NULL`, re-run Phase 5+6. |
 | Content integrity check | `SHA256(content) == content_hash` on read; mismatch → restore prior version. |
-| Backups | Nightly `mysqldump` of `context_entries` + `memory_archive` before 03:00. |
+| Backups | Nightly `mysqldump` of `context_entries` + `memory_archive` before 23:00. |
 
 ---
 

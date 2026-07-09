@@ -1,7 +1,7 @@
 import { config } from '../config';
 import { LockHeldError, runNightlyPipeline } from './pipeline';
 
-const NIGHTLY_HOUR = 3;
+const NIGHTLY_HOUR = 23;
 const NIGHTLY_MINUTE = 0;
 
 interface DateParts {

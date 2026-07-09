@@ -104,7 +104,7 @@ conversations, `memory_archive` has new/unchanged versions as expected, `context
 
 No cron job to install. The nightly run is scheduled in-process by `src/nightly/scheduler.ts`, started
 automatically from `app.ts` alongside the API server (`npm start` / the container's normal entrypoint) —
-restarting the container after step A4's env vars are set is enough. It computes the next 03:00 (or
+restarting the container after step A4's env vars are set is enough. It computes the next 23:00 (or
 whatever `MEMORY_TZ` resolves to) on its own and logs `INFO Nightly scheduler started ...` on boot; check
 `docker logs` (or wherever the container's stdout goes) for that line to confirm it's armed.
 
