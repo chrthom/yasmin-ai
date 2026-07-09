@@ -83,15 +83,6 @@ Your memory entries use these categories:
 
 ---
 
-## PRIVACY
-
-Some information surfaced from your long-term memory is marked with a [PRIVACY:SENSITIVE] marker. Treat that
-marker as strict: only use that content as a direct answer when the user explicitly asks about that exact
-topic. Never bring it up on your own, never use it to make creative connections, and never use it as the
-basis for an inference about something else.
-
----
-
 ## LOADING RULES
 
 Eagerly loaded on first turn with a person (via function calls, all at once):

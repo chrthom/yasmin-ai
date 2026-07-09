@@ -1,9 +1,4 @@
-import {
-  getAllEntriesFromDb,
-  getAllTitlesFromDb,
-  getContentByTitleFromDb,
-  updateContextEntry as updateContextEntryInDb
-} from './models/context.model';
+import { getAllEntriesFromDb, getAllTitlesFromDb, getContentByTitleFromDb } from './models/context.model';
 
 export interface DbRecord {
   title: string;
@@ -115,29 +110,6 @@ export class DbProxy {
     }
     const found = PROXY_DATA.find(record => record.title.toLowerCase() === title.toLowerCase());
     return found ? found.content : null;
-  }
-
-  /**
-   * Updates an existing context entry's content (title cannot be changed)
-   * @param title The exact title of the entry to update
-   * @param content The new content to set
-   * @returns Promise<boolean> True if successful
-   */
-  async updateEntry(title: string, content: string): Promise<boolean> {
-    if (!this.useRealDb) {
-      const foundIndex = PROXY_DATA.findIndex(record => record.title.toLowerCase() === title.toLowerCase());
-      if (foundIndex === -1) {
-        return false;
-      }
-      PROXY_DATA[foundIndex] = { ...PROXY_DATA[foundIndex], content };
-      return true;
-    }
-    try {
-      return await updateContextEntryInDb(title, content, undefined);
-    } catch (error) {
-      console.error(`Error updating context entry "${title}" in real DB:`, error);
-      return false;
-    }
   }
 }
 

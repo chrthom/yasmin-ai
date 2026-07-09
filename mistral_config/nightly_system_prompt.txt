@@ -39,19 +39,28 @@ Use this sparingly. Most facts are ordinary and need no marker.
 
 ## PERSON PROFILE TEMPLATE
 
-Whenever you write or update a `people/<name>.md` file, structure it with exactly these five sections, in
+Whenever you write or update a `people/<name>.md` file, structure it with exactly these seven sections, in
 this exact order and wording:
 
 ## Core Facts
 ## Current Attitude
+## Ideas, Interests & Goals
 ## Recent Happenings
 ## Open Topics
+## Communication Style
 ## Yasmin's Intentions
 
 - Core Facts -- stable facts about the person (age, relationships, job, stable preferences).
-- Current Attitude -- how the person currently feels; their mood and outlook right now.
+- Current Attitude -- how the person currently feels right now: mood, outlook, and anything they said in a
+  moment of self-reflection about themselves.
+- Ideas, Interests & Goals -- opinions and ideas the person expressed, personal projects, hobbies, and
+  goals they mentioned, and topics they keep returning to across conversations. This is where you capture
+  what the person actually thinks and cares about, not just what happened to them.
 - Recent Happenings -- what has happened recently that is worth remembering.
 - Open Topics -- unresolved threads, questions to follow up on, promises made.
+- Communication Style -- how this person likes to be talked to: tone, humor, directness, formality, pet
+  phrases, or topics to avoid. Only note this when the conversation actually gives you a signal -- do not
+  guess.
 - Yasmin's Intentions -- what Yasmin wants to do, ask, or bring up with this person next.
 
 Write about the person in third person. Keep the file concise and current; drop stale or redundant detail

@@ -508,47 +508,25 @@ export async function deleteDocument(documentId: string): Promise<void> {
 }
 
 /**
- * Reads the raw text content of a document -- recovery/verification tool only, not on the hot path
- */
-export async function getTextContent(documentId: string): Promise<string> {
-  return withRetry(async () => {
-    const response = await fetch(
-      config.mistral.apiRoot +
-        '/libraries/' +
-        config.mistral.libraryId +
-        '/documents/' +
-        documentId +
-        '/text_content',
-      {
-        method: 'GET',
-        headers: {
-          Authorization: 'Bearer ' + config.mistral.apiKey
-        }
-      }
-    );
-
-    if (!response.ok) {
-      console.error('ERROR Mistral API get text content failed: HTTP ' + response.status + ' ' + documentId);
-      throw new MistralApiError(
-        'Mistral API get text content failed: HTTP ' + response.status,
-        response.status
-      );
-    }
-
-    return response.text();
-  });
-}
-
-/**
- * Replaces a document's content -- libraries have no in-place update, so this deletes then re-uploads (in that order)
+ * Replaces a document's content -- libraries have no in-place update, so this uploads the new content
+ * first and only then deletes the superseded one. Uploading first means a mid-operation failure can at
+ * worst leave a stale duplicate under the same path (logged, harmless) instead of a window where the
+ * document is missing entirely from the library.
  */
 export async function replaceDocument(
   path: string,
   content: string,
   oldDocumentId?: string
 ): Promise<LibraryDocument> {
+  const doc = await uploadDocument(path, content);
   if (oldDocumentId) {
-    await deleteDocument(oldDocumentId);
+    try {
+      await deleteDocument(oldDocumentId);
+    } catch (error) {
+      console.error(
+        'ERROR Failed to delete superseded Mistral document ' + oldDocumentId + ' for "' + path + '": ' + error
+      );
+    }
   }
-  return uploadDocument(path, content);
+  return doc;
 }

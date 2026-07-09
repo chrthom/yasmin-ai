@@ -22,7 +22,10 @@ export function getDatabasePool(): Pool {
     timezone: '+00:00',
     connectionLimit: 10,
     queueLimit: 0,
-    idleTimeout: 60000
+    idleTimeout: 60000,
+    // Bounds a single connection attempt so an unreachable host fails fast instead of hanging past
+    // any caller's own timeout (e.g. a test suite's default test timeout).
+    connectTimeout: 5000
   });
 
   console.log('Successfully created MariaDB connection pool');

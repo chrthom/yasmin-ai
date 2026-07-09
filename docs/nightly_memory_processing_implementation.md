@@ -59,7 +59,7 @@ Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entr
 
 ### 2.3 Mistral Console
 1. **Library** — the `memory` library already exists in the production workspace. Obtain its **library id** and put it in `MISTRAL_LIBRARY_ID` (§10). *Do not* reuse the temporary test id from earlier spikes.
-2. **Conversation agent** (`AGENT_ID`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (this step happens at cutover, §13 — after the nightly job is verified).
+2. **Conversation agent** (`AGENT_ID_CONVERSATION`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (this step happens at cutover, §13 — after the nightly job is verified).
 3. **Nightly agent** — create a new agent `yasmin-nightly` with the memory-processor system prompt (§6.3). Library wiring **optional** (only for cross-file discovery; see v3 §1.2). Put its id in `AGENT_ID_NIGHTLY`.
 4. **API key** — issue a **production** key with access to the library + both agents; set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
 
@@ -97,9 +97,9 @@ New (`+`) and changed (`~`) files, following existing conventions (`src/**` → 
 + src/nightly/reflection.ts              prompts + agent calls (journal, integrate, review, compact)
 + src/nightly/privacy.ts                 [PRIVACY:SENSITIVE] stripping, compaction cap
 + src/nightly/mapping.ts                 path ↔ title mapping (§8.2)
-+ src/nightly/run.ts                     entry point (arg parsing, --dry-run)
++ src/nightly/run.ts                     CLI entry point (arg parsing, --dry-run) -- for manual runs only
++ src/nightly/scheduler.ts               in-process daily scheduler, started from app.ts (§11)
 + scripts/bootstrap-memory.ts            one-time context_entries → verbose seeding
-+ scripts/nightly-memory-job.sh          cron wrapper
 ~ src/config.ts                          add mistral.libraryId, mistral.nightlyAgentId, nightly.*
 ~ mistral_config/system_prompt.txt       + privacy block; remove write/Session instructions (read-only)
 + mistral_config/nightly_system_prompt.txt   yasmin-nightly agent prompt
@@ -188,10 +188,11 @@ askAgent(agentId: string, input: string|Message[], tools?): Promise<AgentRespons
 listDocuments(): Promise<DocMeta[]>                              // GET …/documents  (cursor pagination)
 uploadDocument(path: string, content: string): Promise<DocMeta> // POST multipart; filename=path (slashes OK)
 deleteDocument(docId: string): Promise<void>                     // DELETE …/documents/{docId}
-getTextContent(docId: string): Promise<string>                  // GET …/text_content  (recovery/verify only)
 ```
 
-**Verified behaviors baked in (v3 §5):** filename preserves slash paths; identical content dedupes by hash; **no in-place update → `replaceDocument(path)` = delete old `mistral_doc_id` then upload**; uploads are async (don't block on `process_status`); list is paginated (`page_size` 1000, `has_more`) → follow pages.
+**Verified behaviors baked in (v3 §5):** filename preserves slash paths; identical content dedupes by hash; **no in-place update → `replaceDocument(path)` = upload new content then delete the old `mistral_doc_id`** (upload-first so a mid-failure leaves at worst a stale duplicate, never a missing document); uploads are async (don't block on `process_status`); list is paginated (`page_size` 1000, `has_more`) → follow pages.
+
+`getTextContent` (recovery/verification tool, GET …/text_content) was removed as unused dead code -- reintroduce it if a manual recovery workflow needs it.
 
 `withRetry(fn, {retries, baseMs, jitter})` helper wraps every call. All 4xx except 429 fail fast (no retry).
 
@@ -254,7 +255,7 @@ stage_update(path, content, isNew)  // append to in-run staged list  ← the ONL
 
 | Verbose path | Eager title | Transform |
 |---|---|---|
-| `people/<name>.md` | `Profile of <Name>` | LLM-compact to the 5-section template (Core Facts, Current Attitude, Recent Happenings, Open Topics, Yasmin's Intentions); strip `[PRIVACY:SENSITIVE]`; cap 2 KB |
+| `people/<name>.md` | `Profile of <Name>` | LLM-compact to the 7-section template (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions); strip `[PRIVACY:SENSITIVE]`; cap 2 KB |
 | `self-reflection/profile.md` | `Profile of Yasmin` | compact (first-person) |
 | `general/family.md` | `Family notes` | compact |
 
@@ -303,16 +304,14 @@ nightly: {
 
 ## 11. Scheduling & ops runbook
 
-**Cron wrapper** `scripts/nightly-memory-job.sh`:
-```bash
-#!/bin/bash
-cd /home/christopher/Dokumente/yasmin-ai
-export NODE_ENV=production
-node dist/nightly/run.js >> /var/log/yasmin-nightly.log 2>&1
-code=$?
-[ $code -ne 0 ] && echo "Yasmin nightly FAILED ($code)" | mail -s "Yasmin Alert" christopher.thomsen@adesso.de
-```
-`/etc/cron.d/yasmin-nightly`: `0 3 * * * christopher /home/christopher/Dokumente/yasmin-ai/scripts/nightly-memory-job.sh` (host TZ = `MEMORY_TZ`). Prefer a **systemd timer + service** with `Restart=on-failure` if OOM/kill resilience matters (feedback §2).
+**In-process scheduler** `src/nightly/scheduler.ts`, started from `app.ts` alongside the API server (no
+external cron/systemd unit, no wrapper script): it computes the next 03:00 (or whatever `MEMORY_TZ`
+resolves to) using the container's own clock/timezone data, `setTimeout`s to it, calls the exact same
+`runNightlyPipeline()` the manual CLI (`src/nightly/run.ts`) calls, logs the result, and reschedules for
+the next day. Running in the same process as the server means it always has the exact same env vars and
+`node` executable — nothing extra to wire up when the app is deployed as a container. `src/nightly/run.ts`
+(`npm run nightly` / `npm run nightly:dry-run`) remains available for a manual one-off run or preflight
+check; it is no longer how the nightly recurrence itself is triggered.
 
 **Runbook:**
 | Symptom | Action |
@@ -381,9 +380,9 @@ Run once against a scratch library before go-live:
 | Topic | Decision |
 |---|---|
 | Read source (Phase 3) | **`memory_archive`** (local, exact) — no runtime dependency on the Mistral read API. MariaDB is the durable content source; Mistral is a derived search projection. |
-| Compression (Phase 6) | **LLM compaction** by the nightly agent to the 5-section template; 2000-char cap; deterministic truncate fallback. |
-| Sensitive in library | **Keep in library + answer-time prompt enforcement**; always stripped from the eager cache. Residual shared-RAG risk accepted (§9); gated per-person recall is future hardening. |
-| Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Recent Happenings, Open Topics, Yasmin's Intentions). **`Session with X` retired.** |
+| Compression (Phase 6) | **LLM compaction** by the nightly agent to the 7-section template; 2000-char cap; deterministic truncate fallback. |
+| Sensitive in library | **Revised:** stripped before Phase 5's upload too, not just the eager cache -- `[PRIVACY:SENSITIVE]` content never leaves local storage (`memory_archive` keeps it for versioning/audit only). Data minimization won over the original "keep in library + answer-time prompt enforcement" design, which relied entirely on the live agent's prompt discipline to gate a marker the RAG layer could otherwise surface. |
+| Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions). **`Session with X` retired.** |
 | Journals | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings. |
 | Live agent | **Read-only** for memory; nightly job is the **sole writer**. `update_context_entry` retired. Keep live writes until the nightly job ships, then flip (§13). |
 | Reflection | Dedicated **`yasmin-nightly`** agent; transcripts via `getConversationMessages` (no `[REFLECTION_TRIGGER]`). |
