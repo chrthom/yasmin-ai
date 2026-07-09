@@ -15,16 +15,24 @@ entries are retired for good.
 
 ## B1. Merge/deploy this PR
 
-This PR's two commits must land together, not staggered:
+This PR is one merge to `main`, so its four commits (the cutover itself, a restored regression test, the
+`Session`/`Journal` data-cleanup, and a couple of review follow-ups) always land together:
 
-- The read-only cutover itself (`chat_agent.ts`, `context.service.ts`, `mistral_config/system_prompt.txt`,
-  deletes `mistral_config/functions/update_context_entry.json`).
-- The `Session`/`Journal` data-cleanup commit (`db_proxy.ts`, `database/schema.sql`,
-  `CONTEXT_CONVENTIONS.md`).
+- **The cutover** (`chat_agent.ts`, `context.service.ts`, `mistral_config/system_prompt.txt`, deletes
+  `mistral_config/functions/update_context_entry.json`) — makes the live agent read-only for memory.
+- **A restored regression test** (`src/__tests__/chat_agent.test.ts`) asserting the read-only agent
+  silently ignores a stray `update_context_entry` tool call.
+- **The `Session`/`Journal` data-cleanup** (`db_proxy.ts`, `database/schema.sql`, `CONTEXT_CONVENTIONS.md`,
+  deletes 5 superseded design docs) — retires the old data model entirely, not just leaves it empty.
+- **Review follow-ups** (`db_proxy.ts`'s now-dead `updateEntry()` method, and the now-unreachable
+  `[PRIVACY:SENSITIVE]` handling block in `mistral_config/system_prompt.txt`).
 
-Do not deploy the data-cleanup commit ahead of the code commit — see `CONTEXT_CONVENTIONS.md` §2.1 for
-exactly why (a stale `update_context_entry` write attempt against an already-removed `Session with X` row
-would silently no-op, which only becomes correct behavior once the code no longer tries).
+The commit-level ordering doesn't matter for the `main` merge itself, but it matters for **how you deploy
+to production**: deploy the cutover code (which stops the live agent from writing) before you apply the
+`schema.sql`/data cleanup to a running database, not the other way around — see `CONTEXT_CONVENTIONS.md`
+§2.1 for exactly why (a stale `update_context_entry` write attempt against an already-removed
+`Session with X` row would silently no-op, which only becomes correct behavior once the code no longer
+tries).
 
 ## B2. Mistral Console
 
