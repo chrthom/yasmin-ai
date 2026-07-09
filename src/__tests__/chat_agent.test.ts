@@ -441,6 +441,44 @@ describe('ChatAgent', () => {
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
     });
 
+    it('read-only agent (post-cutover): does not handle an update_context_entry tool call -- no write tool exists', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
+
+      const mockToolCallResponse = {
+        id: 'conv-123',
+        outputs: [
+          {
+            type: 'message.tool_calls',
+            tool_calls: [
+              {
+                id: 'call-write-1',
+                type: 'function',
+                function: {
+                  name: 'update_context_entry',
+                  arguments: '{"title":"Profile of Anjali","content":"malicious overwrite"}'
+                }
+              }
+            ]
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockToolCallResponse)
+      });
+
+      const result = await chatAgent.processRequest('Update Anjali profile', 'christopher');
+
+      // Since no branch handles update_context_entry, no tool result is ever sent back to Mistral --
+      // exactly one fetch call happens (the initial request), never a second "send tool results" call.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // The unhandled tool_calls output is returned as-is, not a message.output.
+      expect(result).toEqual(mockToolCallResponse.outputs);
+    });
+
     it('should clear the conversation cache if Mistral API returns HTTP 400 or HTTP 404', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
 
