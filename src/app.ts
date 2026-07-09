@@ -13,6 +13,7 @@ import {
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
 import { getDatabasePool } from './database/connection';
+import { startNightlyScheduler, stopNightlyScheduler } from './nightly/scheduler';
 
 validateEnv();
 
@@ -71,6 +72,8 @@ const server = app.listen(config.server.port, () => {
   console.log(`INFO API Documentation available at http://localhost:${config.server.port}/api-docs`);
 });
 
+startNightlyScheduler();
+
 process.on('uncaughtException', err => {
   console.error('Uncaught Exception:', err);
   server.close(() => process.exit(1));
@@ -83,10 +86,12 @@ process.on('unhandledRejection', (reason, promise) => {
 
 process.on('SIGTERM', () => {
   console.log('INFO: SIGTERM received, shutting down');
+  stopNightlyScheduler();
   server.close(() => process.exit(0));
 });
 
 process.on('SIGINT', () => {
   console.log('INFO: SIGINT received, shutting down');
+  stopNightlyScheduler();
   server.close(() => process.exit(0));
 });

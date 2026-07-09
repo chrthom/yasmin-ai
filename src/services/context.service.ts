@@ -26,14 +26,12 @@ export class ContextService {
     const titles = entries.map(e => e.title);
 
     // 1. Mandatorily match eager-loaded entries for the first turn
-    // Profile of the sender, Session with sender, Family notes, and Profile of Yasmin
+    // Profile of the sender, Family notes, and Profile of Yasmin
     const profileOfSenderTitle = `Profile of ${username}`;
-    const sessionWithSenderTitle = `Session with ${username}`;
     const familyNotesTitle = 'Family notes';
     const profileOfYasminTitle = 'Profile of Yasmin';
 
     const matchedProfileSender = titles.find(t => t.toLowerCase() === profileOfSenderTitle.toLowerCase());
-    const matchedSessionSender = titles.find(t => t.toLowerCase() === sessionWithSenderTitle.toLowerCase());
     const matchedFamilyNotes = titles.find(t => t.toLowerCase() === familyNotesTitle.toLowerCase());
     const matchedProfileYasmin = titles.find(t => t.toLowerCase() === profileOfYasminTitle.toLowerCase());
 
@@ -47,9 +45,6 @@ export class ContextService {
     }
     if (matchedProfileSender && !loadedSet.has(matchedProfileSender)) {
       candidateTitles.push(matchedProfileSender);
-    }
-    if (matchedSessionSender && !loadedSet.has(matchedSessionSender)) {
-      candidateTitles.push(matchedSessionSender);
     }
 
     // 2. Load actual contents and format as clean XML

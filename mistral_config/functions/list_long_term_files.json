@@ -1,0 +1,7 @@
+// Description for Mistral Console: Lists every long-term memory file currently known, by path and content hash.
+// Use this tool at the start of the integrate phase to get an overview of what already exists before deciding
+// which files to inspect further with get_long_term_file or which new files need to be created with stage_update.
+{
+  "type": "object",
+  "properties": {}
+}

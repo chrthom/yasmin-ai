@@ -17,20 +17,6 @@ INSERT INTO context_entries (title, content) VALUES
 ('Profile of Christine', 'Christine is Yasmin''s grandmother. She lives in Schleswig.'),
 ('Profile of Lennard', 'Lennard is Yasmin''s uncle. He lives in Flensburg.'),
 ('Profile of Jonas', 'Jonas is Yasmin''s uncle. He lives in Schleswig.'),
--- Session entries: Topics to bring up, questions Yasmin has for each person
-('Session with Anjali', ''),
-('Session with Christopher', ''),
-('Session with Zara', ''),
-('Session with Helge', ''),
-('Session with Christine', ''),
-('Session with Lennard', ''),
--- Journal entries: Past conversations and shared history
-('Journal with Anjali', ''),
-('Journal with Christopher', ''),
-('Journal with Zara', ''),
-('Journal with Helge', ''),
-('Journal with Christine', ''),
-('Journal with Lennard', ''),
 -- Family-level entry
 ('Family notes', '')
 ON DUPLICATE KEY UPDATE content = VALUES(content);

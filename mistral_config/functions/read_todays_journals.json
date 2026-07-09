@@ -1,0 +1,7 @@
+// Description for Mistral Console: Returns this run's freshly generated journal entries, the evidence base you
+// should ground your memory updates in. Use this tool to review what happened across today's conversations
+// before deciding which long-term memory files to create or revise with stage_update.
+{
+  "type": "object",
+  "properties": {}
+}
