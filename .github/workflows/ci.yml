@@ -113,7 +113,9 @@ jobs:
           CHAT_TOKEN_BOT: test-bot-token
           CHAT_TOKEN_SLASH: test-slash-token
           CHAT_TOKEN_GROUP: test-group-token
-          AGENT_ID: test-agent-id
+          AGENT_ID_CONVERSATION: test-agent-id
+          MISTRAL_LIBRARY_ID: test-library-id
+          AGENT_ID_NIGHTLY: test-nightly-agent-id
 
       - name: Upload test results
         if: always()

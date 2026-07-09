@@ -25,7 +25,6 @@ import {
   listDocuments,
   uploadDocument,
   deleteDocument,
-  getTextContent,
   replaceDocument
 } from '../mistral/mistral_api';
 
@@ -372,28 +371,9 @@ describe('mistral_api', () => {
     });
   });
 
-  describe('getTextContent', () => {
-    it('returns raw text (not JSON) from the response body', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        text: async () => 'raw markdown content'
-      });
-
-      const result = await getTextContent('doc-1');
-
-      expect(result).toBe('raw markdown content');
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.test/v1/libraries/lib-1/documents/doc-1/text_content',
-        expect.objectContaining({ method: 'GET' })
-      );
-    });
-  });
-
   describe('replaceDocument', () => {
-    it('calls delete then upload, in that order', async () => {
+    it('calls upload then delete, in that order', async () => {
       mockFetch
-        .mockResolvedValueOnce({ ok: false, status: 204 }) // delete
         .mockResolvedValueOnce({
           ok: true,
           status: 201,
@@ -403,21 +383,21 @@ describe('mistral_api', () => {
             process_status: 'pending',
             summary: null
           })
-        }); // upload
+        }) // upload
+        .mockResolvedValueOnce({ ok: false, status: 204 }); // delete
 
       const result = await replaceDocument('Profile of Alice.md', '# Alice v2', 'old-doc-id');
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch.mock.calls[0][0]).toBe('https://api.test/v1/libraries/lib-1/documents/old-doc-id');
-      expect(mockFetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'DELETE' }));
-      expect(mockFetch.mock.calls[1][0]).toBe('https://api.test/v1/libraries/lib-1/documents');
-      expect(mockFetch.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'POST' }));
+      expect(mockFetch.mock.calls[0][0]).toBe('https://api.test/v1/libraries/lib-1/documents');
+      expect(mockFetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'POST' }));
+      expect(mockFetch.mock.calls[1][0]).toBe('https://api.test/v1/libraries/lib-1/documents/old-doc-id');
+      expect(mockFetch.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'DELETE' }));
       expect(result.id).toBe('d2');
     });
 
-    it('ignores a 404 from the delete step and still uploads', async () => {
+    it('ignores a 404 from the delete step', async () => {
       mockFetch
-        .mockResolvedValueOnce({ ok: false, status: 404 }) // delete (already gone)
         .mockResolvedValueOnce({
           ok: true,
           status: 201,
@@ -427,7 +407,8 @@ describe('mistral_api', () => {
             process_status: 'pending',
             summary: null
           })
-        }); // upload
+        }) // upload
+        .mockResolvedValueOnce({ ok: false, status: 404 }); // delete (already gone)
 
       const result = await replaceDocument('Profile of Bob.md', '# Bob', 'gone-doc-id');
 

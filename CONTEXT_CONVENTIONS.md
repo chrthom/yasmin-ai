@@ -133,7 +133,7 @@ that this cache is regenerated from every night:
 
 | Path                             | Purpose                                                                                                                                                                             | Regenerates (nightly, compacted + privacy-stripped) |
 | :------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------- |
-| **`people/<name>.md`**           | Verbose, structured profile per family member/contact: Core Facts, Current Attitude, Recent Happenings, Open Topics, Yasmin's Intentions. May contain `[PRIVACY:SENSITIVE]` blocks. | `Profile of [Name]`                                 |
+| **`people/<name>.md`**           | Verbose, structured profile per family member/contact: Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions. May contain `[PRIVACY:SENSITIVE]` blocks. | `Profile of [Name]`                                 |
 | **`self-reflection/profile.md`** | Yasmin's own long-term self-reflection, written in first person.                                                                                                                    | `Profile of Yasmin`                                 |
 | **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                          | `Family notes`                                      |
 
