@@ -524,7 +524,12 @@ export async function replaceDocument(
       await deleteDocument(oldDocumentId);
     } catch (error) {
       console.error(
-        'ERROR Failed to delete superseded Mistral document ' + oldDocumentId + ' for "' + path + '": ' + error
+        'ERROR Failed to delete superseded Mistral document ' +
+          oldDocumentId +
+          ' for "' +
+          path +
+          '": ' +
+          error
       );
     }
   }

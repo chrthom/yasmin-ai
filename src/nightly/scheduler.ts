@@ -60,8 +60,7 @@ export function nextRunAt(now: Date, timeZone: string, hour: number, minute: num
   const offsetMs = getTzOffsetMs(now, timeZone);
   const dateParts = getDateParts(now, timeZone);
 
-  let target =
-    Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day, hour, minute, 0) - offsetMs;
+  let target = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day, hour, minute, 0) - offsetMs;
 
   if (target <= now.getTime()) {
     target += 24 * 60 * 60 * 1000;
@@ -87,7 +86,8 @@ async function runAndReschedule(): Promise<void> {
 }
 
 function scheduleNext(): void {
-  const delayMs = nextRunAt(new Date(), config.nightly.tz, NIGHTLY_HOUR, NIGHTLY_MINUTE).getTime() - Date.now();
+  const delayMs =
+    nextRunAt(new Date(), config.nightly.tz, NIGHTLY_HOUR, NIGHTLY_MINUTE).getTime() - Date.now();
   timer = setTimeout(() => {
     runAndReschedule().catch(error => console.error('ERROR Nightly scheduler tick crashed: ' + error));
   }, delayMs);
