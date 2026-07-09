@@ -68,22 +68,24 @@ batch, via `ContextService`/`ChatAgent`.
 
 An earlier iteration of this system also eagerly loaded a `Session with [Sender]` entry (topics to bring up,
 questions to ask next), populated by the live conversation agent writing to it directly via an
-`update_context_entry` tool. That whole mechanism has been retired:
+`update_context_entry` tool. This PR (`feature/nightly-memory-part-b`, the "read-only cutover") retires
+that whole mechanism:
 
-- **Code:** the `feature/nightly-memory-processing` branch's "read-only cutover" commit removes
-  `update_context_entry` from `chat_agent.ts`, drops `Session with [Sender]` from `ContextService`'s eager
-  set, and rewrites the system prompt accordingly. Proactive topics/questions now live inside
-  `Profile of [Sender]` itself (an "Open Topics" section), folded in nightly by the memory pipeline's
-  compaction step — see §4.
+- **Code:** removes `update_context_entry` from `chat_agent.ts`, drops `Session with [Sender]` from
+  `ContextService`'s eager set, and rewrites the system prompt accordingly. Proactive topics/questions now
+  live inside `Profile of [Sender]` itself (an "Open Topics" section), folded in nightly by the memory
+  pipeline's compaction step — see §4.
 - **Data:** `db_proxy.ts` and `database/schema.sql` no longer seed any `Session with X` or `Journal with X`
   rows at all — they're gone from the model entirely, not left behind empty.
-- **Sequencing — deploy these two together, not the data change first:** on `main` today (before the
-  read-only cutover merges), the live agent's current system prompt and `update_context_entry` tool still
-  assume a `Session with [Sender]` entry exists. Applying the data cleanup without the code cutover would
-  make every attempt to write to it silently fail (`UPDATE ... WHERE title = ?` matches zero rows). Both
-  changes live on the same feature branch and must merge as one unit, only after the nightly memory job
-  (§4) has been verified in production over several nights — see
-  `docs/nightly_memory_processing_implementation.md` §13 and `docs/deployment_checklist.md`.
+- **Sequencing when deploying this PR — code before data cleanup, not the other way around:** on the
+  prerequisite Part A branch/PR (`feature/nightly-memory-part-a`) — i.e. before this PR's cutover code is
+  live — the live agent's system prompt and `update_context_entry` tool still assume a
+  `Session with [Sender]` entry exists. Applying this PR's `schema.sql` change to a production database
+  before its `chat_agent.ts` code is actually deployed would make every attempt to write to it silently
+  fail (`UPDATE ... WHERE title = ?` matches zero rows). Both changes are commits within this one PR and
+  merge/deploy as a single unit, only after the nightly memory job (§4, from the Part A PR) has been
+  verified in production for a while — see `docs/nightly_memory_processing_implementation.md` §13 and this
+  PR's own `docs/deployment_checklist.md`.
 - **Existing production rows:** if a production database already has old `Session with X` / `Journal with X`
   rows from before this cleanup, applying the updated `schema.sql` will **not** remove them (its
   `INSERT ... ON DUPLICATE KEY UPDATE` only adds/updates rows, it never deletes). Run
@@ -155,14 +157,13 @@ nightly pipeline, but has no mapping to a `context_entries` title or the Mistral
   and uploads changed files to the Mistral library.
 - **Read by:** the live conversation agent, via the Mistral library's built-in RAG (semantic search) — no
   tool call needed, unlike the eager/lazy `context_entries` groups above.
-- **Current status:** as of today (pre-cutover), the library is being populated nightly, but the live
-  agent's system prompt has not yet been wired up to mention or rely on it — RAG consumption begins at the
-  same read-only cutover described in §2.1, when `mistral_config/system_prompt.txt` is updated to tell the
-  agent that deeper facts and past conversations surface automatically from this library.
-- **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. Such
-  content is always stripped before it's compacted into the `context_entries` eager cache, but remains in
-  the Mistral library itself, gated only by prompt-level enforcement (the library is shared across the whole
-  family).
+- **Current status:** the library has been populated nightly since the Part A PR, and the live agent's
+  system prompt (as of this PR's cutover, §2.1) now tells it that deeper facts and past conversations
+  surface automatically from this library — RAG consumption is live.
+- **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. That
+  content is stripped before it's compacted into the `context_entries` eager cache, and (since a Part A
+  review follow-up) also stripped before it's ever uploaded to the Mistral library in the first place —
+  it never leaves local storage (`memory_archive` keeps the unstripped version for versioning/audit only).
 
 ---
 
