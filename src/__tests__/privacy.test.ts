@@ -52,6 +52,28 @@ describe('privacy', () => {
       expect(result).toContain('Before.');
       expect(result).toContain('After.');
     });
+
+    it('fails closed on a dangling opener by stripping to the end of content', () => {
+      const content =
+        'Some public text.\n[PRIVACY:SENSITIVE]\nleftover secret\nthat never got closed\nand more after';
+
+      const result = stripSensitive(content);
+
+      expect(result).not.toMatch(/PRIVACY:SENSITIVE/);
+      expect(result).not.toMatch(/secret/);
+      expect(result).toContain('Some public text.');
+      expect(result).not.toContain('leftover');
+    });
+
+    it('fails closed on a stray closer by stripping from the start of content', () => {
+      const content = 'Shielded material from before\n[/PRIVACY:SENSITIVE]\nclean trailing text';
+
+      const result = stripSensitive(content);
+
+      expect(result).not.toMatch(/PRIVACY:SENSITIVE/);
+      expect(result).not.toContain('Shielded material');
+      expect(result).toContain('clean trailing text');
+    });
   });
 
   describe('isOverCap', () => {
