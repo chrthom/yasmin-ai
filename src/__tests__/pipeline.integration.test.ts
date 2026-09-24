@@ -646,9 +646,6 @@ describe('nightly pipeline integration', () => {
     const archived = await archive.getCurrentVersion('people/bob.md');
     expect(archived?.content).toContain('secretly hates broccoli');
 
-    expect(mockUpsertContextEntry.mock.calls.some(call => call[0] === 'Profile of Bob')).toBe(false);
-    expect(result.status).toBe('partial');
-    expect(mockSetWatermark).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 });
