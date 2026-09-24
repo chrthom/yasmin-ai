@@ -7,7 +7,7 @@
   "properties": {
     "title": {
       "type": "string",
-      "description": "The exact title of the context entry to retrieve. Must match exactly including case and punctuation. Examples: 'Profile of Christopher', 'Session with Zara', 'Journal with Samira', 'Family notes', 'Profile of Yasmin'."
+      "description": "The exact title of the context entry to retrieve. Must match exactly including case and punctuation. Examples: 'Profile of Christopher', 'Profile of Zara', 'Profile of Samira', 'Family notes', 'Profile of Yasmin'."
     }
   }
 }

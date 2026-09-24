@@ -62,7 +62,12 @@ export function journalPrompt(userName: string, transcript: string): string {
     'Write in plain prose, third person, with no title, no metadata, and no markdown headings -- just the ' +
     'journal content itself.\n' +
     'Focus on meaningful interactions, emotional exchanges, milestones, shared experiences, inside jokes, ' +
-    'and any facts or commitments that should be remembered.\n' +
+    'and any facts or commitments that should be remembered. Also actively look for: opinions or ideas ' +
+    userName +
+    ' expressed, personal projects, hobbies, or goals they mentioned, topics they returned to or that echo ' +
+    'something from earlier conversations, moments where they reflected on themselves, and any cues about ' +
+    'how they like to be talked to (tone, humor, directness, formality). Note these explicitly rather than ' +
+    'only describing what happened.\n' +
     'If nothing meaningful happened in this conversation, write one short line saying so instead of padding ' +
     'the entry with filler.\n\n' +
     'Transcript of the conversation with ' +
@@ -126,17 +131,21 @@ export function integratePrompt(): string {
     "You are consolidating today's long-term memory for a family assistant.\n\n" +
     'First, call list_long_term_files and read_todays_journals to see what long-term files already exist ' +
     'and what happened today.\n\n' +
-    'For every long-term file that needs a new fact, an updated Recent Happenings or Open Topics section, ' +
-    'or a brand-new person profile: if the file already exists, call get_long_term_file first to read its ' +
-    'current content, then call stage_update with the COMPLETE new content for that path -- a full ' +
-    'replacement, never a diff or a patch. Only stage files that genuinely need a change; leave files that ' +
-    'are already accurate untouched.\n\n' +
+    'For every long-term file that needs a new fact, an updated Recent Happenings, Open Topics, Ideas & ' +
+    'Interests, or Communication Style section, or a brand-new person profile: if the file already ' +
+    'exists, call get_long_term_file first to read its current content, then call stage_update with the ' +
+    'COMPLETE new content for that path -- a full replacement, never a diff or a patch. Only stage files ' +
+    'that genuinely need a change; leave files that are already accurate untouched.\n\n' +
+    "When integrating, don't just move today's happenings into Recent Happenings -- also check whether " +
+    "today's journal echoes or continues something the file already has in Ideas, Interests & Goals or " +
+    'Open Topics; if so, consolidate it there as a recurring topic instead of letting it sit as a ' +
+    'one-off, disconnected mention.\n\n' +
     "Remember the file path conventions: people/<name>.md for a person's profile, " +
     "self-reflection/profile.md for Yasmin's own self-profile (first person), and general/family.md for " +
-    'family-wide notes. Person profiles use the 5-section template (Core Facts, Current Attitude, Recent ' +
-    "Happenings, Open Topics, Yasmin's Intentions), and any passage the concerned person would not want " +
-    'casually surfaced to other family members should be wrapped in [PRIVACY:SENSITIVE] / ' +
-    '[/PRIVACY:SENSITIVE] markers, each on its own line.\n\n' +
+    'family-wide notes. Person profiles use the 7-section template (Core Facts, Current Attitude, Ideas, ' +
+    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions), and " +
+    'any passage the concerned person would not want casually surfaced to other family members should be ' +
+    'wrapped in [PRIVACY:SENSITIVE] / [/PRIVACY:SENSITIVE] markers, each on its own line.\n\n' +
     'Once you have staged everything needed, reply with a short plain-text summary of what you staged and ' +
     'make no further tool calls.'
   );
@@ -270,7 +279,8 @@ export function compactPrompt(
       'Compact the following content about ' +
       personName +
       ' into EXACTLY this markdown template, in this exact order:\n\n' +
-      "## Core Facts\n## Current Attitude\n## Recent Happenings\n## Open Topics\n## Yasmin's Intentions\n\n" +
+      '## Core Facts\n## Current Attitude\n## Ideas, Interests & Goals\n## Recent Happenings\n' +
+      "## Open Topics\n## Communication Style\n## Yasmin's Intentions\n\n" +
       'Write about ' +
       personName +
       ' in third person. Preserve the most important and current facts; drop stale or redundant detail. ' +

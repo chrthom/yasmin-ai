@@ -69,11 +69,15 @@ describe('bootstrapMemory', () => {
         '\n' +
         '## Current Attitude\n' +
         '\n' +
+        '## Ideas, Interests & Goals\n' +
+        '\n' +
         '## Recent Happenings\n' +
         '\n' +
         '## Open Topics\n' +
         '\n' +
         'Talked about the weekend trip.\n' +
+        '\n' +
+        '## Communication Style\n' +
         '\n' +
         "## Yasmin's Intentions"
     );
@@ -97,9 +101,13 @@ describe('bootstrapMemory', () => {
         '\n' +
         '## Current Attitude\n' +
         '\n' +
+        '## Ideas, Interests & Goals\n' +
+        '\n' +
         '## Recent Happenings\n' +
         '\n' +
         '## Open Topics\n' +
+        '\n' +
+        '## Communication Style\n' +
         '\n' +
         "## Yasmin's Intentions"
     );
@@ -115,7 +123,7 @@ describe('bootstrapMemory', () => {
     await bootstrapMemory();
 
     const [, content] = mockInsertNextVersion.mock.calls[0];
-    expect(content).toContain("## Open Topics\n\n## Yasmin's Intentions");
+    expect(content).toContain("## Open Topics\n\n## Communication Style\n\n## Yasmin's Intentions");
   });
 
   it('seeds Profile of Yasmin verbatim to self-reflection/profile.md', async () => {

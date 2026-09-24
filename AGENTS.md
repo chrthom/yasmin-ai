@@ -30,9 +30,8 @@ mistral_config/
     └── stage_update.json               # Nightly agent: stage a proposed file update for review
 scripts/
 ├── manage-context.ts     # CLI administration utility for context CRUD
-├── bootstrap-memory.ts   # One-time migration: seeds memory_archive + the Mistral library from
-│                         #   the existing context_entries rows (must run before the nightly job)
-└── nightly-memory-job.sh # Cron wrapper: runs dist/nightly/run.js, emails on non-zero exit
+└── bootstrap-memory.ts   # One-time migration: seeds memory_archive + the Mistral library from
+                          #   the existing context_entries rows (must run before the nightly job)
 src/
 ├── app.ts              # Express server entry point with route handlers
 ├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
@@ -48,7 +47,8 @@ src/
 │   └── mistral_api.ts  # Low-level Mistral HTTP client (conversations, documents, library),
 │                       #   used by the nightly pipeline; retry + pagination handling
 ├── nightly/
-│   ├── run.ts         # Entry point compiled to dist/nightly/run.js; arg parsing, --dry-run
+│   ├── run.ts         # CLI entry point compiled to dist/nightly/run.js; manual runs + --dry-run
+│   ├── scheduler.ts   # In-process daily scheduler; started from app.ts, calls the same pipeline
 │   ├── pipeline.ts    # 7-phase orchestrator: collect, journal, integrate, review/archive,
 │   │                  #   upload, regenerate eager cache, cleanup
 │   ├── reflection.ts  # Prompts + nightly-agent calls (journal, integrate, review, compact)
@@ -119,13 +119,16 @@ keeps memory fresh.
 
 ### Nightly Memory Pipeline
 
-Once a night, a cron job runs `scripts/nightly-memory-job.sh`, which invokes `node dist/nightly/run.js`
-(compiled from `src/nightly/run.ts`). This runs entirely offline from the request/response path above —
-it consolidates the day's Synology conversations into long-term memory after the fact.
+Once a night, an in-process scheduler (`src/nightly/scheduler.ts`, started from `app.ts`) calls the same
+pipeline the API server is already running in — no external cron daemon or wrapper script, so it always
+has the exact same environment/config as the server. (`src/nightly/run.ts`, compiled to
+`dist/nightly/run.js`, remains available for a manual one-off run or `--dry-run` preflight check; see
+`docs/deployment_checklist.md`.) This runs entirely offline from the request/response path above — it
+consolidates the day's Synology conversations into long-term memory after the fact.
 
 At a high level, each run:
 
-1. **Collects** every conversation the live agent (`AGENT_ID`) has had since the last successful watermark.
+1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
 2. **Journals** each conversation into a per-conversation markdown summary.
 3. **Integrates** today's journals into proposed updates to a small set of verbose long-term memory files
    (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`), using a dedicated nightly Mistral
@@ -133,8 +136,11 @@ At a high level, each run:
 4. **Reviews** each proposed update against the day's evidence, then **archives** accepted versions as new
    rows in MariaDB's `memory_archive` table — a versioned, verbose local backup (may contain
    `[PRIVACY:SENSITIVE]` markers) that is the durable source of truth for the pipeline itself.
-5. **Uploads** changed files to a Mistral knowledge library (`MISTRAL_LIBRARY_ID`) that the live conversation
-   agent can search via RAG for deeper facts and history, and deletes any orphaned library documents.
+5. **Uploads** changed files, with `[PRIVACY:SENSITIVE]` content already stripped, to a Mistral knowledge
+   library (`MISTRAL_LIBRARY_ID`) that the live conversation agent can search via RAG for deeper facts and
+   history, and deletes any orphaned library documents. Sensitive passages never leave local storage —
+   `memory_archive` keeps the full content for versioning/audit, but nothing marked sensitive is ever sent
+   to the third-party Mistral API.
 6. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
    so the small, fast, sensitive-free eager set always reflects the latest long-term memory.
@@ -185,11 +191,10 @@ Required for runtime:
 - `CHAT_TOKEN_BOT` - Token for `/chat/bot` endpoint
 - `CHAT_TOKEN_SLASH` - Token for `/chat/slash` endpoint
 - `CHAT_TOKEN_GROUP` - Token for `/chat/group` endpoint
-- `AGENT_ID` - Mistral agent identifier
-- `DB_HOST` - Database host
-- `DB_USER` - Database user
-- `DB_PASSWORD` - Database password
-- `DB_NAME` - Database name
+- `AGENT_ID_CONVERSATION` - Mistral agent identifier for the live conversation agent
+- `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the live agent RAGs against
+- `AGENT_ID_NIGHTLY` - Mistral agent identifier for the nightly memory-consolidation agent
+- `DB_PASSWORD` - Database password (host/user/name are hardcoded in `src/config.ts`)
 
 Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 

@@ -70,8 +70,7 @@ jest.mock('../mistral/mistral_api', () => ({
   deleteDocument: jest.fn(),
   uploadDocument: jest.fn(),
   askAgent: jest.fn(),
-  runAgentToolLoop: jest.fn(),
-  getTextContent: jest.fn()
+  runAgentToolLoop: jest.fn()
 }));
 
 import { LockHeldError, runNightlyPipeline } from '../nightly/pipeline';
@@ -638,6 +637,30 @@ describe('nightly pipeline integration', () => {
     expect(mockUpsertContextEntry.mock.calls.some(call => call[0] === 'Profile of Bob')).toBe(false);
     expect(result.status).toBe('partial');
     expect(mockSetWatermark).not.toHaveBeenCalled();
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. Phase 5 privacy wiring
+  // -------------------------------------------------------------------------
+  it('Phase 5 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'people/bob.md',
+      'Public fact about Bob.\n[PRIVACY:SENSITIVE]\nBob secretly hates broccoli.\n[/PRIVACY:SENSITIVE]\nMore public info.'
+    );
+
+    await runNightlyPipeline();
+
+    const bobCall = mockReplaceDocument.mock.calls.find(call => call[0] === 'people/bob.md');
+    expect(bobCall).toBeDefined();
+    const uploadedContent = bobCall?.[1];
+    expect(uploadedContent).not.toContain('PRIVACY:SENSITIVE');
+    expect(uploadedContent).not.toContain('secretly hates broccoli');
+    expect(uploadedContent).toContain('Public fact about Bob.');
+
+    const archived = await archive.getCurrentVersion('people/bob.md');
+    expect(archived?.content).toContain('secretly hates broccoli');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 });

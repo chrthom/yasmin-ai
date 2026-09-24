@@ -1,6 +1,7 @@
 # Nightly Memory Processing — Deployment Checklist
 
-**Status**: developer-actionable, manual ops steps only (no code changes required)
+**Status**: developer-actionable, manual ops steps + a small follow-up commit (in-process scheduler
+replacing the cron wrapper, see A9)
 **Full design**: `nightly_memory_processing_implementation.md` (§2 one-time setup, §11 runbook, §13 rollout)
 **Branch**: `feature/nightly-memory-processing`
 
@@ -53,6 +54,13 @@ Creates `memory_archive`, `nightly_job_log`, `processing_lock`.
 `MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, optionally `MEMORY_TZ` (default `Europe/Berlin`) and
 `NIGHTLY_MAX_RETRIES` (default `3`).
 
+**This is not optional for Part A.** The nightly scheduler now runs in-process inside the main API
+server (`src/nightly/scheduler.ts`, started from `app.ts`) — `validateEnv()` requires
+`MISTRAL_LIBRARY_ID` and `AGENT_ID_NIGHTLY` unconditionally, so the server itself refuses to start
+without them, not just the standalone nightly script. Set these on the container the app runs in
+(e.g. `docker run -e MISTRAL_LIBRARY_ID=... -e AGENT_ID_NIGHTLY=...`, or the `environment:` block of a
+compose file) before starting/restarting it in step A9.
+
 ### A5. Build
 
 ```
@@ -92,17 +100,13 @@ Inspect the log and the `nightly_job_log` table afterward. Confirm: journals wer
 conversations, `memory_archive` has new/unchanged versions as expected, `context_entries` was regenerated
 (spot-check a `Profile of X` row), and the job's `nightly_job_log` row has `status = 'completed'`.
 
-### A9. Install the cron job
+### A9. Start/restart the app
 
-`scripts/nightly-memory-job.sh` is the wrapper (logs to `/var/log/yasmin-nightly.log`, emails
-`christopher.thomsen@adesso.de` on non-zero exit). Add to `/etc/cron.d/yasmin-nightly`:
-
-```
-0 3 * * * christopher /home/christopher/Dokumente/yasmin-ai/scripts/nightly-memory-job.sh
-```
-
-Make sure the host's cron timezone (or an explicit `CRON_TZ=` line) matches `MEMORY_TZ`, and that
-`/var/log/yasmin-nightly.log` is writable and outbound mail is configured.
+No cron job to install. The nightly run is scheduled in-process by `src/nightly/scheduler.ts`, started
+automatically from `app.ts` alongside the API server (`npm start` / the container's normal entrypoint) —
+restarting the container after step A4's env vars are set is enough. It computes the next 23:00 (or
+whatever `MEMORY_TZ` resolves to) on its own and logs `INFO Nightly scheduler started ...` on boot; check
+`docker logs` (or wherever the container's stdout goes) for that line to confirm it's armed.
 
 ### A10. Monitor for at least a week
 

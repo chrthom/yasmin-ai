@@ -7,7 +7,7 @@ export const config = {
   mistral: {
     baseUrl: 'https://api.mistral.ai/v1/conversations',
     apiKey: process.env['MISTRAL_API_KEY']!,
-    agentId: process.env['AGENT_ID']!,
+    agentId: process.env['AGENT_ID_CONVERSATION']!,
     conversationTtlMs: 12 * 60 * 60 * 1000,
     apiRoot: 'https://api.mistral.ai/v1',
     // Nightly-only: these are undefined for non-nightly processes and only read by the nightly job.
@@ -59,7 +59,9 @@ export function validateEnv(): void {
     'CHAT_TOKEN_BOT',
     'CHAT_TOKEN_SLASH',
     'CHAT_TOKEN_GROUP',
-    'AGENT_ID'
+    'AGENT_ID_CONVERSATION',
+    'MISTRAL_LIBRARY_ID',
+    'AGENT_ID_NIGHTLY'
   ] as const;
 
   requiredEnv.forEach(key => {
@@ -74,26 +76,13 @@ export function validateEnv(): void {
   const isRealDbEnabled = process.env['USE_REAL_DB'] === 'true';
   const isNightly =
     !!process.argv[1] &&
-    (process.argv[1].includes('/nightly/') ||
-      process.argv[1].includes('nightly-memory-job') ||
-      process.argv[1].includes('bootstrap-memory'));
+    (process.argv[1].includes('/nightly/') || process.argv[1].includes('bootstrap-memory'));
 
   if (isCli || isRealDbEnabled || isNightly) {
     const requiredDbEnv = ['DB_PASSWORD'] as const;
     requiredDbEnv.forEach(key => {
       if (!process.env[key]) {
         console.error(`ERROR: Missing required database environment variable: ${key}`);
-        process.exit(1);
-      }
-    });
-  }
-
-  // The nightly memory processing entrypoint additionally needs the memory library and nightly agent
-  if (isNightly) {
-    const requiredNightlyEnv = ['MISTRAL_LIBRARY_ID', 'AGENT_ID_NIGHTLY'] as const;
-    requiredNightlyEnv.forEach(key => {
-      if (!process.env[key]) {
-        console.error(`ERROR: Missing required environment variable: ${key}`);
         process.exit(1);
       }
     });

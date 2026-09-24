@@ -307,7 +307,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
     for (const row of unsynced) {
       try {
-        const doc = await replaceDocument(row.filePath, row.content, row.mistralDocId ?? undefined);
+        // Sensitive passages never leave local storage: memory_archive keeps the full content for
+        // versioning/audit, but only the stripped copy is ever uploaded to the third-party Mistral
+        // library, which backs RAG retrieval for the live chat agent.
+        const uploadContent = stripSensitive(row.content);
+        const doc = await replaceDocument(row.filePath, uploadContent, row.mistralDocId ?? undefined);
         await markSynced(row.id, doc.id);
       } catch (error) {
         console.error('ERROR Failed to upload "' + row.filePath + '" to Mistral: ' + error);
