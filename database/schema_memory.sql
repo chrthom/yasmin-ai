@@ -39,3 +39,12 @@ CREATE TABLE IF NOT EXISTS processing_lock (
     acquired_at TIMESTAMP NOT NULL,
     owner       VARCHAR(128) NOT NULL          -- host:pid
 );
+
+-- Durable, single-row watermark of the most recent successful snapshot the job has fully processed.
+-- Deliberately kept OUT of nightly_job_log (which pruneOldJobLogs deletes from): if every completed
+-- row were ever pruned, getWatermark() would return NULL and the next run would silently reprocess
+-- the previous 24h. This table is never pruned.
+CREATE TABLE IF NOT EXISTS nightly_watermark (
+    id          TINYINT PRIMARY KEY,           -- singleton; always 1
+    snapshot_at DATETIME NOT NULL              -- Phase-1 listing snapshot time of the last fully-completed run
+);

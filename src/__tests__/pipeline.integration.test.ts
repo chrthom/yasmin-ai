@@ -36,7 +36,8 @@ jest.mock('../database/models/nightly_job.model', () => ({
   pruneOldJobLogs: jest.fn(),
   acquireLock: jest.fn(),
   releaseLock: jest.fn(),
-  findRunningJob: jest.fn()
+  findRunningJob: jest.fn(),
+  setWatermark: jest.fn()
 }));
 
 jest.mock('../database/models/memory_archive.model', () => ({
@@ -83,6 +84,7 @@ import {
   getWatermark,
   pruneOldJobLogs,
   releaseLock,
+  setWatermark,
   updateJobLog
 } from '../database/models/nightly_job.model';
 import {
@@ -113,6 +115,7 @@ const mockPruneOldJobLogs = pruneOldJobLogs as jest.Mock;
 const mockAcquireLock = acquireLock as jest.Mock;
 const mockReleaseLock = releaseLock as jest.Mock;
 const mockFindRunningJob = findRunningJob as jest.Mock;
+const mockSetWatermark = setWatermark as jest.Mock;
 
 const mockGetCurrentVersion = getCurrentVersion as jest.Mock;
 const mockInsertNextVersion = insertNextVersion as jest.Mock;
@@ -252,6 +255,7 @@ describe('nightly pipeline integration', () => {
     mockPruneOldJobLogs.mockResolvedValue(0);
     mockAcquireLock.mockResolvedValue(true);
     mockReleaseLock.mockResolvedValue(undefined);
+    mockSetWatermark.mockResolvedValue(undefined);
 
     mockUpsertContextEntry.mockResolvedValue('updated');
 
@@ -296,6 +300,8 @@ describe('nightly pipeline integration', () => {
 
     expect(result.status).toBe('completed');
     expect(result.conversationsProcessed).toBe(3);
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
 
     expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/alice/conv-1.md', 'Journal about Alice');
     expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/bob/conv-2.md', 'Journal about Bob');
@@ -600,6 +606,7 @@ describe('nightly pipeline integration', () => {
 
     expect(mockUpsertContextEntry.mock.calls.some(call => call[0] === 'Profile of Bob')).toBe(false);
     expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 });

@@ -125,16 +125,35 @@ export async function updateJobLog(id: number, patch: NightlyJobLogPatch): Promi
 }
 
 /**
- * Returns the completed_at timestamp of the most recently completed job, or null if none
+ * Returns the snapshot time of the most recently fully-completed job, or null if none.
+ *
+ * Read from the dedicated nightly_watermark singleton -- NOT from nightly_job_log -- so a pruning of
+ * old completed rows (pruneOldJobLogs) can never erase the watermark and trigger a silent full
+ * reprocess of the previous 24h. The watermark only advances on a fully completed run.
  */
 export async function getWatermark(): Promise<Date | null> {
   try {
-    const [rows]: any = await executeQuery(
-      "SELECT MAX(completed_at) AS watermark FROM nightly_job_log WHERE status = 'completed'"
-    );
+    const [rows]: any = await executeQuery('SELECT snapshot_at AS watermark FROM nightly_watermark WHERE id = 1');
     return rows[0]?.watermark ?? null;
   } catch (error) {
     console.error('Error retrieving nightly job watermark:', error);
+    throw error;
+  }
+}
+
+/**
+ * Records the Phase-1 listing snapshot time of a fully-completed run as the durable watermark.
+ * Idempotent upsert on the singleton row.
+ */
+export async function setWatermark(snapshotAt: Date): Promise<void> {
+  try {
+    await executeQuery(
+      'INSERT INTO nightly_watermark (id, snapshot_at) VALUES (1, ?) ' +
+        'ON DUPLICATE KEY UPDATE snapshot_at = VALUES(snapshot_at)',
+      [snapshotAt]
+    );
+  } catch (error) {
+    console.error('Error persisting nightly job watermark:', error);
     throw error;
   }
 }
