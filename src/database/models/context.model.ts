@@ -132,7 +132,12 @@ export async function upsertContextEntry(title: string, content: string): Promis
       return 'inserted';
     }
 
-    await updateContextEntry(title, content);
+    const ok = await updateContextEntry(title, content);
+    if (!ok) {
+      // updateContextEntry swallows its own errors and reports failure via a false return; surface it
+      // so the caller (e.g. Phase 6 of the nightly job) doesn't believe the entry was refreshed.
+      throw new Error('Update of context entry "' + title + '" failed (0 rows affected)');
+    }
     return 'updated';
   } catch (error) {
     console.error(`Error upserting context entry "${title}":`, error);
