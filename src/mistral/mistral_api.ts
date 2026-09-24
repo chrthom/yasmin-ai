@@ -300,7 +300,10 @@ export async function askAgent(params: {
   const path = conversationId ? '/conversations/' + conversationId : '/conversations';
   const body = conversationId ? { inputs } : { agent_id: agentId, name, inputs };
 
-  const data = await requestJson('POST', path, AgentCallResponseSchema, body);
+  // Creating a new conversation (or appending a turn to an existing one) is NOT idempotent: a
+  // commit-then-retry would duplicate the conversation or the message. Retrying those is worse than
+  // surfacing the transient failure, so the phase fails and gets reprocessed next night instead.
+  const data = await requestJson('POST', path, AgentCallResponseSchema, body, { retries: 0 });
   const outputs = data.outputs;
 
   const outputText = outputs
