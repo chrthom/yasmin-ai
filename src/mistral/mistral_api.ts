@@ -211,7 +211,9 @@ export async function listConversations(sinceIso: string): Promise<ConversationM
     // No-progress guard: a server that ignores "page=" and keeps re-serving the same full list would
     // otherwise loop forever. Stop once a page adds zero NEW conversations.
     if (data.length >= CONVERSATION_PAGE_SIZE && added === 0) {
-      console.error('ERROR listConversations server returned no new conversations; stopping pagination early');
+      console.error(
+        'ERROR listConversations server returned no new conversations; stopping pagination early'
+      );
       break;
     }
 
