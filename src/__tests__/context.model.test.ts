@@ -40,5 +40,15 @@ describe('context.model', () => {
       expect(updateCall[0]).toMatch(/^UPDATE context_entries SET/);
       expect(updateCall[1]).toEqual(['New content', 'Profile of Christopher']);
     });
+
+    it('throws instead of reporting updated when the UPDATE affects no rows', async () => {
+      mockExecuteQuery
+        .mockResolvedValueOnce([[{ content: 'Old content' }]]) // getContentByTitleFromDb -> existing row
+        .mockResolvedValueOnce([{ affectedRows: 0 }]); // UPDATE affected nothing
+
+      await expect(upsertContextEntry('Profile of Christopher', 'New content')).rejects.toThrow(
+        /failed \(0 rows affected\)/
+      );
+    });
   });
 });
