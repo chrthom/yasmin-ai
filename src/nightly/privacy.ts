@@ -1,17 +1,44 @@
 // Sensitive passages are wrapped as `[PRIVACY:SENSITIVE]\n...\n[/PRIVACY:SENSITIVE]`, one marker per line.
 
+const SENSITIVE_OPEN = '[PRIVACY:SENSITIVE]';
+const SENSITIVE_CLOSE = '[/PRIVACY:SENSITIVE]';
 const SENSITIVE_BLOCK_RE = /\[PRIVACY:SENSITIVE\][\s\S]*?\[\/PRIVACY:SENSITIVE\]/g;
 const EXCESSIVE_BLANK_LINES_RE = /\n{3,}/g;
 const TRUNCATION_MARKER = '…[truncated]';
 
 /**
- * Removes every [PRIVACY:SENSITIVE]...[/PRIVACY:SENSITIVE] block and collapses resulting blank-line gaps
+ * Removes every [PRIVACY:SENSITIVE]...[/PRIVACY:SENSITIVE] block and collapses resulting blank-line gaps.
+ *
+ * Fails closed on malformed markers: a dangling opener with no matching close (e.g. a truncated
+ * response) strips everything from the opener to the end of the content, and a stray closer with no
+ * matching opener strips everything from the start of the content through the closer. Either case
+ * means we can no longer be sure where the sensitive region was meant to end, so the ambiguous region
+ * is dropped rather than risking a leak.
  */
 export function stripSensitive(content: string): string {
-  if (!content.match(SENSITIVE_BLOCK_RE)) {
+  if (!content.includes(SENSITIVE_OPEN) && !content.includes(SENSITIVE_CLOSE)) {
     return content;
   }
-  return content.replace(SENSITIVE_BLOCK_RE, '').replace(EXCESSIVE_BLANK_LINES_RE, '\n\n');
+
+  let result = content.replace(SENSITIVE_BLOCK_RE, '');
+
+  const openIdx = result.indexOf(SENSITIVE_OPEN);
+  if (openIdx !== -1) {
+    console.error(
+      'WARN privacy: dangling ' + SENSITIVE_OPEN + ' opener with no matching close; stripping to end of content'
+    );
+    result = result.slice(0, openIdx);
+  }
+
+  const closeIdx = result.indexOf(SENSITIVE_CLOSE);
+  if (closeIdx !== -1) {
+    console.error(
+      'WARN privacy: stray ' + SENSITIVE_CLOSE + ' closer with no matching open; stripping from start of content'
+    );
+    result = result.slice(closeIdx + SENSITIVE_CLOSE.length);
+  }
+
+  return result.replace(EXCESSIVE_BLANK_LINES_RE, '\n\n');
 }
 
 /**
