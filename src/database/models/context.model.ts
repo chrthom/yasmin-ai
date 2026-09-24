@@ -126,19 +126,16 @@ export async function deleteContextEntry(title: string): Promise<boolean> {
  */
 export async function upsertContextEntry(title: string, content: string): Promise<'inserted' | 'updated'> {
   try {
-    const existing = await getContentByTitleFromDb(title);
-    if (existing === null) {
-      await insertContextEntry(title, content);
-      return 'inserted';
-    }
-
-    const ok = await updateContextEntry(title, content);
-    if (!ok) {
-      // updateContextEntry swallows its own errors and reports failure via a false return; surface it
-      // so the caller (e.g. Phase 6 of the nightly job) doesn't believe the entry was refreshed.
-      throw new Error('Update of context entry "' + title + '" failed (0 rows affected)');
-    }
-    return 'updated';
+    // Single atomic statement (title is the PRIMARY KEY). A two-step "read then insert/update" raced
+    // with the live agent's own writes to context_entries and could throw ER_DUP_ENTRY, and would tell
+    // the caller "updated" even when the underlying UPDATE had swallowed a failure.
+    const [result]: any = await executeQuery(
+      'INSERT INTO context_entries (title, content) VALUES (?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
+      [title, content]
+    );
+    // affectedRows: 1 on fresh insert, 2 on updated-with-change, 0 on updated-with-no-change. Any
+    // value other than 1 means the row pre-existed (either refreshed or identical).
+    return result.affectedRows === 1 ? 'inserted' : 'updated';
   } catch (error) {
     console.error(`Error upserting context entry "${title}":`, error);
     throw error;
