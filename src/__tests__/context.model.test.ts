@@ -13,42 +13,35 @@ describe('context.model', () => {
   });
 
   describe('upsertContextEntry', () => {
-    it('inserts a new entry when none exists yet', async () => {
-      mockExecuteQuery
-        .mockResolvedValueOnce([[]]) // getContentByTitleFromDb -> no rows
-        .mockResolvedValueOnce([{ insertId: 1, affectedRows: 1 }]); // INSERT
+    it('reports inserted when the atomic statement inserts a fresh row (affectedRows 1)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 1 }]);
 
       const result = await upsertContextEntry('Profile of Christopher', 'Some content');
 
       expect(result).toBe('inserted');
-      expect(mockExecuteQuery).toHaveBeenCalledTimes(2);
-      const insertCall = mockExecuteQuery.mock.calls[1];
-      expect(insertCall[0]).toMatch(/^INSERT INTO context_entries/);
-      expect(insertCall[1]).toEqual(['Profile of Christopher', 'Some content']);
+      expect(mockExecuteQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockExecuteQuery.mock.calls[0];
+      expect(sql).toMatch(/^INSERT INTO context_entries/i);
+      expect(sql).toMatch(/ON DUPLICATE KEY UPDATE/i);
+      expect(params).toEqual(['Profile of Christopher', 'Some content']);
     });
 
-    it('updates the existing entry when a row already exists', async () => {
-      mockExecuteQuery
-        .mockResolvedValueOnce([[{ content: 'Old content' }]]) // getContentByTitleFromDb -> existing row
-        .mockResolvedValueOnce([{ affectedRows: 1 }]); // UPDATE
+    it('reports updated when a pre-existing row was refreshed (affectedRows 2)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 2 }]);
 
       const result = await upsertContextEntry('Profile of Christopher', 'New content');
 
       expect(result).toBe('updated');
-      expect(mockExecuteQuery).toHaveBeenCalledTimes(2);
-      const updateCall = mockExecuteQuery.mock.calls[1];
-      expect(updateCall[0]).toMatch(/^UPDATE context_entries SET/);
-      expect(updateCall[1]).toEqual(['New content', 'Profile of Christopher']);
+      expect(mockExecuteQuery).toHaveBeenCalledTimes(1);
     });
 
-    it('throws instead of reporting updated when the UPDATE affects no rows', async () => {
-      mockExecuteQuery
-        .mockResolvedValueOnce([[{ content: 'Old content' }]]) // getContentByTitleFromDb -> existing row
-        .mockResolvedValueOnce([{ affectedRows: 0 }]); // UPDATE affected nothing
+    it('reports updated when a pre-existing row held identical content (affectedRows 0)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 0 }]);
 
-      await expect(upsertContextEntry('Profile of Christopher', 'New content')).rejects.toThrow(
-        /failed \(0 rows affected\)/
-      );
+      const result = await upsertContextEntry('Profile of Christopher', 'Same content');
+
+      expect(result).toBe('updated');
+      expect(mockExecuteQuery).toHaveBeenCalledTimes(1);
     });
   });
 });
