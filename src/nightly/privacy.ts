@@ -25,9 +25,7 @@ export function stripSensitive(content: string): string {
   const openIdx = result.indexOf(SENSITIVE_OPEN);
   if (openIdx !== -1) {
     console.error(
-      'WARN privacy: dangling ' +
-        SENSITIVE_OPEN +
-        ' opener with no matching close; stripping to end of content'
+      'WARN privacy: dangling ' + SENSITIVE_OPEN + ' opener with no matching close; stripping to end of content'
     );
     result = result.slice(0, openIdx);
   }
@@ -35,9 +33,7 @@ export function stripSensitive(content: string): string {
   const closeIdx = result.indexOf(SENSITIVE_CLOSE);
   if (closeIdx !== -1) {
     console.error(
-      'WARN privacy: stray ' +
-        SENSITIVE_CLOSE +
-        ' closer with no matching open; stripping from start of content'
+      'WARN privacy: stray ' + SENSITIVE_CLOSE + ' closer with no matching open; stripping from start of content'
     );
     result = result.slice(closeIdx + SENSITIVE_CLOSE.length);
   }

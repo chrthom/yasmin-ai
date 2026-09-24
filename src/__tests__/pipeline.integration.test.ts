@@ -625,7 +625,23 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 11. Phase 5 privacy wiring
+  // 11. Phase 6 empty-compaction guard
+  // -------------------------------------------------------------------------
+  it('Phase 6 skips the eager-cache upsert when compaction produces empty output, and marks the run partial', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('people/bob.md', '[PRIVACY:SENSITIVE]\nBob secretly hates broccoli.\n[/PRIVACY:SENSITIVE]');
+    mockRunCompact.mockImplementation(async (kind: string) => (kind === 'person' ? '   ' : 'compacted'));
+
+    const result = await runNightlyPipeline();
+
+    expect(mockUpsertContextEntry.mock.calls.some(call => call[0] === 'Profile of Bob')).toBe(false);
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. Phase 5 privacy wiring
   // -------------------------------------------------------------------------
   it('Phase 5 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
@@ -645,7 +661,6 @@ describe('nightly pipeline integration', () => {
 
     const archived = await archive.getCurrentVersion('people/bob.md');
     expect(archived?.content).toContain('secretly hates broccoli');
-
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 });

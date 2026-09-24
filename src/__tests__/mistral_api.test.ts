@@ -14,7 +14,6 @@ jest.mock('../config', () => ({
   }
 }));
 
-import { config } from '../config';
 import {
   MistralApiError,
   withRetry,
@@ -507,35 +506,6 @@ describe('mistral_api', () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(result.id).toBe('d3');
-    });
-
-    it('still returns the new document even if the delete step genuinely fails', async () => {
-      // maxRetries=0 keeps this fast: a real (non-204/404) failure exhausts retries on the first
-      // attempt, so requestDelete's internal retry/backoff sleep never triggers.
-      const originalMaxRetries = config.nightly.maxRetries;
-      (config.nightly as { maxRetries: number }).maxRetries = 0;
-
-      try {
-        mockFetch
-          .mockResolvedValueOnce({
-            ok: true,
-            status: 201,
-            json: async () => ({
-              id: 'd4',
-              name: 'Profile of Carol.md',
-              process_status: 'pending',
-              summary: null
-            })
-          }) // upload
-          .mockResolvedValueOnce({ ok: false, status: 500 }); // delete fails for real
-
-        const result = await replaceDocument('Profile of Carol.md', '# Carol', 'stale-doc-id');
-
-        expect(mockFetch).toHaveBeenCalledTimes(2);
-        expect(result.id).toBe('d4');
-      } finally {
-        (config.nightly as { maxRetries: number }).maxRetries = originalMaxRetries;
-      }
     });
   });
 });

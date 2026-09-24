@@ -126,9 +126,7 @@ export async function updateJobLog(id: number, patch: NightlyJobLogPatch): Promi
  */
 export async function getWatermark(): Promise<Date | null> {
   try {
-    const [rows]: any = await executeQuery(
-      'SELECT snapshot_at AS watermark FROM nightly_watermark WHERE id = 1'
-    );
+    const [rows]: any = await executeQuery('SELECT snapshot_at AS watermark FROM nightly_watermark WHERE id = 1');
     return rows[0]?.watermark ?? null;
   } catch (error) {
     console.error('Error retrieving nightly job watermark:', error);
@@ -268,7 +266,10 @@ export async function releaseLock(lockName: string, owner: string): Promise<void
   try {
     // Owner-scoped so a slow process that had its (stale) lock stolen by another run can't delete the
     // new owner's lock in its finally{} -- only the current owner may release it.
-    await executeQuery('DELETE FROM processing_lock WHERE lock_name = ? AND owner = ?', [lockName, owner]);
+    await executeQuery('DELETE FROM processing_lock WHERE lock_name = ? AND owner = ?', [
+      lockName,
+      owner
+    ]);
   } catch (error) {
     console.error(`Error releasing lock "${lockName}":`, error);
     throw error;
