@@ -200,7 +200,7 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the (post-cutover) live agent's RAG reads from
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the dedicated nightly memory-consolidation agent
 - `MEMORY_TZ` - IANA timezone the nightly job's schedule/watermark are computed in (default `Europe/Berlin`)
-- `NIGHTLY_MAX_RETRIES` - Max retry attempts for a nightly phase before it is skipped/marked failed (default `3`)
+- `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
 
 ## API Endpoints
 
