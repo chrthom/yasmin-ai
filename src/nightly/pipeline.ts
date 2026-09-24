@@ -437,7 +437,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // Same reasoning: a failure here must not mask whatever error is already propagating out of the
     // try/catch above (JS finally-throw semantics would otherwise silently replace it).
     try {
-      await releaseLock('nightly');
+      await releaseLock('nightly', owner);
     } catch (releaseError) {
       console.error('ERROR Failed to release the nightly processing lock: ' + releaseError);
     }
