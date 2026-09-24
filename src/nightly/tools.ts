@@ -6,6 +6,11 @@ export interface StagedUpdate {
   isNew: boolean;
 }
 
+// Only these long-term memory file shapes may be staged. Anything else -- absolute paths, ".."
+// traversal, nested directories, or unknown top-level dirs -- is rejected so a wayward tool call
+// can't slip files outside the expected memory store into the archive and upload.
+const VALID_STAGE_PATH_RE = /^(people\/[a-z0-9_-]+\.md|self-reflection\/profile\.md|general\/family\.md)$/i;
+
 export interface JournalEntry {
   conversationId: string;
   userName: string;
@@ -65,10 +70,27 @@ export function read_todays_journals(): JournalEntry[] {
   return [...todaysJournals];
 }
 
+export type StageUpdateResult = { success: true; path: string } | { success: false; error: string };
+
 /**
  * Tool: stages a memory file update or creation for later review; the only way to mutate staged updates
+ *
+ * Validates path/scope and content before staging. Invalid calls are rejected with an error the
+ * agent can read and self-correct against, rather than silently staging "undefined" garbage that
+ * would later flow into the archive and the review prompt.
  */
-export function stage_update(path: string, content: string, isNew: boolean): { success: true; path: string } {
+export function stage_update(path: string, content: string, isNew: boolean): StageUpdateResult {
+  if (typeof path !== 'string' || !VALID_STAGE_PATH_RE.test(path)) {
+    return {
+      success: false,
+      error:
+        `invalid path "${String(path)}"; expected people/<name>.md, ` +
+        'self-reflection/profile.md, or general/family.md'
+    };
+  }
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    return { success: false, error: `empty or non-string content for "${path}"` };
+  }
   stagedUpdates.push({ path, content, isNew });
   return { success: true, path };
 }
