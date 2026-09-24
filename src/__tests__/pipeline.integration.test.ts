@@ -541,6 +541,39 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 8b. Unguarded phase read failures stay resumable ('partial'), not 'failed'
+  // -------------------------------------------------------------------------
+  it('Phase 5 listUnsynced failure: run resolves as partial and skips the upload instead of throwing', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockListUnsynced.mockImplementationOnce(async () => {
+      throw new Error('db boom listing unsynced');
+    });
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('partial');
+    expect(mockReplaceDocument).not.toHaveBeenCalled();
+    expect(mockMarkSynced).not.toHaveBeenCalled();
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('Phase 6 listCurrentVersions failure: run resolves as partial and leaves the eager cache untouched', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // Phase 5 reconcile uses the first call (ok); Phase 6 uses the second (throws).
+    mockListCurrentVersions
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => {
+        throw new Error('db boom listing current versions');
+      });
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('partial');
+    expect(mockUpsertContextEntry).not.toHaveBeenCalled();
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
   // 9. Bootstrap interaction (lightweight)
   // -------------------------------------------------------------------------
   it('bootstrap interaction: upserts context entries only for mapped current-version paths', async () => {

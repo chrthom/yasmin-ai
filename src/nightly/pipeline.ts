@@ -16,6 +16,7 @@ import {
   listCurrentVersions,
   listUnsynced,
   markSynced,
+  MemoryArchiveRow,
   pruneOldVersions
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
@@ -37,6 +38,7 @@ import {
   deleteConversation,
   deleteDocument,
   getConversationMessages,
+  LibraryDocument,
   listConversations,
   listDocuments,
   replaceDocument
@@ -290,7 +292,17 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     let anyUploadFailed = false;
     let anyDeleteFailed = false;
-    const unsynced = await listUnsynced();
+    let unsynced: MemoryArchiveRow[];
+    try {
+      unsynced = await listUnsynced();
+    } catch (error) {
+      // An unguarded transient read failure here would bubble to the outer catch and turn the whole
+      // run into a non-resumable 'failed'. Demote it to a phase failure instead: skip the upload, mark
+      // the run 'partial', and let the next invocation pick up the still-unsynced rows.
+      console.error('ERROR Phase 5 failed to list unsynced rows; skipping upload: ' + error);
+      anyUploadFailed = true;
+      unsynced = [];
+    }
 
     for (const row of unsynced) {
       try {
@@ -307,9 +319,20 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       }
     }
 
-    const currentVersionsForReconcile = await listCurrentVersions();
+    let currentVersionsForReconcile: MemoryArchiveRow[] = [];
+    let mistralDocs: LibraryDocument[] = [];
+    try {
+      currentVersionsForReconcile = await listCurrentVersions();
+      mistralDocs = await listDocuments();
+    } catch (error) {
+      // Same resumability rationale: without the orphan-cleanup inputs we cannot safely tell which
+      // library docs are orphans, so skip the deletions, mark 'partial', and retry next run.
+      console.error(
+        'ERROR Phase 5 failed to reconcile Mistral library documents; skipping orphan cleanup: ' + error
+      );
+      anyDeleteFailed = true;
+    }
     const validPaths = new Set(currentVersionsForReconcile.map(v => v.filePath));
-    const mistralDocs = await listDocuments();
 
     for (const doc of mistralDocs) {
       if (!validPaths.has(doc.path)) {
@@ -331,7 +354,18 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // it unconditionally rewrites every current file every night regardless of whether anything
     // actually changed, so it is not a meaningful "how much changed" signal (see Phase 4, which is).
     let anyEagerFailed = false;
-    const allCurrentVersions = await listCurrentVersions();
+    let allCurrentVersions: MemoryArchiveRow[];
+    try {
+      allCurrentVersions = await listCurrentVersions();
+    } catch (error) {
+      // Same resumability rationale as Phase 5: leave the eager cache untouched this run and mark
+      // 'partial' so phase 6 re-runs next invocation.
+      console.error(
+        'ERROR Phase 6 failed to load current versions; leaving the eager cache untouched: ' + error
+      );
+      anyEagerFailed = true;
+      allCurrentVersions = [];
+    }
 
     for (const row of allCurrentVersions) {
       const title = pathToTitle(row.filePath);
