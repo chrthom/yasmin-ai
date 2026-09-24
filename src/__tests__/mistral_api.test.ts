@@ -112,9 +112,53 @@ describe('mistral_api', () => {
         { id: 'c1', name: 'alice', agentId: 'agent-1', updatedAt: expect.any(String) }
       ]);
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.test/v1/conversations',
+        'https://api.test/v1/conversations?page=0&page_size=100',
         expect.objectContaining({ method: 'GET' })
       );
+    });
+
+    it('walks pages until a short page, then filters across all of them', async () => {
+      const now = Date.now();
+      // Page 0 is full (100) -> keep fetching; page 1 is short -> stop.
+      const makeConv = (id: string, agoMs: number) => ({
+        id,
+        name: 'alice',
+        agent_id: 'agent-1',
+        updated_at: new Date(now - agoMs).toISOString()
+      });
+      const page0: any[] = [];
+      for (let i = 0; i < 100; i++) {
+        page0.push(makeConv('p0-' + i, i * 1000));
+      }
+      const page1 = [makeConv('p1-0', 2000000)];
+
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => page0 })
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => page1 });
+
+      const since = new Date(now - 5000).toISOString();
+      const result = await listConversations(since);
+
+      expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+        'https://api.test/v1/conversations?page=0&page_size=100',
+        'https://api.test/v1/conversations?page=1&page_size=100'
+      ]);
+      // agoMs 0..5000 (6 items) survive the since=5000ms filter; older ones and the page-1 item are dropped.
+      expect(result).toHaveLength(6);
+      expect(result[0].id).toBe('p0-0');
+      expect(result[5].id).toBe('p0-5');
+    });
+
+    it('stops early when the server ignores "page=" and returns the same full page', async () => {
+      const now = Date.now();
+      const conv = { id: 'dup', name: 'a', agent_id: 'agent-1', updated_at: new Date(now).toISOString() };
+      const fullPage = new Array(100).fill(conv);
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => fullPage });
+
+      await listConversations(new Date(now - 100000).toISOString());
+
+      // Page 0 collects the item; page 1 is all duplicates -> stop after 2 calls.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 
