@@ -48,6 +48,10 @@ describe('nightly/mapping', () => {
       expect(titleToPath('Profile of Mary Jane')).toBe('people/mary-jane.md');
     });
 
+    it("normalizes apostrophe/punctuation names so they produce a valid people/ stem", () => {
+      expect(titleToPath("Profile of O'Brien")).toBe('people/o-brien.md');
+    });
+
     it('returns null for an unrecognized title', () => {
       expect(titleToPath('Session with Christopher')).toBeNull();
     });
@@ -72,6 +76,11 @@ describe('nightly/mapping', () => {
     it('round-trips people/mary-jane.md <-> Profile of Mary Jane', () => {
       const title = pathToTitle('people/mary-jane.md');
       expect(titleToPath(title as string)).toBe('people/mary-jane.md');
+    });
+
+    it('round-trips people/o-brien.md <-> Profile of O Brien', () => {
+      const title = pathToTitle('people/o-brien.md');
+      expect(titleToPath(title as string)).toBe('people/o-brien.md');
     });
   });
 });
