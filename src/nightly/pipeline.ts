@@ -8,6 +8,7 @@ import {
   getWatermark,
   pruneOldJobLogs,
   releaseLock,
+  setWatermark,
   updateJobLog
 } from '../database/models/nightly_job.model';
 import {
@@ -450,6 +451,13 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       filesUpdated,
       filesCreated
     });
+
+    // Only a fully successful run advances the durable watermark, so a 'partial' run's failed pieces
+    // get reprocessed by the next invocation. The watermark lives in its own non-pruned table rather
+    // than the job log, which pruneOldJobLogs may delete from.
+    if (finalStatus === 'completed') {
+      await setWatermark(collectedAt);
+    }
 
     return { jobId, status: finalStatus, conversationsProcessed, filesUpdated, filesCreated };
   } catch (error) {

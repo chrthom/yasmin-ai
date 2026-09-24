@@ -7,6 +7,7 @@ import {
   acquireLock,
   createJobLog,
   getWatermark,
+  setWatermark,
   pruneOldJobLogs,
   releaseLock,
   updateJobLog
@@ -65,7 +66,7 @@ describe('nightly_job.model', () => {
   });
 
   describe('getWatermark', () => {
-    it('returns the latest completed timestamp', async () => {
+    it('reads the snapshot time from the dedicated nightly_watermark singleton', async () => {
       const watermark = new Date('2026-07-01T02:00:00Z');
       mockExecuteQuery.mockResolvedValueOnce([[{ watermark }]]);
 
@@ -73,16 +74,29 @@ describe('nightly_job.model', () => {
 
       expect(result).toBe(watermark);
       const [query] = mockExecuteQuery.mock.calls[0];
-      expect(query).toMatch(/MAX\(completed_at\)/);
-      expect(query).toMatch(/status = 'completed'/);
+      expect(query).toMatch(/FROM nightly_watermark WHERE id = 1/);
     });
 
-    it('returns null when the aggregate is null', async () => {
+    it('returns null when no watermark row exists yet', async () => {
       mockExecuteQuery.mockResolvedValueOnce([[{ watermark: null }]]);
 
       const result = await getWatermark();
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('setWatermark', () => {
+    it('upserts the singleton row with an ON DUPLICATE KEY UPDATE', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([[{ affectedRows: 1 }]]);
+      const snapshotAt = new Date('2026-07-01T02:00:00Z');
+
+      await setWatermark(snapshotAt);
+
+      const [query, params] = mockExecuteQuery.mock.calls[0];
+      expect(query).toMatch(/INSERT INTO nightly_watermark/);
+      expect(query).toMatch(/ON DUPLICATE KEY UPDATE/);
+      expect(params).toEqual([snapshotAt]);
     });
   });
 
