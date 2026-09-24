@@ -251,9 +251,14 @@ export async function acquireLock(lockName: string, owner: string, staleMs: numb
 /**
  * Releases the named processing lock
  */
-export async function releaseLock(lockName: string): Promise<void> {
+export async function releaseLock(lockName: string, owner: string): Promise<void> {
   try {
-    await executeQuery('DELETE FROM processing_lock WHERE lock_name = ?', [lockName]);
+    // Owner-scoped so a slow process that had its (stale) lock stolen by another run can't delete the
+    // new owner's lock in its finally{} -- only the current owner may release it.
+    await executeQuery('DELETE FROM processing_lock WHERE lock_name = ? AND owner = ?', [
+      lockName,
+      owner
+    ]);
   } catch (error) {
     console.error(`Error releasing lock "${lockName}":`, error);
     throw error;

@@ -167,15 +167,15 @@ describe('nightly_job.model', () => {
   });
 
   describe('releaseLock', () => {
-    it('issues a DELETE for the given lock name', async () => {
+    it('issues an owner-scoped DELETE for the given lock name', async () => {
       mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 1 }]);
 
-      await releaseLock('nightly');
+      await releaseLock('nightly', 'host:123');
 
       expect(mockExecuteQuery).toHaveBeenCalledTimes(1);
       const [query, params] = mockExecuteQuery.mock.calls[0];
-      expect(query).toMatch(/^DELETE FROM processing_lock WHERE lock_name = \?/);
-      expect(params).toEqual(['nightly']);
+      expect(query).toMatch(/^DELETE FROM processing_lock WHERE lock_name = \? AND owner = \?/);
+      expect(params).toEqual(['nightly', 'host:123']);
     });
   });
 });
