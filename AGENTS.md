@@ -23,7 +23,7 @@ mistral_config/
 └── functions/
     ├── read_context_entry.json         # Live agent: lazy-load a context entry
     ├── update_context_entry.json       # Live agent: write a context entry
-    │                                   #   (retired at the read-only cutover, see Data Flow below)
+    │                                   #   (retired — read-only cutover applied, see Data Flow below)
     ├── get_long_term_file.json         # Nightly agent: read one verbose memory file
     ├── list_long_term_files.json       # Nightly agent: list verbose memory files
     ├── read_todays_journals.json       # Nightly agent: read today's per-conversation journals
@@ -81,37 +81,31 @@ src/
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
 
-#### Memory writes: current vs. pending
+#### Memory writes: live agent is read-only (cutover applied on this branch)
 
-**Current (today, on `main`):** `ChatAgent` still both _reads and writes_ `context_entries` directly during
-the live conversation, exactly as it did before the nightly memory pipeline existed:
+On this branch the live conversation agent is **read-only** for memory — the `(M5) read-only cutover`
+commit is already applied, so the nightly job is the **sole writer** of `context_entries`:
 
-- `read_context_entry` lazily loads any other `Profile of X` entry the agent decides it needs mid-conversation.
-- `update_context_entry` lets the agent write new/corrected facts straight into `context_entries` on the spot.
-- The nightly pipeline (below) is purely additive today — it writes its own tables (`memory_archive`) and
-  the Mistral library, and regenerates `context_entries` from them, but the live agent keeps writing to
-  `context_entries` in parallel. Nothing about the live request path changes yet.
+- `read_context_entry` still lazily loads any other `Profile of X` entry the agent decides it needs
+  mid-conversation.
+- `update_context_entry` is **gone**: the tool handler was removed from `chat_agent.ts` and its function
+  definition (`mistral_config/functions/update_context_entry.json`) deleted — the live agent can no
+  longer write to memory mid-conversation.
+- `ContextService`'s eager-loaded set holds `Profile of [sender]` + `Profile of Yasmin` + `Family notes`
+  (the `Session with [sender]` entry was dropped).
+- `mistral_config/system_prompt.txt` tells the agent that deeper facts and past conversation history
+  surface automatically via the Mistral library's RAG (no tool call needed) and enforces the
+  `[PRIVACY:SENSITIVE]` rule.
 
-**Pending (built, not yet merged):** this feature branch also contains a separate, deliberately unmerged
-"read-only cutover" commit (`(M5) read-only cutover`) that must only be merged after the nightly job above
-has been verified in production over several nights. Once merged:
-
-- The `update_context_entry` tool handler is removed from `chat_agent.ts` entirely, and its function
-  definition (`mistral_config/functions/update_context_entry.json`) is deleted — the live agent becomes
-  read-only for memory.
-- `ContextService`'s eager-loaded set drops the `Session with [sender]` entry, leaving just
-  `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
-- `mistral_config/system_prompt.txt` is rewritten to tell the agent that deeper facts and past conversation
-  history now surface automatically via the Mistral library's RAG (no tool call needed), and adds a
-  privacy-enforcement rule for `[PRIVACY:SENSITIVE]` content.
-- The nightly job becomes the **sole writer** of `context_entries`.
-
-Until that cutover lands, do not remove the live agent's write path — that would leave a gap where nothing
-keeps memory fresh.
+The cutover and the nightly system are **tested and merged together as one feature**: the entire branch
+(the additive nightly pipeline + the read-only cutover) ships to `main` in a single merge once the nightly
+job has been verified in production. Until that merge lands, `main` (and therefore production) still runs
+the older read-write version — so the write path stays live in production with no gap; it is only removed
+in the combined feature merge.
 
 ### Key Classes & Services
 
-- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading (and, today, for writing memory updates — see Data Flow above).
+- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading context entries. Read-only for memory — writes are handled solely by the nightly job (see Data Flow above).
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used exclusively by the nightly pipeline — separate from `ChatAgent`'s own inline `fetch` calls.
@@ -196,10 +190,8 @@ Required for runtime:
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the nightly memory-consolidation agent
 - `DB_PASSWORD` - Database password (host/user/name are hardcoded in `src/config.ts`)
 
-Required once the nightly job is deployed (see Nightly Memory Pipeline above):
+Nightly-job extras (deployed together with the live agent as one branch — same environment):
 
-- `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the (post-cutover) live agent's RAG reads from
-- `AGENT_ID_NIGHTLY` - Mistral agent identifier for the dedicated nightly memory-consolidation agent
 - `MEMORY_TZ` - IANA timezone the nightly job's schedule/watermark are computed in (default `Europe/Berlin`)
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
 
