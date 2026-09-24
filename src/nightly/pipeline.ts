@@ -68,7 +68,7 @@ function sanitizeForPath(input: string): string {
  * Computes the ISO watermark to pass to listConversations, falling back to 24h ago when the stored
  * watermark is missing or (guarding against corruption/clock skew) more than 1 hour in the future
  */
-async function computeSinceIso(): Promise<string> {
+export async function computeSinceIso(): Promise<string> {
   const watermark = await getWatermark();
   const oneHourFromNowMs = Date.now() + 60 * 60 * 1000;
   const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000);

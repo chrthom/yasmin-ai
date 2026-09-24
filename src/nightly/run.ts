@@ -2,30 +2,13 @@
 
 import { config, validateEnv } from '../config';
 import { getDatabasePool } from '../database/connection';
-import { getWatermark } from '../database/models/nightly_job.model';
 import { listConversations, listDocuments } from '../mistral/mistral_api';
-import { LockHeldError, runNightlyPipeline } from './pipeline';
+import { computeSinceIso, LockHeldError, runNightlyPipeline } from './pipeline';
 
 validateEnv();
 
 // Initialize database pool
 getDatabasePool();
-
-/**
- * Duplicates the pipeline's watermark/fallback logic inline for the dry-run preflight -- a few lines
- * of duplication here keeps pipeline.ts's exports minimal rather than exposing its internals
- */
-async function computeSinceIsoForDryRun(): Promise<string> {
-  const watermark = await getWatermark();
-  const oneHourFromNowMs = Date.now() + 60 * 60 * 1000;
-  const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
-  if (!watermark || watermark.getTime() > oneHourFromNowMs) {
-    return fallback.toISOString();
-  }
-
-  return watermark.toISOString();
-}
 
 /**
  * Preflight/connectivity smoke test -- NOT a simulated full run of every phase. It deliberately does
@@ -35,7 +18,7 @@ async function computeSinceIsoForDryRun(): Promise<string> {
 async function runDryRun(): Promise<void> {
   console.log('INFO Dry-run mode active -- no data will be written');
 
-  const sinceIso = await computeSinceIsoForDryRun();
+  const sinceIso = await computeSinceIso();
   console.log('INFO Computed watermark sinceIso: ' + sinceIso);
 
   const conversations = (await listConversations(sinceIso)).filter(c => c.agentId === config.mistral.agentId);
