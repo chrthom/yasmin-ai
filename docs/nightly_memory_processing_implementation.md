@@ -137,7 +137,6 @@ CREATE TABLE IF NOT EXISTS nightly_job_log (
   last_completed_phase       VARCHAR(32) NULL,
   processed_conversation_ids JSON NULL,
   skipped_conversation_ids   JSON NULL,       -- conversations that failed a phase and were skipped
-  retry_count                INT DEFAULT 0,
   error_message              TEXT NULL,
   conversations_processed    INT DEFAULT 0,
   files_updated              INT DEFAULT 0,
@@ -168,7 +167,7 @@ mistral_doc_id='fdfe66e9-…' synced_at='2026-07-06 03:01:12' content='---\nname
 ```
 status='partial' last_completed_phase='4-archive'
 processed_conversation_ids=['conv_a','conv_b'] skipped_conversation_ids=['conv_c']
-error_message='Mistral upload 503 for people/zara.md after 3 retries' retry_count=3
+error_message='Mistral upload 503 for people/zara.md after 3 retries'
 ```
 
 ---
