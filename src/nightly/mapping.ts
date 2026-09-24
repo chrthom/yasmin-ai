@@ -27,9 +27,14 @@ function stemToName(stem: string): string {
   return stem.split(/[-_]/).map(capitalizePart).join(' ');
 }
 
-/** Converts a "Name" title back into a people/<stem>.md stem, e.g. "Mary Jane" -> "mary-jane" */
+/**
+ * Converts a "Name" title back into a people/<stem>.md stem, e.g. "Mary Jane" -> "mary-jane".
+ * Mirrors the pipeline's sanitizeForPath (lowercase, every non [a-z0-9-] char -> '-'): without this,
+ * apostrophe/punctuation names (e.g. "O'Brien" -> "o-brien") would produce invalid people/ stems and
+ * silently fail to map in both directions.
+ */
 function nameToStem(name: string): string {
-  return name.toLowerCase().replace(/\s+/g, '-');
+  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
 
 /**
