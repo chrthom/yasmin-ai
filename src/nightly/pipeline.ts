@@ -135,6 +135,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     if (orphan && orphan.processedConversationIds.length > 0) {
       jobId = orphan.id;
       resetNightlyToolsState();
+      // The resumed batch is a fixed replay of the original run's conversations, so the watermark we
+      // persist on completion must reflect when that original batch was snapshotted -- NOT "now". We
+      // don't persist the exact collection instant, so startedAt is the closest available proxy (the
+      // gap is seconds). Writing a watermark of "now" here would drop any conversation that changed
+      // between the original snapshot and this resume.
       collectedAt = orphan.startedAt;
 
       // Recover usernames for the reused id list by re-listing with the same watermark-derived
