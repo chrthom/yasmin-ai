@@ -48,7 +48,7 @@ describe('nightly/mapping', () => {
       expect(titleToPath('Profile of Mary Jane')).toBe('people/mary-jane.md');
     });
 
-    it("normalizes apostrophe/punctuation names so they produce a valid people/ stem", () => {
+    it('normalizes apostrophe/punctuation names so they produce a valid people/ stem', () => {
       expect(titleToPath("Profile of O'Brien")).toBe('people/o-brien.md');
     });
 
