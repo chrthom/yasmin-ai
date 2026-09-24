@@ -10,6 +10,9 @@ export const config = {
     agentId: process.env['AGENT_ID_CONVERSATION']!,
     conversationTtlMs: 12 * 60 * 60 * 1000,
     apiRoot: 'https://api.mistral.ai/v1',
+    // Nightly-only: these are undefined for non-nightly processes and only read by the nightly job.
+    // The `!` is safe because validateEnv() (called by run.ts) requires them whenever the nightly
+    // path is entered; a web-server-only process never reads them.
     libraryId: process.env['MISTRAL_LIBRARY_ID']!,
     nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!
   },
