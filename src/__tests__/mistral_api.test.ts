@@ -76,6 +76,19 @@ describe('mistral_api', () => {
     });
   });
 
+  describe('request timeout wiring', () => {
+    it('passes an AbortSignal to fetch so a hung connection cannot block a phase forever', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] });
+
+      await listConversations('2026-01-01T00:00:00Z');
+
+      const [, init] = mockFetch.mock.calls[0];
+      expect(init).toEqual(expect.objectContaining({ method: 'GET' }));
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal.aborted).toBe(false);
+    });
+  });
+
   describe('listConversations', () => {
     it('filters conversations by updatedAt and maps fields', async () => {
       const now = Date.now();

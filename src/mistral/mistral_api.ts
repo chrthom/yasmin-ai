@@ -25,6 +25,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Hard ceiling for any single Mistral HTTP call. withRetry only engages on a *thrown* error, so
+// without this a hung TCP/TLS connection would never settle and would block a phase indefinitely
+// while holding processing_lock.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
+ * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('Mistral API request timed out after ' + REQUEST_TIMEOUT_MS + 'ms: ' + url);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Runs fn with exponential-backoff retry on network errors and 429/5xx MistralApiErrors; other 4xx fail fast
  */
@@ -92,7 +116,7 @@ async function requestJson<T>(
       init.body = JSON.stringify(body);
     }
 
-    const response = await fetch(config.mistral.apiRoot + path, init);
+    const response = await fetchWithTimeout(config.mistral.apiRoot + path, init);
 
     if (!response.ok) {
       console.error('ERROR Mistral API request failed: HTTP ' + response.status + ' ' + method + ' ' + path);
@@ -109,7 +133,7 @@ async function requestJson<T>(
  */
 async function requestDelete(path: string, opts?: RetryOptions): Promise<void> {
   await withRetry(async () => {
-    const response = await fetch(config.mistral.apiRoot + path, {
+    const response = await fetchWithTimeout(config.mistral.apiRoot + path, {
       method: 'DELETE',
       headers: {
         Authorization: 'Bearer ' + config.mistral.apiKey
@@ -540,7 +564,7 @@ export async function uploadDocument(path: string, content: string): Promise<Lib
     const blob = new Blob([content], { type: 'text/markdown' });
     formData.append('file', blob, path);
 
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       config.mistral.apiRoot + '/libraries/' + config.mistral.libraryId + '/documents',
       {
         method: 'POST',
@@ -572,10 +596,39 @@ export async function deleteDocument(documentId: string): Promise<void> {
 }
 
 /**
- * Replaces a document's content -- libraries have no in-place update, so this uploads the new content
- * first and only then deletes the superseded one. Uploading first means a mid-operation failure can at
- * worst leave a stale duplicate under the same path (logged, harmless) instead of a window where the
- * document is missing entirely from the library.
+ * Reads the raw text content of a document -- recovery/verification tool only, not on the hot path
+ */
+export async function getTextContent(documentId: string): Promise<string> {
+  return withRetry(async () => {
+    const response = await fetchWithTimeout(
+      config.mistral.apiRoot +
+        '/libraries/' +
+        config.mistral.libraryId +
+        '/documents/' +
+        documentId +
+        '/text_content',
+      {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer ' + config.mistral.apiKey
+        }
+      }
+    );
+
+    if (!response.ok) {
+      console.error('ERROR Mistral API get text content failed: HTTP ' + response.status + ' ' + documentId);
+      throw new MistralApiError(
+        'Mistral API get text content failed: HTTP ' + response.status,
+        response.status
+      );
+    }
+
+    return response.text();
+  });
+}
+
+/**
+ * Replaces a document's content -- libraries have no in-place update, so this deletes then re-uploads (in that order)
  */
 export async function replaceDocument(
   path: string,
