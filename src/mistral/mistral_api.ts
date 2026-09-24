@@ -465,6 +465,7 @@ export async function listDocuments(): Promise<LibraryDocument[]> {
   const results: LibraryDocument[] = [];
   let page = 0;
 
+  const seenIds = new Set<string>();
   for (; page < maxPages; page++) {
     const data = await requestJson(
       'GET',
@@ -473,7 +474,29 @@ export async function listDocuments(): Promise<LibraryDocument[]> {
     );
 
     const pageDocuments = data.data || [];
-    results.push(...pageDocuments.map(mapLibraryDocument));
+    let newInPage = 0;
+    for (const doc of pageDocuments) {
+      const id = doc.id;
+      // Skip ids already returned by an earlier page so a server that ignores "page=" (returning
+      // the full list every time) can't bloat the result with ~maxPages copies of each document.
+      if (id === undefined) {
+        results.push(mapLibraryDocument(doc));
+        continue;
+      }
+      if (seenIds.has(id)) {
+        continue;
+      }
+      seenIds.add(id);
+      newInPage++;
+      results.push(mapLibraryDocument(doc));
+    }
+
+    // A page that added no NEW ids means the API is re-serving the same list (or has no more
+    // distinct data); stop rather than keep paginating toward the cap.
+    if (newInPage === 0 && results.length > 0) {
+      console.error('ERROR listDocuments server returned no new documents; stopping pagination early');
+      break;
+    }
 
     // Continue only while has_more is explicitly true; if it is missing/undefined (wrong field
     // name guess), fall back to continuing only while pages come back full, so a short/empty
@@ -481,13 +504,16 @@ export async function listDocuments(): Promise<LibraryDocument[]> {
     const hasMore =
       data.has_more === true || (data.has_more === undefined && pageDocuments.length >= pageSize);
     if (!hasMore) {
-      return results;
+      break;
     }
   }
 
-  console.error(
-    'ERROR listDocuments hit the ' + maxPages + '-page safety cap; returning what was fetched so far'
-  );
+  if (page >= maxPages) {
+    console.error(
+      'ERROR listDocuments hit the ' + maxPages + '-page safety cap; returning what was fetched so far'
+    );
+  }
+
   return results;
 }
 

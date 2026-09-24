@@ -331,20 +331,45 @@ describe('mistral_api', () => {
     });
 
     it('stops at the hard page-count safety cap instead of looping forever on a server that always says has_more: true', async () => {
-      mockFetch.mockResolvedValue({
+      let i = 0;
+      mockFetch.mockImplementation(async () => ({
         ok: true,
         status: 200,
         json: async () => ({
-          data: [{ id: 'd1', name: 'Profile of Alice.md', process_status: 'done', summary: null }],
+          data: [{ id: 'd' + i++, name: 'Profile of X.md', process_status: 'done', summary: null }],
           has_more: true
         })
-      });
+      }));
 
       const result = await listDocuments();
 
-      // Never throws/hangs, and the fetch call count is bounded rather than infinite.
-      expect(mockFetch.mock.calls.length).toBeLessThanOrEqual(100);
-      expect(result.length).toBe(mockFetch.mock.calls.length);
+      // Each page contributes a new doc, so no-progress never trips; the page cap (100) bounds it.
+      expect(mockFetch.mock.calls.length).toBe(100);
+      expect(result).toHaveLength(100);
+    });
+
+    it('stops pagination early when the server returns no new documents (ignores "page=")', async () => {
+      const page = {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            { id: 'd1', name: 'Profile of Alice.md', process_status: 'done', summary: null },
+            { id: 'd2', name: 'Profile of Bob.md', process_status: 'done', summary: null }
+          ],
+          has_more: true
+        })
+      };
+      mockFetch.mockResolvedValue(page);
+
+      const result = await listDocuments();
+
+      // Page 1 collects both docs; page 2 is all duplicates -> stop, don't build 100x copies.
+      expect(mockFetch.mock.calls.length).toBe(2);
+      expect(result).toEqual([
+        { id: 'd1', path: 'Profile of Alice.md', processStatus: 'done', summary: null },
+        { id: 'd2', path: 'Profile of Bob.md', processStatus: 'done', summary: null }
+      ]);
     });
   });
 
