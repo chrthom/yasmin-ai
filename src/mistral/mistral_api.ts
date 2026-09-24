@@ -151,20 +151,55 @@ const ConversationMetaResponseSchema = z.object({
 const ConversationListResponseSchema = z.array(ConversationMetaResponseSchema);
 
 /**
- * Lists conversations updated at or after sinceIso (client-side filter, no pagination, mirrors chat_agent.ts)
+ * Lists conversations updated at or after sinceIso.
+ *
+ * GET /v1/conversations is offset-paginated via `page` (default 0) / `page_size` (default 100) and
+ * returns a bare array with no pagination envelope, so the last page is detected when a page has
+ * fewer items than `page_size`. Because there is no ordering guarantee, we must fetch every page
+ * before applying the client-side updated_at filter -- otherwise conversations beyond the first
+ * _page_size_ would be silently dropped and their memory missed.
  */
 export async function listConversations(sinceIso: string): Promise<ConversationMeta[]> {
-  const data = await requestJson('GET', '/conversations', ConversationListResponseSchema);
+  const CONVERSATION_PAGE_SIZE = 100;
   const sinceMs = Date.parse(sinceIso);
+  const seenIds = new Set<string>();
+  const all: ConversationMeta[] = [];
+  let page = 0;
 
-  return data
-    .filter(c => Date.parse(c.updated_at) >= sinceMs)
-    .map(c => ({
-      id: c.id,
-      name: c.name,
-      agentId: c.agent_id,
-      updatedAt: c.updated_at
-    }));
+  for (;;) {
+    const path = '/conversations?page=' + page + '&page_size=' + CONVERSATION_PAGE_SIZE;
+    const data = await requestJson('GET', path, ConversationListResponseSchema);
+
+    let added = 0;
+    for (const c of data) {
+      if (!seenIds.has(c.id)) {
+        seenIds.add(c.id);
+        added++;
+      }
+      all.push({
+        id: c.id,
+        name: c.name,
+        agentId: c.agent_id,
+        updatedAt: c.updated_at
+      });
+    }
+
+    // No-progress guard: a server that ignores "page=" and keeps re-serving the same full list would
+    // otherwise loop forever. Stop once a page adds zero NEW conversations.
+    if (data.length >= CONVERSATION_PAGE_SIZE && added === 0) {
+      console.error('ERROR listConversations server returned no new conversations; stopping pagination early');
+      break;
+    }
+
+    // A short page signals the last page.
+    if (data.length < CONVERSATION_PAGE_SIZE) {
+      break;
+    }
+
+    page++;
+  }
+
+  return all.filter(c => Date.parse(c.updatedAt) >= sinceMs);
 }
 
 export interface ConversationMessage {
