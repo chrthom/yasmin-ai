@@ -587,4 +587,19 @@ describe('nightly pipeline integration', () => {
 
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
+
+  // -------------------------------------------------------------------------
+  // 11. Phase 6 empty-compaction guard
+  // -------------------------------------------------------------------------
+  it('Phase 6 skips the eager-cache upsert when compaction produces empty output, and marks the run partial', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('people/bob.md', '[PRIVACY:SENSITIVE]\nBob secretly hates broccoli.\n[/PRIVACY:SENSITIVE]');
+    mockRunCompact.mockImplementation(async (kind: string) => (kind === 'person' ? '   ' : 'compacted'));
+
+    const result = await runNightlyPipeline();
+
+    expect(mockUpsertContextEntry.mock.calls.some(call => call[0] === 'Profile of Bob')).toBe(false);
+    expect(result.status).toBe('partial');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
 });

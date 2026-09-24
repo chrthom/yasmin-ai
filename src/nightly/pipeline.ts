@@ -345,6 +345,17 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       try {
         const stripped = stripSensitive(row.content);
         let compacted = await runCompact(kind, personName, stripped);
+
+        if (compacted.trim().length === 0) {
+          console.error(
+            'ERROR Phase 6 compaction produced empty output for "' +
+              row.filePath +
+              '"; leaving the existing eager-cache entry untouched'
+          );
+          anyEagerFailed = true;
+          continue;
+        }
+
         if (isOverCap(compacted, config.nightly.eagerMaxChars)) {
           compacted = truncateToCap(compacted, config.nightly.eagerMaxChars);
         }
