@@ -1,0 +1,22 @@
+// Description for Mistral Console: Proposes (stages) a memory file update or creation for later review.
+// This does NOT write anything permanently by itself -- staged updates are only applied after the nightly
+// pipeline's review step. Use get_long_term_file first when revising an existing file, so the staged content
+// is a complete, consistent replacement rather than a partial fragment.
+{
+  "type": "object",
+  "required": ["path", "content", "isNew"],
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "The exact path of the memory file to create or revise. Examples: 'people/christopher.md', 'people/samira.md'."
+    },
+    "content": {
+      "type": "string",
+      "description": "The complete new content for the file. For revisions, include all existing information plus your updates."
+    },
+    "isNew": {
+      "type": "boolean",
+      "description": "True when creating a brand-new file that does not exist yet, false when revising an existing file."
+    }
+  }
+}
