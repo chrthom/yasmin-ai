@@ -10,7 +10,6 @@ export interface NightlyJobLog {
   lastCompletedPhase: string | null;
   processedConversationIds: string[];
   skippedConversationIds: string[];
-  retryCount: number;
   errorMessage: string | null;
   conversationsProcessed: number;
   filesUpdated: number;
@@ -22,7 +21,6 @@ export interface NightlyJobLogPatch {
   lastCompletedPhase?: string;
   processedConversationIds?: string[];
   skippedConversationIds?: string[];
-  retryCount?: number;
   errorMessage?: string;
   conversationsProcessed?: number;
   filesUpdated?: number;
@@ -77,11 +75,6 @@ export async function updateJobLog(id: number, patch: NightlyJobLogPatch): Promi
     if (patch.skippedConversationIds !== undefined) {
       fields.push('skipped_conversation_ids = ?');
       values.push(JSON.stringify(patch.skippedConversationIds));
-    }
-
-    if (patch.retryCount !== undefined) {
-      fields.push('retry_count = ?');
-      values.push(patch.retryCount);
     }
 
     if (patch.errorMessage !== undefined) {
@@ -187,7 +180,6 @@ function mapJobLogRow(row: any): NightlyJobLog {
     lastCompletedPhase: row.last_completed_phase,
     processedConversationIds: parseIdArrayColumn(row.processed_conversation_ids),
     skippedConversationIds: parseIdArrayColumn(row.skipped_conversation_ids),
-    retryCount: row.retry_count,
     errorMessage: row.error_message,
     conversationsProcessed: row.conversations_processed,
     filesUpdated: row.files_updated,
