@@ -64,6 +64,22 @@ describe('nightly/tools', () => {
 
       expect(getStagedUpdates()).toHaveLength(1);
     });
+
+    it('rejects a traversal/unknown path without staging anything', () => {
+      const result = stage_update('../secrets/passwords.md', 'evil', false);
+
+      expect(result.success).toBe(false);
+      expect(getStagedUpdates()).toHaveLength(0);
+    });
+
+    it('rejects an empty or non-string content without staging anything', () => {
+      const asString = stage_update('people/alice.md', '', false);
+      const asUndefined = stage_update('people/alice.md', undefined as unknown as string, false);
+
+      expect(asString.success).toBe(false);
+      expect(asUndefined.success).toBe(false);
+      expect(getStagedUpdates()).toHaveLength(0);
+    });
   });
 
   describe('get_long_term_file', () => {

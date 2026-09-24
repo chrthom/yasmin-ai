@@ -92,7 +92,7 @@ async function executeIntegrateTool(name: string, args: Record<string, unknown>)
       return JSON.stringify(read_todays_journals());
     case 'stage_update':
       return JSON.stringify(
-        stage_update(args['path'] as string, args['content'] as string, Boolean(args['isNew']))
+        stage_update(args['path'] as string, args['content'] as string, args['isNew'] === true)
       );
     default:
       return JSON.stringify({ error: 'unknown tool' });
