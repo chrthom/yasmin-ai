@@ -224,6 +224,16 @@ describe('mistral_api', () => {
       });
     });
 
+    it('does not retry the conversation POST, so an ambiguous failure cannot duplicate a conversation/message', async () => {
+      mockFetch.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(
+        askAgent({ agentId: 'agent-1', inputs: [{ role: 'user', content: 'hi' }] })
+      ).rejects.toThrow('socket hang up');
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('posts to /conversations/{id} with only inputs when continuing', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
