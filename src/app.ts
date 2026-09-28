@@ -13,6 +13,7 @@ import {
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
 import { getDatabasePool } from './database/connection';
+import { startNightlyScheduler, stopNightlyScheduler } from './nightly/scheduler';
 
 validateEnv();
 
@@ -71,6 +72,8 @@ const server = app.listen(config.server.port, () => {
   console.log(`INFO API Documentation available at http://localhost:${config.server.port}/api-docs`);
 });
 
+startNightlyScheduler();
+
 process.on('uncaughtException', err => {
   console.error('Uncaught Exception:', err);
   server.close(() => process.exit(1));
@@ -81,12 +84,31 @@ process.on('unhandledRejection', (reason, promise) => {
   server.close(() => process.exit(1));
 });
 
+const NIGHTLY_SHUTDOWN_TIMEOUT_MS = 30_000;
+
+/**
+ * Graceful shutdown: stop scheduling new nightly runs and give an in-flight pipeline up to a bounded
+ * timeout to finish, so a SIGTERM mid-run doesn't hard-kill it and leave a stale processing_lock
+ * behind. The pipeline logs its own progress/state; we only decide the exit code from whether it
+ * drained in time.
+ */
+const shutdown = async (signal: string): Promise<void> => {
+  console.log(`INFO: ${signal} received, shutting down`);
+  const drained = await stopNightlyScheduler(NIGHTLY_SHUTDOWN_TIMEOUT_MS);
+  if (!drained) {
+    console.error(
+      'ERROR: nightly pipeline still running after ' +
+        String(NIGHTLY_SHUTDOWN_TIMEOUT_MS) +
+        'ms; exiting non-zero (a stale processing_lock may need manual recovery)'
+    );
+  }
+  server.close(() => process.exit(drained ? 0 : 1));
+};
+
 process.on('SIGTERM', () => {
-  console.log('INFO: SIGTERM received, shutting down');
-  server.close(() => process.exit(0));
+  void shutdown('SIGTERM');
 });
 
 process.on('SIGINT', () => {
-  console.log('INFO: SIGINT received, shutting down');
-  server.close(() => process.exit(0));
+  void shutdown('SIGINT');
 });

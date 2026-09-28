@@ -122,6 +122,27 @@ export async function deleteContextEntry(title: string): Promise<boolean> {
 }
 
 /**
+ * Inserts a context entry if it doesn't exist yet, otherwise updates its content
+ */
+export async function upsertContextEntry(title: string, content: string): Promise<'inserted' | 'updated'> {
+  try {
+    // Single atomic statement (title is the PRIMARY KEY). A two-step "read then insert/update" raced
+    // with the live agent's own writes to context_entries and could throw ER_DUP_ENTRY, and would tell
+    // the caller "updated" even when the underlying UPDATE had swallowed a failure.
+    const [result]: any = await executeQuery(
+      'INSERT INTO context_entries (title, content) VALUES (?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
+      [title, content]
+    );
+    // affectedRows: 1 on fresh insert, 2 on updated-with-change, 0 on updated-with-no-change. Any
+    // value other than 1 means the row pre-existed (either refreshed or identical).
+    return result.affectedRows === 1 ? 'inserted' : 'updated';
+  } catch (error) {
+    console.error(`Error upserting context entry "${title}":`, error);
+    throw error;
+  }
+}
+
+/**
  * Lists all context entries
  * @returns Promise<Array<{title: string, content: string}>>
  */

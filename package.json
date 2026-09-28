@@ -12,7 +12,10 @@
     "lint": "npx eslint src/*",
     "format": "npx prettier . --write",
     "check": "npm run format; npm run lint",
-    "manage-context": "npx ts-node scripts/manage-context.ts"
+    "manage-context": "npx ts-node scripts/manage-context.ts",
+    "nightly": "node dist/src/nightly/run.js",
+    "nightly:dry-run": "node dist/src/nightly/run.js --dry-run",
+    "bootstrap-memory": "npx ts-node scripts/bootstrap-memory.ts"
   },
   "private": true,
   "author": "Christopher Thomsen",
