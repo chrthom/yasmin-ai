@@ -68,6 +68,11 @@ export function journalPrompt(userName: string, transcript: string): string {
     'something from earlier conversations, moments where they reflected on themselves, and any cues about ' +
     'how they like to be talked to (tone, humor, directness, formality). Note these explicitly rather than ' +
     'only describing what happened.\n' +
+    'Actively do NOT record: routine, eventless business; one-off instructions that only applied to that ' +
+    'moment; transient operational detail; or trivia that will never be referenced again. When in doubt, ' +
+    'prefer to leave something out rather than pad the entry.\n' +
+    'Always date concrete events with an absolute date ("on 2026-09-28") rather than a relative one like ' +
+    '"today" or "recently".\n' +
     'If nothing meaningful happened in this conversation, write one short line saying so instead of padding ' +
     'the entry with filler.\n\n' +
     'Transcript of the conversation with ' +
@@ -139,7 +144,15 @@ export function integratePrompt(): string {
     "When integrating, don't just move today's happenings into Recent Happenings -- also check whether " +
     "today's journal echoes or continues something the file already has in Ideas, Interests & Goals or " +
     'Open Topics; if so, consolidate it there as a recurring topic instead of letting it sit as a ' +
-    'one-off, disconnected mention.\n\n' +
+    'one-off, disconnected mention.\n' +
+    "As you reread each file, also actively check its existing content for statements today's journals now " +
+    'contradict -- a fact the person has since corrected, a belief they have changed, an "open topic" they ' +
+    'have resolved. Correct them in place, don\'t just annotate; a file that asserts something the evidence ' +
+    "now says is false must be rewritten to match. Treat the file's current content as a possibly stale " +
+    'claim, not ground truth. If two different files assert conflicting facts, fix the wrong one rather than ' +
+    'leaving both standing.\n' +
+    "Apply the same restraint when integrating: skip facts that are now irrelevant to this person's profile, " +
+    'and never keep a stale fact just because it was recorded before.\n\n' +
     "Remember the file path conventions: people/<name>.md for a person's profile, " +
     "self-reflection/profile.md for Yasmin's own self-profile (first person), and general/family.md for " +
     'family-wide notes. Person profiles use the 7-section template (Core Facts, Current Attitude, Ideas, ' +
