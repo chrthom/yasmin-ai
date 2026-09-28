@@ -57,7 +57,8 @@ Have a real conversation afterward and confirm: profile/family-notes context sti
 
 ## B5. Keep monitoring
 
-`nightly_job_log` remains the sole writer of `context_entries` from this point on.
+The nightly job (the pipeline from Part A) is the sole writer of `context_entries` from this point on —
+`nightly_job_log` is only that job's run log and never writes context itself.
 
 ---
 
