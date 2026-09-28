@@ -70,6 +70,8 @@ export function nextRunAt(now: Date, timeZone: string, hour: number, minute: num
 }
 
 let timer: NodeJS.Timeout | undefined;
+let inFlight: Promise<void> | undefined;
+let stopped = false;
 
 async function runAndReschedule(): Promise<void> {
   try {
@@ -82,14 +84,20 @@ async function runAndReschedule(): Promise<void> {
       console.error('ERROR Scheduled nightly pipeline failed: ' + error);
     }
   }
-  scheduleNext();
+  inFlight = undefined;
+  if (!stopped) {
+    scheduleNext();
+  }
 }
 
 function scheduleNext(): void {
   const delayMs =
     nextRunAt(new Date(), config.nightly.tz, NIGHTLY_HOUR, NIGHTLY_MINUTE).getTime() - Date.now();
   timer = setTimeout(() => {
-    runAndReschedule().catch(error => console.error('ERROR Nightly scheduler tick crashed: ' + error));
+    inFlight = runAndReschedule().catch(error => {
+      console.error('ERROR Nightly scheduler tick crashed: ' + error);
+      inFlight = undefined;
+    });
   }, delayMs);
 }
 
@@ -107,13 +115,33 @@ export function startNightlyScheduler(): void {
       String(NIGHTLY_MINUTE).padStart(2, '0') +
       ')'
   );
+  stopped = false;
   scheduleNext();
 }
 
-/** Stops the scheduler -- used on graceful shutdown */
-export function stopNightlyScheduler(): void {
+/**
+ * Stops the scheduler and waits -- up to `timeoutMs` -- for any in-flight nightly run to finish, so a
+ * graceful shutdown doesn't hard-kill a running pipeline and leave a stale processing_lock behind (the
+ * lock is only cleared when the stale threshold `config.nightly.lockStaleMs` elapses).
+ * Resolves `true` when no run was in flight or it finished within the timeout; `false` if the run was
+ * still going when the timeout elapsed (the caller should then exit non-zero).
+ */
+export async function stopNightlyScheduler(timeoutMs: number): Promise<boolean> {
+  stopped = true;
   if (timer) {
     clearTimeout(timer);
     timer = undefined;
   }
+  if (!inFlight) {
+    return true;
+  }
+  let timeoutId: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>(resolve => {
+    timeoutId = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const settled = await Promise.race([inFlight.then(() => true), timeout]);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+  }
+  return settled;
 }
