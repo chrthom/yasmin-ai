@@ -27,7 +27,8 @@ Non-destructive; does not touch `context_entries`.
 mysql -h 192.168.0.2 -P 3307 -u yasmin -p yasmin < database/schema_memory.sql
 ```
 
-Creates `memory_archive`, `nightly_job_log`, `processing_lock`.
+Creates `memory_archive`, `nightly_job_log`, `processing_lock`, `nightly_watermark` (`nightly_watermark`
+is the non-pruned table the pipeline uses to persist the resumed watermark, see commit `5743d04`).
 
 ### A3. Mistral Console setup
 
@@ -61,7 +62,7 @@ compose file) before starting/restarting it in step A9.
 npm run build
 ```
 
-Produces `dist/nightly/run.js`.
+Produces `dist/src/nightly/run.js` (matches the `nightly` / `nightly:dry-run` npm scripts).
 
 ### A6. Bootstrap — run exactly once, before the first real nightly run
 
