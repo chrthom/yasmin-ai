@@ -1,9 +1,4 @@
-import {
-  getAllEntriesFromDb,
-  getAllTitlesFromDb,
-  getContentByTitleFromDb,
-  updateContextEntry as updateContextEntryInDb
-} from './models/context.model';
+import { getAllEntriesFromDb, getAllTitlesFromDb, getContentByTitleFromDb } from './models/context.model';
 
 export interface DbRecord {
   title: string;
@@ -54,78 +49,6 @@ export const PROXY_DATA: DbRecord[] = [
   {
     title: 'Profile of Jonas',
     content: "Jonas is Yasmin's uncle. He lives in Schleswig."
-  },
-  {
-    title: 'Session with Anjali',
-    content: ''
-  },
-  {
-    title: 'Session with Christopher',
-    content: ''
-  },
-  {
-    title: 'Session with Zara',
-    content: ''
-  },
-  {
-    title: 'Session with Samira',
-    content: ''
-  },
-  {
-    title: 'Session with Ellena',
-    content: ''
-  },
-  {
-    title: 'Session with Helge',
-    content: ''
-  },
-  {
-    title: 'Session with Christine',
-    content: ''
-  },
-  {
-    title: 'Session with Lennard',
-    content: ''
-  },
-  {
-    title: 'Session with Jonas',
-    content: ''
-  },
-  {
-    title: 'Journal with Anjali',
-    content: ''
-  },
-  {
-    title: 'Journal with Christopher',
-    content: ''
-  },
-  {
-    title: 'Journal with Zara',
-    content: ''
-  },
-  {
-    title: 'Journal with Samira',
-    content: ''
-  },
-  {
-    title: 'Journal with Ellena',
-    content: ''
-  },
-  {
-    title: 'Journal with Helge',
-    content: ''
-  },
-  {
-    title: 'Journal with Christine',
-    content: ''
-  },
-  {
-    title: 'Journal with Lennard',
-    content: ''
-  },
-  {
-    title: 'Journal with Jonas',
-    content: ''
   },
   {
     title: 'Family notes',
@@ -187,29 +110,6 @@ export class DbProxy {
     }
     const found = PROXY_DATA.find(record => record.title.toLowerCase() === title.toLowerCase());
     return found ? found.content : null;
-  }
-
-  /**
-   * Updates an existing context entry's content (title cannot be changed)
-   * @param title The exact title of the entry to update
-   * @param content The new content to set
-   * @returns Promise<boolean> True if successful
-   */
-  async updateEntry(title: string, content: string): Promise<boolean> {
-    if (!this.useRealDb) {
-      const foundIndex = PROXY_DATA.findIndex(record => record.title.toLowerCase() === title.toLowerCase());
-      if (foundIndex === -1) {
-        return false;
-      }
-      PROXY_DATA[foundIndex] = { ...PROXY_DATA[foundIndex], content };
-      return true;
-    }
-    try {
-      return await updateContextEntryInDb(title, content, undefined);
-    } catch (error) {
-      console.error(`Error updating context entry "${title}" in real DB:`, error);
-      return false;
-    }
   }
 }
 
