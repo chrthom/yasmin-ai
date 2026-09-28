@@ -37,6 +37,14 @@ Use this sparingly. Most facts are ordinary and need no marker.
 
 ---
 
+## DATES
+
+Always write concrete, absolute dates (e.g. "on 2026-09-28" or "on Sunday 2026-09-28") and never vague
+relative time such as "today", "yesterday", "last Sunday", "recently", or "a while ago". A fact stamped
+with a relative date is meaningless once time passes.
+
+---
+
 ## PERSON PROFILE TEMPLATE
 
 Whenever you write or update a `people/<name>.md` file, structure it with exactly these seven sections, in
