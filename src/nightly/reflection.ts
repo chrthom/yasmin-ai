@@ -147,7 +147,7 @@ export function integratePrompt(): string {
     'one-off, disconnected mention.\n' +
     "As you reread each file, also actively check its existing content for statements today's journals now " +
     'contradict -- a fact the person has since corrected, a belief they have changed, an "open topic" they ' +
-    'have resolved. Correct them in place, don\'t just annotate; a file that asserts something the evidence ' +
+    "have resolved. Correct them in place, don't just annotate; a file that asserts something the evidence " +
     "now says is false must be rewritten to match. Treat the file's current content as a possibly stale " +
     'claim, not ground truth. If two different files assert conflicting facts, fix the wrong one rather than ' +
     'leaving both standing.\n' +
