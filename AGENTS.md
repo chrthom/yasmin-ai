@@ -18,16 +18,19 @@ database/
 └── schema_memory.sql      # Additive schema for the nightly memory job: memory_archive,
                             #   nightly_job_log, processing_lock (does not touch context_entries)
 mistral_config/
-├── system_prompt.txt                   # Live conversation agent's system prompt
-├── nightly_system_prompt.txt           # Nightly memory-consolidation agent's system prompt
-└── functions/
-    ├── read_context_entry.json         # Live agent: lazy-load a context entry
-    ├── update_context_entry.json       # Live agent: write a context entry
-    │                                   #   (retired at the read-only cutover, see Data Flow below)
-    ├── get_long_term_file.json         # Nightly agent: read one verbose memory file
-    ├── list_long_term_files.json       # Nightly agent: list verbose memory files
-    ├── read_todays_journals.json       # Nightly agent: read today's per-conversation journals
-    └── stage_update.json               # Nightly agent: stage a proposed file update for review
+├── conversation/                       # Live conversation agent
+│   ├── system_prompt.txt
+│   └── functions/
+│       ├── read_context_entry.json     # Lazy-load a context entry
+│       └── update_context_entry.json   # Write a context entry
+│                                       #   (retired at the read-only cutover, see Data Flow below)
+└── nightly/                            # Nightly memory-consolidation agent
+    ├── nightly_system_prompt.txt
+    └── functions/
+        ├── get_long_term_file.json     # Read one verbose memory file
+        ├── list_long_term_files.json   # List verbose memory files
+        ├── read_todays_journals.json   # Read today's per-conversation journals
+        └── stage_update.json           # Stage a proposed file update for review
 scripts/
 ├── manage-context.ts     # CLI administration utility for context CRUD
 └── bootstrap-memory.ts   # One-time migration: seeds memory_archive + the Mistral library from
@@ -47,7 +50,7 @@ src/
 │   └── mistral_api.ts  # Low-level Mistral HTTP client (conversations, documents, library),
 │                       #   used by the nightly pipeline; retry + pagination handling
 ├── nightly/
-│   ├── run.ts         # CLI entry point compiled to dist/nightly/run.js; manual runs + --dry-run
+│   ├── run.ts         # CLI entry point (run via ts-node from source); manual runs + --dry-run
 │   ├── scheduler.ts   # In-process daily scheduler; started from app.ts, calls the same pipeline
 │   ├── pipeline.ts    # 7-phase orchestrator: collect, journal, integrate, review/archive,
 │   │                  #   upload, regenerate eager cache, cleanup
@@ -96,11 +99,11 @@ the live conversation, exactly as it did before the nightly memory pipeline exis
 one, must only be merged after this nightly job has been verified in production for a while. Once merged:
 
 - The `update_context_entry` tool handler is removed from `chat_agent.ts` entirely, and its function
-  definition (`mistral_config/functions/update_context_entry.json`) is deleted — the live agent becomes
-  read-only for memory.
+  definition (`mistral_config/conversation/functions/update_context_entry.json`) is deleted — the live
+  agent becomes read-only for memory.
 - `ContextService`'s eager-loaded set drops the `Session with [sender]` entry, leaving just
   `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
-- `mistral_config/system_prompt.txt` is rewritten to tell the agent that deeper facts and past conversation
+- `mistral_config/conversation/system_prompt.txt` is rewritten to tell the agent that deeper facts and past conversation
   history now surface automatically via the Mistral library's RAG (no tool call needed), and adds a
   privacy-enforcement rule for `[PRIVACY:SENSITIVE]` content.
 - The nightly job becomes the **sole writer** of `context_entries`.
@@ -114,14 +117,14 @@ keeps memory fresh.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used exclusively by the nightly pipeline — separate from `ChatAgent`'s own inline `fetch` calls.
-- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the prompts/agent calls for journaling, integrating, reviewing, and compacting; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back; `run.ts` is the CLI entry point compiled to `dist/nightly/run.js`.
+- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the prompts/agent calls for journaling, integrating, reviewing, and compacting; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back; `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
 
 Once a night, an in-process scheduler (`src/nightly/scheduler.ts`, started from `app.ts`) calls the same
 pipeline the API server is already running in — no external cron daemon or wrapper script, so it always
-has the exact same environment/config as the server. (`src/nightly/run.ts`, compiled to
-`dist/nightly/run.js`, remains available for a manual one-off run or `--dry-run` preflight check; see
+has the exact same environment/config as the server. (`src/nightly/run.ts`, run via ts-node from source,
+remains available for a manual one-off run or `--dry-run` preflight check; see
 `docs/deployment_checklist.md`.) This runs entirely offline from the request/response path above — it
 consolidates the day's Synology conversations into long-term memory after the fact.
 
