@@ -164,6 +164,20 @@ describe('reflection', () => {
       expect(result.approved).toBe(false);
       expect(result.reason).toBe('Could not parse reviewer verdict; rejecting as a safe default.');
     });
+
+    it('instructs the reviewer that dropping ephemeral day-detail is correct compaction, not a reject reason', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
+
+      await runReview(update, 'old content', [
+        { conversationId: 'c1', userName: 'Alice', content: 'Alice bought crisps today' }
+      ]);
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('deliberately COMPACT');
+      expect(prompt).toContain('Omitting the ephemeral day-to-day detail');
+      expect(prompt).toContain('do NOT reject for that');
+      expect(prompt).toContain('dropping a durable fact that the profile should retain');
+    });
   });
 
   describe('reviseProposal', () => {
@@ -212,12 +226,12 @@ describe('reflection', () => {
       const call = mockAskAgent.mock.calls[0][0];
       expect(call.conversationId).toBe('rev-conv-1');
       const prompt = call.inputs[0].content;
-      // Follow-up only points at the latest rejection + feedback; the prior file context is already
-      // in the conversation's visible history, so it must NOT be re-seeded wholesale.
+      // The follow-up points at the latest rejection + feedback and RE-EMBEDS the day's journals so
+      // every turn re-grounds in the evidence; the base file context is not re-seeded wholesale.
       expect(prompt).toContain('rejected again');
       expect(prompt).toContain('still wrong');
+      expect(prompt).toContain('journal text');
       expect(prompt).not.toContain('old content');
-      expect(prompt).not.toContain('journal text');
 
       expect(result).toEqual({ content: '# Second correction', conversationId: 'rev-conv-1' });
     });
