@@ -113,7 +113,8 @@ export class ChatAgent {
   async processRequest(
     userText: string,
     username: string,
-    shortAnswer: boolean = false
+    shortAnswer: boolean = false,
+    isRespawn: boolean = false
   ): Promise<MistralConversationResponseOutput[]> {
     try {
       const conversationId = await this.getActiveConversationId(username);
@@ -177,9 +178,17 @@ export class ChatAgent {
 
       if (!response.ok) {
         console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
-        if (response.status === 400 || response.status === 404) {
+        const isStale = response.status === 400 || response.status === 404;
+        if (isStale) {
           this.conversationCache.delete(username);
           console.log(`INFO Cleared cached conversation for ${username} due to HTTP ${response.status}`);
+        }
+        // If we were resuming a cached conversation and it no longer exists (the nightly job deletes
+        // consolidated conversations), respawn a fresh one once so the user's message isn't dropped.
+        // isRespawn guards against looping if the freshly created conversation also fails.
+        if (isStale && conversationId && !isRespawn) {
+          console.log(`INFO Respawning a fresh conversation for ${username}`);
+          return this.processRequest(userText, username, shortAnswer, true);
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }

@@ -598,13 +598,30 @@ describe('ChatAgent', () => {
       expect(resultData.error).toBe('Content parameter is required');
     });
 
-    it('should clear the conversation cache if Mistral API returns HTTP 400 or HTTP 404', async () => {
-      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+    it('respawns a fresh conversation when resuming a deleted conversation (HTTP 404)', async () => {
+      // First call finds the cached conversation; after it is cleared the next call finds none
+      // (simulating the conversation deleted by the nightly job), so a fresh one is spawned.
+      jest
+        .spyOn(chatAgent as any, 'getActiveConversationId')
+        .mockResolvedValueOnce('conv-123')
+        .mockResolvedValue(undefined);
 
+      // Resume attempt -> 404 (the conversation no longer exists on Mistral)
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 404,
         statusText: 'Not Found'
+      });
+
+      // Fresh-conversation attempt -> success with a new conversation id
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-fresh',
+          outputs: [{ type: 'message.output', content: 'New conversation!' }]
+        })
       });
 
       // Warm up cache first to simulate a cached hit
@@ -614,7 +631,31 @@ describe('ChatAgent', () => {
         loadedContextTitles: []
       });
 
-      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow();
+      const result = await chatAgent.processRequest('Hello', 'christopher');
+
+      // The message was answered instead of being dropped
+      expect(result).toHaveLength(1);
+      // The respawn request went to a fresh conversation, not the deleted one
+      expect(mockFetch.mock.calls[0][0]).toContain('conv-123');
+      expect(mockFetch.mock.calls[1][0]).not.toContain('conv-123');
+      // The new conversation id is cached so the next turn resumes it
+      expect((chatAgent as any).conversationCache.get('christopher').conversationId).toBe('conv-fresh');
+    });
+
+    it('clears the cache and throws when a fresh conversation 404s (no respawn loop)', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found'
+      });
+
+      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow(
+        'Mistral API request failed: HTTP 404'
+      );
+      // Only one request was made -- a fresh-conversation 404 must not trigger a respawn loop
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       expect((chatAgent as any).conversationCache.has('christopher')).toBe(false);
     });
   });
