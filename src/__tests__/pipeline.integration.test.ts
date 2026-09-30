@@ -302,10 +302,26 @@ describe('nightly pipeline integration', () => {
     expect(mockSetWatermark).toHaveBeenCalledTimes(1);
     expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
 
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/alice/conv-1.md', 'Journal about Alice');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/bob/conv-2.md', 'Journal about Bob');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/carol/conv-3.md', 'Journal about Carol');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice profile content');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/alice/conv-1.md',
+      'Journal about Alice',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/bob/conv-2.md',
+      'Journal about Bob',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/carol/conv-3.md',
+      'Journal about Carol',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice profile content',
+      expect.any(Date)
+    );
 
     expect(mockUpsertContextEntry).toHaveBeenCalledWith('Profile of Alice', 'compacted profile');
 
@@ -339,7 +355,11 @@ describe('nightly pipeline integration', () => {
 
     const result = await runNightlyPipeline();
 
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Existing alice content');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Existing alice content',
+      expect.any(Date)
+    );
 
     const archivePhaseUpdate = mockUpdateJobLog.mock.calls.find(
       call => call[1] && call[1].lastCompletedPhase === '4-archive'
@@ -382,7 +402,11 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
 
     // The rejected proposal is NOT written; the accepted one is.
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice new profile');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice new profile',
+      expect.any(Date)
+    );
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'people/bob.md')).toBe(false);
 
     // A reviewer rejection is a handled, benign outcome -- it must not degrade the run to 'partial',
@@ -424,8 +448,16 @@ describe('nightly pipeline integration', () => {
     expect(mockCreateJobLog).not.toHaveBeenCalled();
     expect(result.jobId).toBe(77);
 
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-9/conv-9.md', 'journal text');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-10/conv-10.md', 'journal text');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/conv-9/conv-9.md',
+      'journal text',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/conv-10/conv-10.md',
+      'journal text',
+      expect.any(Date)
+    );
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
     expect(mockDeleteConversation).not.toHaveBeenCalledWith('conv-999');
@@ -464,7 +496,11 @@ describe('nightly pipeline integration', () => {
 
     // conv-10: not yet journaled -- must still be journaled fresh this run.
     expect(mockGetConversationMessages).toHaveBeenCalledWith('conv-10');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-10/conv-10.md', 'journal text');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/conv-10/conv-10.md',
+      'journal text',
+      expect.any(Date)
+    );
 
     // Both conversations are still cleaned up in Phase 7 regardless of which path journaled them.
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');

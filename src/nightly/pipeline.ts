@@ -219,7 +219,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           );
           continue;
         }
-        await insertNextVersion(journalPath, journalText);
+        await insertNextVersion(journalPath, journalText, collectedAt);
       }
 
       const current = await getCurrentVersion(journalPath);
@@ -263,7 +263,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         const verdict = await runReview(update, currentContent, todaysJournals);
 
         if (verdict.approved) {
-          const { created } = await insertNextVersion(update.path, update.content);
+          const { created } = await insertNextVersion(update.path, update.content, collectedAt);
           // Classify create-vs-update from whether an archived version already existed, not from
           // the AI-supplied isNew flag, which is never cross-checked against real archive state.
           if (created && currentContent === null) {

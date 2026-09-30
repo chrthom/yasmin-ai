@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS memory_archive (
     version        INT          NOT NULL,      -- monotonic per file_path; MAX = current
     mistral_doc_id VARCHAR(64)  NULL,          -- Mistral document id of the uploaded copy
     synced_at      TIMESTAMP    NULL,          -- set when this version was confirmed uploaded
+    -- The nightly pipeline writes created_at explicitly (UTC serialization matching nightly_job_log
+    -- timestamps) so created_at and completed_at are directly comparable; the DB default is only a
+    -- fallback for manual/one-time inserts (e.g. bootstrap-memory).
     created_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     -- Current version of a file = row with MAX(version) for that file_path
     UNIQUE KEY uk_path_version (file_path, version),

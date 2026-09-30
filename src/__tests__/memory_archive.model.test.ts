@@ -83,7 +83,8 @@ describe('memory_archive.model', () => {
         .mockResolvedValueOnce([{ insertId: 2, affectedRows: 1 }]) // INSERT
         .mockResolvedValueOnce([[newRow]]); // re-select
 
-      const { row, created } = await insertNextVersion('people/christopher.md', 'new content');
+      const createdAt = new Date('2026-09-30T15:59:45Z');
+      const { row, created } = await insertNextVersion('people/christopher.md', 'new content', createdAt);
 
       expect(created).toBe(true);
       expect(row.version).toBe(3);
@@ -95,7 +96,8 @@ describe('memory_archive.model', () => {
         'people/christopher.md',
         'new content',
         computeContentHash('new content'),
-        3
+        3,
+        createdAt
       ]);
     });
 
