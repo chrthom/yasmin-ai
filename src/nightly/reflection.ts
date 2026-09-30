@@ -327,25 +327,67 @@ export function revisePrompt(
 }
 
 /**
- * Runs the Phase-4 revision call for one staged update, returning the corrected full replacement content
+ * Builds the short follow-up prompt sent to an EXISTING revision conversation. The conversation already
+ * holds the file context, the running proposal->feedback history, and the agent's own prior corrections,
+ * so this turn only needs to point at the latest rejection -- keeping the whole history in scope for
+ * later revisions to reference.
+ */
+export function reviseFollowUpPrompt(
+  update: StagedUpdate,
+  rejectedContent: string,
+  feedback: string
+): string {
+  const voiceRule =
+    update.path === 'self-reflection/profile.md' ? '\nRemember: ' + SELF_PROFILE_VOICE_RULE + '\n' : '';
+  return (
+    'Your previous correction (the full file content you just produced) was reviewed and REJECTED again.\n\n' +
+    'File path: ' +
+    update.path +
+    '\n\nYour previously proposed (rejected) content:\n' +
+    rejectedContent +
+    '\n\nReviewer feedback (correct the FULL file content to satisfy every point while staying true to ' +
+    'everything already established earlier in this conversation):\n' +
+    feedback +
+    '\n\n' +
+    voiceRule +
+    'Rewrite the ENTIRE file content as a complete replacement -- no preamble, no diff, no patch, and no ' +
+    'markdown code fence. Reply with ONLY the corrected full file content.'
+  );
+}
+
+/**
+ * Runs the Phase-4 revision for one staged update, returning the corrected full replacement content and
+ * the conversation id so callers can keep revising within the SAME conversation (full proposal->feedback
+ * history stays in scope). Pass the conversationId from a prior call to continue that conversation.
  */
 export async function reviseProposal(
   update: StagedUpdate,
   currentContent: string | null,
   rejectedContent: string,
   feedback: string,
-  todaysJournals: JournalEntry[]
-): Promise<string> {
+  todaysJournals: JournalEntry[],
+  conversationId?: string
+): Promise<{ content: string; conversationId: string }> {
+  const inputs =
+    conversationId === undefined
+      ? [
+          {
+            role: 'user',
+            content: revisePrompt(update, currentContent, rejectedContent, feedback, todaysJournals)
+          }
+        ]
+      : [{ role: 'user', content: reviseFollowUpPrompt(update, rejectedContent, feedback) }];
+
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [
-      {
-        role: 'user',
-        content: revisePrompt(update, currentContent, rejectedContent, feedback, todaysJournals)
-      }
-    ]
+    conversationId,
+    inputs
   });
-  return result.outputText.trim();
+
+  return {
+    content: result.outputText.trim(),
+    conversationId: result.conversationId || conversationId || ''
+  };
 }
 
 // ---------------------------------------------------------------------------

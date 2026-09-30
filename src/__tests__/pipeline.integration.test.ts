@@ -279,8 +279,11 @@ describe('nightly pipeline integration', () => {
     mockRunJournal.mockResolvedValue('journal text');
     mockRunIntegrate.mockResolvedValue({ finalText: '', iterations: 0 });
     mockRunReview.mockResolvedValue({ approved: true, reason: '' });
-    // Default: a revision that leaves content unchanged; individual tests override this as needed.
-    mockReviseProposal.mockImplementation(async (_update: any, _current: any, rejected: any) => rejected);
+    // Default: a revision that leaves content unchanged (no conversation to clean up); tests override.
+    mockReviseProposal.mockImplementation(async (_update: any, _current: any, rejected: any) => ({
+      content: rejected,
+      conversationId: undefined
+    }));
     mockRunCompact.mockResolvedValue('compacted');
   });
 
@@ -447,7 +450,7 @@ describe('nightly pipeline integration', () => {
     mockRunReview
       .mockResolvedValueOnce({ approved: false, reason: 'missing date, please add it' })
       .mockResolvedValueOnce({ approved: true, reason: 'now includes the date' });
-    mockReviseProposal.mockResolvedValue('Alice profile v2 with date');
+    mockReviseProposal.mockResolvedValue({ content: 'Alice profile v2 with date', conversationId: 'rev-1' });
 
     const result = await runNightlyPipeline();
 
@@ -458,6 +461,8 @@ describe('nightly pipeline integration', () => {
       'Alice profile v2 with date',
       expect.any(Date)
     );
+    // The per-file revision conversation is cleaned up once the loop finishes.
+    expect(mockDeleteConversation).toHaveBeenCalledWith('rev-1');
 
     expect(result.status).toBe('completed');
     expect(mockSetWatermark).toHaveBeenCalled();

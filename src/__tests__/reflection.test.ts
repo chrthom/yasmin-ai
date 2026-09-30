@@ -169,15 +169,19 @@ describe('reflection', () => {
   describe('reviseProposal', () => {
     const update = { path: 'people/alice.md', content: 'new content', isNew: true };
 
-    it('passes the nightly agent the path, current content, rejected proposal, feedback and journals', async () => {
-      mockAskAgent.mockResolvedValueOnce({ outputText: '# Corrected profile content' });
+    it('opens a fresh conversation with full context on the first call', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: '# Corrected profile content',
+        conversationId: 'rev-conv-1'
+      });
 
-      await reviseProposal(update, 'old content', 'rejected content', 'add the date please', [
+      const result = await reviseProposal(update, 'old content', 'rejected content', 'add the date please', [
         { conversationId: 'conv-1', userName: 'Alice', content: 'journal text' }
       ]);
 
       const call = mockAskAgent.mock.calls[0][0];
       expect(call.agentId).toBe('nightly-agent-1');
+      expect(call.conversationId).toBeUndefined();
       expect(call.inputs[0].role).toBe('user');
       const prompt = call.inputs[0].content;
       expect(prompt).toContain('people/alice.md');
@@ -186,6 +190,36 @@ describe('reflection', () => {
       expect(prompt).toContain('add the date please');
       expect(prompt).toContain('journal text');
       expect(prompt).toContain('complete replacement');
+
+      expect(result).toEqual({ content: '# Corrected profile content', conversationId: 'rev-conv-1' });
+    });
+
+    it('continues the SAME conversation when a conversationId is passed (no reseed of journals)', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: '# Second correction',
+        conversationId: 'rev-conv-1'
+      });
+
+      const result = await reviseProposal(
+        update,
+        'old content',
+        'rejected again',
+        'still wrong',
+        [{ conversationId: 'conv-1', userName: 'Alice', content: 'journal text' }],
+        'rev-conv-1'
+      );
+
+      const call = mockAskAgent.mock.calls[0][0];
+      expect(call.conversationId).toBe('rev-conv-1');
+      const prompt = call.inputs[0].content;
+      // Follow-up only points at the latest rejection + feedback; the prior file context is already
+      // in the conversation's visible history, so it must NOT be re-seeded wholesale.
+      expect(prompt).toContain('rejected again');
+      expect(prompt).toContain('still wrong');
+      expect(prompt).not.toContain('old content');
+      expect(prompt).not.toContain('journal text');
+
+      expect(result).toEqual({ content: '# Second correction', conversationId: 'rev-conv-1' });
     });
 
     it('returns the agent output trimmed of surrounding whitespace', async () => {
@@ -193,7 +227,20 @@ describe('reflection', () => {
 
       const result = await reviseProposal(update, null, 'rejected content', 'reason', []);
 
-      expect(result).toBe('corrected\n  content');
+      expect(result.content).toBe('corrected\n  content');
+    });
+
+    it('reminds the agent of the first-person voice rule for self-reflection/profile.md', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: 'profile',
+        conversationId: 'rev-conv-2'
+      });
+      const selfUpdate = { path: 'self-reflection/profile.md', content: 'new', isNew: false };
+
+      await reviseProposal(selfUpdate, 'old', 'rejected', 'third person!', [], 'rev-conv-2');
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('first person');
     });
   });
 

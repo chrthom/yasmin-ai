@@ -277,16 +277,35 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
         // corrected full replacement, then re-review. This turns a persistent "rejected forever" case
-        // into one that converges within a bounded number of revisions.
+        // into one that converges within a bounded number of revisions. All revisions for this file reuse
+        // the SAME conversation (revisionConversationId), so the full proposal->feedback history stays in
+        // the agent's context window instead of each call starting from scratch. The reviewer above stays
+        // stateless (a fresh call every time) -- only the reviser accumulates state.
         let revisions = 0;
+        let revisionConversationId: string | undefined;
         while (!verdict.approved && revisions < config.nightly.maxRevisions) {
-          proposal = await reviseProposal(update, currentContent, proposal, verdict.reason, todaysJournals);
+          const revised = await reviseProposal(
+            update,
+            currentContent,
+            proposal,
+            verdict.reason,
+            todaysJournals,
+            revisionConversationId
+          );
+          revisionConversationId = revised.conversationId || revisionConversationId;
+          proposal = revised.content;
           verdict = await runReview(
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
             todaysJournals
           );
           revisions++;
+        }
+
+        // The per-file revision conversation is nightly-agent scratch (filtered out of every future
+        // collection, so it can never loop back in), but delete it now so we don't accumulate orphans.
+        if (revisionConversationId) {
+          await deleteConversation(revisionConversationId);
         }
 
         if (verdict.approved) {
