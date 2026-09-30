@@ -510,3 +510,66 @@ export async function runCompact(
 
   return text;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2b -- Session compact (last-conversation summary for the live agent)
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats a Date as a YYYY-MM-DD calendar date in the nightly timezone. Used to stamp each session
+ * compact with the date of the conversation so the live agent can refer to "last time we spoke".
+ */
+export function formatRunDate(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+}
+
+/**
+ * Builds the prompt telling the nightly agent to condense a user's latest journal into a short
+ * "what our last conversation was about" note that the LIVE agent reads on the next turn. This lets
+ * the live agent pick the thread back up even though Phase 7 deletes the underlying Mistral
+ * conversation; the session compact is surfaced to the live agent via the "Session with <user>"
+ * context entry it already loads eagerly.
+ */
+export function sessionCompactPrompt(
+  userName: string,
+  journalContent: string,
+  dateLabel: string
+): string {
+  return (
+    "The following is the journal of Yasmin's most recent conversation with " +
+    userName +
+    '.\n\n' +
+    '<<<BEGIN JOURNAL>>>\n' +
+    journalContent +
+    '\n<<<END JOURNAL>>>\n\n' +
+    'Write a SHORT summary (2-3 sentences) of what that last conversation with ' +
+    userName +
+    ' was about. The live conversation gets deleted every night, so this note is the only thing Yasmin ' +
+    'reads at the start of the NEXT conversation to pick the thread back up. Cover the main topics, any ' +
+    'open or continuing thread, and any concrete commitments or follow-ups. Begin the summary with the ' +
+    'date of the conversation, exactly like: "Last conversation on ' +
+    dateLabel +
+    ' -- ". Return only that short plain text -- no title, no markdown, no greeting, and do not mention ' +
+    'that you wrote it.'
+  );
+}
+
+/**
+ * Asks the nightly agent to condense a user's latest journal into a compact last-conversation summary
+ */
+export async function compactSession(
+  userName: string,
+  journalContent: string,
+  dateLabel: string
+): Promise<string> {
+  const result = await askAgent({
+    agentId: config.mistral.nightlyAgentId,
+    inputs: [{ role: 'user', content: sessionCompactPrompt(userName, journalContent, dateLabel) }]
+  });
+  return result.outputText.trim();
+}

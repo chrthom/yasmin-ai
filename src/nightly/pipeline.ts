@@ -34,6 +34,8 @@ import {
 } from './tools';
 import {
   buildTranscript,
+  compactSession,
+  formatRunDate,
   runCompact,
   runIntegrate,
   runJournal,
@@ -240,6 +242,32 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
     setTodaysJournals(todaysJournals);
     await updateJobLog(jobId, { lastCompletedPhase: '2-journal' });
+
+    // -----------------------------------------------------------------------
+    // Phase 2b -- Session compacts (last-conversation summaries for the live agent)
+    // -----------------------------------------------------------------------
+    // For each user who had a conversation processed this run, condense their latest journal into a
+    // short "what our last conversation was about" note and write it to the "Session with <user>"
+    // context entry the live agent reads on turn 1. When Phase 7 deletes the Mistral conversation,
+    // this compact is what lets the live agent pick the thread back up. Users with no NEW conversation
+    // this run are intentionally left untouched -- their previous compact stays ("no new conversation
+    // -> keep the old one"). Each user is isolated so a single failure can't abort the run.
+    const latestJournalByUser = new Map<string, string>();
+    for (const entry of todaysJournals) {
+      // For a user with multiple conversations tonight, the last one processed wins.
+      latestJournalByUser.set(entry.userName, entry.content);
+    }
+    const dateLabel = formatRunDate(collectedAt, config.nightly.tz);
+    for (const [userName, journalContent] of latestJournalByUser) {
+      try {
+        const compact = await compactSession(userName, journalContent, dateLabel);
+        const title = `Session with ${userName}`;
+        await upsertContextEntry(title, compact);
+        console.log(`INFO Wrote last-conversation compact to ${title}`);
+      } catch (error) {
+        console.error(`ERROR Failed to write Session compact for ${userName}: ${error}`);
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
