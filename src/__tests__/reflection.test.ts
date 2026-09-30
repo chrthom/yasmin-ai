@@ -81,6 +81,35 @@ describe('reflection', () => {
 
       expect(result).toBe('assistant: ok');
     });
+
+    it('drops tool/function/system plumbing so giant internal tool results never reach the journal prompt', () => {
+      const messages = [
+        {
+          type: 'message.tool_calls',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'huge web scrape of a whole page'.repeat(500) }]
+        },
+        { type: 'function.call', role: 'function', content: 'some function result' },
+        { type: 'message.input', role: 'user', content: 'what did you find?' },
+        { type: 'message.output', role: 'assistant', content: 'here is the answer' }
+      ];
+
+      const result = buildTranscript(messages);
+
+      expect(result).toBe('user: what did you find?\nassistant: here is the answer');
+    });
+
+    it('caps an oversized transcript so a single huge reply cannot blow up the journal prompt', () => {
+      const big = 'b'.repeat(30000);
+      const messages = [{ type: 'message.output', role: 'assistant', content: big }];
+
+      const result = buildTranscript(messages);
+
+      expect(result.includes('transcript truncated by nightly harness')).toBe(true);
+      expect(result.endsWith('…[transcript truncated by nightly harness; kept first 20000 chars]')).toBe(
+        true
+      );
+    });
   });
 
   describe('journalPrompt', () => {
@@ -117,6 +146,27 @@ describe('reflection', () => {
       expect(result).toBe(truncateToCap(tooLong, JOURNAL_SOFT_CAP_CHARS));
       expect(result.endsWith('…[truncated]')).toBe(true);
       expect(result.length).toBe(JOURNAL_SOFT_CAP_CHARS);
+    });
+
+    it('retries once with a clarification when the first attempt is empty, then returns the retry text', async () => {
+      mockAskAgent
+        .mockResolvedValueOnce({ outputText: '   ' })
+        .mockResolvedValueOnce({ outputText: 'concise journal entry' });
+
+      const result = await runJournal('Alice', 'transcript text');
+
+      expect(mockAskAgent).toHaveBeenCalledTimes(2);
+      expect(result).toBe('concise journal entry');
+      expect(mockAskAgent.mock.calls[1][0].inputs[0].content).toContain('was empty');
+    });
+
+    it('throws when both the first attempt and the retry come back empty, rather than persisting an empty journal', async () => {
+      mockAskAgent
+        .mockResolvedValueOnce({ outputText: '' })
+        .mockResolvedValueOnce({ outputText: '   ' });
+
+      await expect(runJournal('Alice', 'transcript text')).rejects.toThrow(/empty entry/);
+      expect(mockAskAgent).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -220,7 +220,16 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         try {
           const messages = await getConversationMessages(conv.id);
           const transcript = buildTranscript(messages);
+          const textPartCount = messages.reduce(
+            (n, m) => n + (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').length : 0),
+            0
+          );
+          console.log(
+            `DEBUG Journal transcript for ${conv.name} (${conv.id}): ` +
+              `${messages.length} messages, ${textPartCount} text parts, ${transcript.length} chars`
+          );
           journalText = await runJournal(conv.name, transcript);
+          console.log(`DEBUG Journal entry for ${conv.name} (${conv.id}): ${journalText.length} chars`);
         } catch (error) {
           skippedIds.push(conv.id);
           await updateJobLog(jobId, { skippedConversationIds: skippedIds });
