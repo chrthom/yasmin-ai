@@ -453,7 +453,11 @@ describe('nightly pipeline integration', () => {
 
     expect(mockReviseProposal).toHaveBeenCalledTimes(1);
     // The REVISED content (not the original staged proposal) is what gets archived.
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice profile v2 with date');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice profile v2 with date',
+      expect.any(Date)
+    );
 
     expect(result.status).toBe('completed');
     expect(mockSetWatermark).toHaveBeenCalled();
@@ -486,7 +490,7 @@ describe('nightly pipeline integration', () => {
     expect(mockReviseProposal).toHaveBeenCalledTimes(3);
     // Nothing is archived for the never-accepted path; the accepted path still is.
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'people/alice.md')).toBe(false);
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/bob.md', 'Bob profile v1');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/bob.md', 'Bob profile v1', expect.any(Date));
     // The final rejection stays observable in the log.
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('WARN Rejected staged update for people/alice.md after enough revisions')
