@@ -141,11 +141,11 @@ that this cache is regenerated from every night:
 
 ### Files & Their `context_entries` Counterpart
 
-| Path                             | Purpose                                                                                                                                                                             | Regenerates (nightly, compacted + privacy-stripped) |
-| :------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------- |
+| Path                             | Purpose                                                                                                                                                                                                                         | Regenerates (nightly, compacted + privacy-stripped) |
+| :------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------- |
 | **`people/<name>.md`**           | Verbose, structured profile per family member/contact: Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions. May contain `[PRIVACY:SENSITIVE]` blocks. | `Profile of [Name]`                                 |
-| **`self-reflection/profile.md`** | Yasmin's own long-term self-reflection, written in first person.                                                                                                                    | `Profile of Yasmin`                                 |
-| **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                          | `Family notes`                                      |
+| **`self-reflection/profile.md`** | Yasmin's own long-term self-reflection, written in first person.                                                                                                                                                                | `Profile of Yasmin`                                 |
+| **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                                                                      | `Family notes`                                      |
 
 (`journals/<name>/<conversation-id>.md` also lives in `memory_archive` as an intermediate artifact of the
 nightly pipeline, but has no mapping to a `context_entries` title or the Mistral library.)

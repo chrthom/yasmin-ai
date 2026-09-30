@@ -253,7 +253,6 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     let filesUpdatedFromReview = 0;
     let filesCreatedFromReview = 0;
-    let anyRejected = false;
     let anyReviewFailed = false;
 
     for (const update of stagedUpdates) {
@@ -273,8 +272,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             filesUpdatedFromReview++;
           }
         } else {
+          // A reviewer rejection is a normal, handled outcome -- the proposal is simply not written.
+          // It must not degrade a healthy run to 'partial' (which would block the watermark and reprocess
+          // the same conversations forever). Log it so it stays observable; a later revision loop can
+          // feed the reason back to the agent (see the follow-up design in reflection.ts).
           console.warn('WARN Rejected staged update for ' + update.path + ': ' + verdict.reason);
-          anyRejected = true;
         }
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
@@ -450,7 +452,6 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
     const finalStatus: NightlyJobStatus =
       skippedIds.length === 0 &&
-      !anyRejected &&
       !anyReviewFailed &&
       !anyUploadFailed &&
       !anyDeleteFailed &&

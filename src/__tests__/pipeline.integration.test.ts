@@ -360,7 +360,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // 3. Reviewer rejects one file
   // -------------------------------------------------------------------------
-  it('reviewer rejects one staged file: the other proceeds, run reaches phase 7 as partial', async () => {
+  it('reviewer rejects one staged file: it is skipped (not written), the other proceeds, run completes', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
 
     mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
@@ -381,11 +381,14 @@ describe('nightly pipeline integration', () => {
 
     const result = await runNightlyPipeline();
 
+    // The rejected proposal is NOT written; the accepted one is.
     expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice new profile');
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'people/bob.md')).toBe(false);
 
-    expect(result.status).toBe('partial');
-    // The run must still have reached and completed phase 7 (cleanup), not aborted early.
+    // A reviewer rejection is a handled, benign outcome -- it must not degrade the run to 'partial',
+    // so the run completes and advances the watermark instead of reprocessing these conversations.
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalled();
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-1');
     expect(mockPruneOldVersions).toHaveBeenCalled();
     expect(mockPruneOldJobLogs).toHaveBeenCalled();

@@ -18,14 +18,14 @@ entries are retired for good.
 This PR is one merge to `main`, so its four commits (the cutover itself, a restored regression test, the
 `Session`/`Journal` data-cleanup, and a couple of review follow-ups) always land together:
 
-- **The cutover** (`chat_agent.ts`, `context.service.ts`, `mistral_config/system_prompt.txt`, deletes
-  `mistral_config/functions/update_context_entry.json`) — makes the live agent read-only for memory.
+- **The cutover** (`chat_agent.ts`, `context.service.ts`, `mistral_config/conversation/system_prompt.txt`, deletes
+  `mistral_config/conversation/functions/update_context_entry.json`) — makes the live agent read-only for memory.
 - **A restored regression test** (`src/__tests__/chat_agent.test.ts`) asserting the read-only agent
   silently ignores a stray `update_context_entry` tool call.
 - **The `Session`/`Journal` data-cleanup** (`db_proxy.ts`, `database/schema.sql`, `CONTEXT_CONVENTIONS.md`,
   deletes 5 superseded design docs) — retires the old data model entirely, not just leaves it empty.
 - **Review follow-ups** (`db_proxy.ts`'s now-dead `updateEntry()` method, and the now-unreachable
-  `[PRIVACY:SENSITIVE]` handling block in `mistral_config/system_prompt.txt`).
+  `[PRIVACY:SENSITIVE]` handling block in `mistral_config/conversation/system_prompt.txt`).
 
 The commit-level ordering doesn't matter for the `main` merge itself, but it matters for **how you deploy
 to production**: deploy the cutover code (which stops the live agent from writing) before you apply the
@@ -37,7 +37,7 @@ tries).
 ## B2. Mistral Console
 
 On the **live conversation agent** (not the nightly one), remove its `update_context_entry` function
-registration and update its system prompt to the new `mistral_config/system_prompt.txt` content. If you
+registration and update its system prompt to the new `mistral_config/conversation/system_prompt.txt` content. If you
 didn't already do it during Part A, attach the `memory` library now.
 
 ## B3. (Optional) Purge stale rows from the already-running production database

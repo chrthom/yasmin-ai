@@ -181,11 +181,15 @@ describe('mistral_api', () => {
   });
 
   describe('getConversationMessages', () => {
-    it('maps snake_case fields to camelCase', async () => {
+    it('extracts the enveloped { messages: [...] } response and maps snake_case fields to camelCase', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => [{ id: 'm1', type: 'message.output', role: 'assistant', content: 'hi' }]
+        json: async () => ({
+          conversation_id: 'conv-1',
+          object: 'conversation.messages',
+          messages: [{ id: 'm1', type: 'message.output', role: 'assistant', content: 'hi' }]
+        })
       });
 
       const result = await getConversationMessages('conv-1');
@@ -197,6 +201,20 @@ describe('mistral_api', () => {
         'https://api.test/v1/conversations/conv-1/messages',
         expect.objectContaining({ method: 'GET' })
       );
+    });
+
+    it('also accepts a bare-array response as a fallback', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [{ id: 'm2', type: 'message.output', role: 'assistant', content: 'hi again' }]
+      });
+
+      const result = await getConversationMessages('conv-1');
+
+      expect(result).toEqual([
+        { id: 'm2', type: 'message.output', role: 'assistant', content: 'hi again', createdAt: undefined }
+      ]);
     });
   });
 
