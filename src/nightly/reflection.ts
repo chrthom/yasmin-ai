@@ -225,12 +225,12 @@ export function integratePrompt(): string {
     SELF_PROFILE_VOICE_RULE +
     ' Every person profile also evolves: for each person, actively derive and update the profile from ' +
     'what happened today. For self-reflection/profile.md specifically, go beyond recording events -- ' +
-    'derive and update Yasmin\'s own personality traits, emotional patterns, and how she is treated from ' +
-    'today\'s interactions: what she said, whether it was met with enthusiasm or approval, or with ' +
+    "derive and update Yasmin's own personality traits, emotional patterns, and how she is treated from " +
+    "today's interactions: what she said, whether it was met with enthusiasm or approval, or with " +
     'complaints or rejection, and how she reacted. Be interpretive -- synthesize a richer, truer picture ' +
     'of Yasmin -- but never fabricate specific events, statements, or outcomes that did not happen.\n' +
     ' Person profiles use the 7-section template (Core Facts, Current Attitude, Ideas, ' +
-    'Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin\'s Intentions), and ' +
+    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions), and " +
     'Communication Style means how Yasmin should communicate WITH that person -- preferred language, ' +
     'tone, formality, use of humor or emojis, response length, and topics to emphasize or avoid -- NOT a ' +
     'description of how the person themselves speaks; ' +
@@ -603,11 +603,7 @@ export function formatRunDate(date: Date, timeZone: string): string {
  * conversation; the session compact is surfaced to the live agent via the "Session with <user>"
  * context entry it already loads eagerly.
  */
-export function sessionCompactPrompt(
-  userName: string,
-  journalContent: string,
-  dateLabel: string
-): string {
+export function sessionCompactPrompt(userName: string, journalContent: string, dateLabel: string): string {
   return (
     "The following is the journal of Yasmin's most recent conversation with " +
     userName +
