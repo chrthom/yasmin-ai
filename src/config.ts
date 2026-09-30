@@ -7,8 +7,15 @@ export const config = {
   mistral: {
     baseUrl: 'https://api.mistral.ai/v1/conversations',
     apiKey: process.env['MISTRAL_API_KEY']!,
-    agentId: process.env['AGENT_ID']!,
-    conversationTtlMs: 12 * 60 * 60 * 1000
+    agentId: process.env['AGENT_ID_CONVERSATION']!,
+    conversationTtlMs: 12 * 60 * 60 * 1000,
+    apiRoot: 'https://api.mistral.ai/v1',
+    // Required for every process: the nightly scheduler runs in-process inside app.ts (same Node process
+    // as the API server), so MISTRAL_LIBRARY_ID and AGENT_ID_NIGHTLY are always required. validateEnv()
+    // enforces them at startup for all processes, so the `!` is safe -- the server refuses to start
+    // without them.
+    libraryId: process.env['MISTRAL_LIBRARY_ID']!,
+    nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
@@ -35,6 +42,14 @@ export const config = {
   },
   chunk: {
     maxLength: 1800
+  },
+  nightly: {
+    tz: process.env['MEMORY_TZ'] || 'Europe/Berlin',
+    maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
+    lockStaleMs: 2 * 60 * 60 * 1000,
+    maxIterations: 15,
+    archiveKeepVersions: 10,
+    eagerMaxChars: 2000
   }
 } as const;
 
@@ -45,7 +60,9 @@ export function validateEnv(): void {
     'CHAT_TOKEN_BOT',
     'CHAT_TOKEN_SLASH',
     'CHAT_TOKEN_GROUP',
-    'AGENT_ID'
+    'AGENT_ID_CONVERSATION',
+    'MISTRAL_LIBRARY_ID',
+    'AGENT_ID_NIGHTLY'
   ] as const;
 
   requiredEnv.forEach(key => {
@@ -58,8 +75,11 @@ export function validateEnv(): void {
   // Database environment variables are only required if running the CLI context manager or if real DB is explicitly enabled
   const isCli = process.argv[1] && process.argv[1].includes('manage-context');
   const isRealDbEnabled = process.env['USE_REAL_DB'] === 'true';
+  const isNightly =
+    !!process.argv[1] &&
+    (process.argv[1].includes('/nightly/') || process.argv[1].includes('bootstrap-memory'));
 
-  if (isCli || isRealDbEnabled) {
+  if (isCli || isRealDbEnabled || isNightly) {
     const requiredDbEnv = ['DB_PASSWORD'] as const;
     requiredDbEnv.forEach(key => {
       if (!process.env[key]) {
