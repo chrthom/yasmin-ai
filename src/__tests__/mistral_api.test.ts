@@ -116,6 +116,25 @@ describe('mistral_api', () => {
       );
     });
 
+    it('accepts conversations whose name is null (Mistral returns null for nameless ones)', async () => {
+      const now = Date.now();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [
+          { id: 'c1', name: null, agent_id: 'agent-1', updated_at: new Date(now).toISOString() },
+          { id: 'c2', updated_at: new Date(now).toISOString() }
+        ]
+      });
+
+      const result = await listConversations(new Date(now - 1000).toISOString());
+
+      expect(result).toEqual([
+        { id: 'c1', name: null, agentId: 'agent-1', updatedAt: expect.any(String) },
+        { id: 'c2', name: undefined, agentId: undefined, updatedAt: expect.any(String) }
+      ]);
+    });
+
     it('walks pages until a short page, then filters across all of them', async () => {
       const now = Date.now();
       // Page 0 is full (100) -> keep fetching; page 1 is short -> stop.

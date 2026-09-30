@@ -13,8 +13,8 @@
     "format": "npx prettier . --write",
     "check": "npm run format; npm run lint",
     "manage-context": "npx ts-node scripts/manage-context.ts",
-    "nightly": "node dist/src/nightly/run.js",
-    "nightly:dry-run": "node dist/src/nightly/run.js --dry-run",
+    "nightly": "npx ts-node src/nightly/run.ts",
+    "nightly:dry-run": "npx ts-node src/nightly/run.ts --dry-run",
     "bootstrap-memory": "npx ts-node scripts/bootstrap-memory.ts"
   },
   "private": true,
