@@ -46,6 +46,7 @@ export const config = {
   nightly: {
     tz: process.env['MEMORY_TZ'] || 'Europe/Berlin',
     maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
+    maxRevisions: 3,
     lockStaleMs: 2 * 60 * 60 * 1000,
     maxIterations: 15,
     archiveKeepVersions: 10,
