@@ -21,9 +21,7 @@ mistral_config/
 ├── conversation/                       # Live conversation agent
 │   ├── system_prompt.txt
 │   └── functions/
-│       ├── read_context_entry.json     # Lazy-load a context entry
-│       └── update_context_entry.json   # Write a context entry
-│                                       #   (retired at the read-only cutover, see Data Flow below)
+│       └── read_context_entry.json     # Lazy-load a context entry (its only tool -- read-only)
 └── nightly/                            # Nightly memory-consolidation agent
     ├── nightly_system_prompt.txt
     └── functions/
@@ -84,36 +82,28 @@ src/
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
 
-#### Memory writes: current vs. pending
+#### Memory writes: read-only cutover (this PR)
 
-**Current (today, on `main`):** `ChatAgent` still both _reads and writes_ `context_entries` directly during
-the live conversation, exactly as it did before the nightly memory pipeline existed:
-
-- `read_context_entry` lazily loads any other `Profile of X` entry the agent decides it needs mid-conversation.
-- `update_context_entry` lets the agent write new/corrected facts straight into `context_entries` on the spot.
-- The nightly pipeline (below) is purely additive today — it writes its own tables (`memory_archive`) and
-  the Mistral library, and regenerates `context_entries` from them, but the live agent keeps writing to
-  `context_entries` in parallel. Nothing about the live request path changes yet.
-
-**Pending (separate PR, not yet merged):** a follow-up "read-only cutover" PR/branch, based on top of this
-one, must only be merged after this nightly job has been verified in production for a while. Once merged:
+This PR makes the live agent **read-only for memory** — the nightly job (already running from the Part A
+PR) is now the **sole writer** of `context_entries`:
 
 - The `update_context_entry` tool handler is removed from `chat_agent.ts` entirely, and its function
-  definition (`mistral_config/conversation/functions/update_context_entry.json`) is deleted — the live
-  agent becomes read-only for memory.
+  definition (`mistral_config/conversation/functions/update_context_entry.json`) is deleted. `ChatAgent`
+  only ever _reads_ `context_entries` now, via `read_context_entry`.
 - `ContextService`'s eager-loaded set drops the `Session with [sender]` entry, leaving just
   `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
-- `mistral_config/conversation/system_prompt.txt` is rewritten to tell the agent that deeper facts and past conversation
-  history now surface automatically via the Mistral library's RAG (no tool call needed), and adds a
-  privacy-enforcement rule for `[PRIVACY:SENSITIVE]` content.
-- The nightly job becomes the **sole writer** of `context_entries`.
+- `mistral_config/conversation/system_prompt.txt` tells the agent that deeper facts and past conversation
+  history surface automatically via the Mistral library's RAG (no tool call needed).
+- `Session with X` / `Journal with X` are retired from the data model entirely (`db_proxy.ts`,
+  `database/schema.sql`) — not just left empty.
 
-Until that cutover lands, do not remove the live agent's write path — that would leave a gap where nothing
-keeps memory fresh.
+Before this PR (on the Part A branch/PR, or on `main`), `ChatAgent` still both read and wrote
+`context_entries` directly, exactly as it did before the nightly memory pipeline existed — see the Part A
+PR's own `AGENTS.md` for that (pre-cutover) description.
 
 ### Key Classes & Services
 
-- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading (and, today, for writing memory updates — see Data Flow above).
+- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory as of this PR — see Data Flow above.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used exclusively by the nightly pipeline — separate from `ChatAgent`'s own inline `fetch` calls.

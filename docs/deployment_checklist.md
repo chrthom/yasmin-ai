@@ -1,132 +1,73 @@
-# Nightly Memory Processing — Deployment Checklist
+# Nightly Memory Processing — Deployment Checklist (Part B)
 
-**Status**: developer-actionable, manual ops steps + a small follow-up commit (in-process scheduler
-replacing the cron wrapper, see A9)
+**Status**: developer-actionable, manual ops steps only (no code changes required)
 **Full design**: `nightly_memory_processing_implementation.md` (§2 one-time setup, §11 runbook, §13 rollout)
-**Branch**: `feature/nightly-memory-part-a`
+**Branch**: `feature/nightly-memory-part-b`
+**Prerequisite**: the Part A PR (`feature/nightly-memory-part-a`) is merged and its nightly job has run
+cleanly in production for a while — see that PR's own `docs/deployment_checklist.md` for the A1-A10 steps.
+Do not merge/deploy this PR before that.
 
-This feature ships as **two separately-timed PRs** — this one (Part A, additive nightly job) and a
-follow-up PR (Part B, read-only cutover) opened only after Part A has run cleanly in production for a
-while. Part A alone is safe to merge and run indefinitely without Part B; it does not touch the live chat
-path (the live agent keeps reading+writing `context_entries` exactly as before, untouched by this PR).
+This PR makes the live conversation agent **read-only for memory**: the nightly job (already running from
+Part A) becomes the sole writer of `context_entries`, and the old `Session with X` / `Journal with X`
+entries are retired for good.
 
 ---
 
-## Part A — Deploy the additive nightly job
+## B1. Merge/deploy this PR
 
-### A1. Merge/deploy this PR
+This PR is one merge to `main`, so its four commits (the cutover itself, a restored regression test, the
+`Session`/`Journal` data-cleanup, and a couple of review follow-ups) always land together:
 
-Additive only: new tables/files, plus an in-process scheduler that starts alongside the existing API
-server. Nothing in the live conversation agent's request/response path changes.
+- **The cutover** (`chat_agent.ts`, `context.service.ts`, `mistral_config/conversation/system_prompt.txt`, deletes
+  `mistral_config/conversation/functions/update_context_entry.json`) — makes the live agent read-only for memory.
+- **A restored regression test** (`src/__tests__/chat_agent.test.ts`) asserting the read-only agent
+  silently ignores a stray `update_context_entry` tool call.
+- **The `Session`/`Journal` data-cleanup** (`db_proxy.ts`, `database/schema.sql`, `CONTEXT_CONVENTIONS.md`,
+  deletes 5 superseded design docs) — retires the old data model entirely, not just leaves it empty.
+- **Review follow-ups** (`db_proxy.ts`'s now-dead `updateEntry()` method, and the now-unreachable
+  `[PRIVACY:SENSITIVE]` handling block in `mistral_config/conversation/system_prompt.txt`).
 
-### A2. Apply the new schema
+The commit-level ordering doesn't matter for the `main` merge itself, but it matters for **how you deploy
+to production**: deploy the cutover code (which stops the live agent from writing) before you apply the
+`schema.sql`/data cleanup to a running database, not the other way around — see `CONTEXT_CONVENTIONS.md`
+§2.1 for exactly why (a stale `update_context_entry` write attempt against an already-removed
+`Session with X` row would silently no-op, which only becomes correct behavior once the code no longer
+tries).
 
-Non-destructive; does not touch `context_entries`.
+## B2. Mistral Console
 
-```
-mysql -h 192.168.0.2 -P 3307 -u yasmin -p yasmin < database/schema_memory.sql
-```
+On the **live conversation agent** (not the nightly one), remove its `update_context_entry` function
+registration and update its system prompt to the new `mistral_config/conversation/system_prompt.txt` content. If you
+didn't already do it during Part A, attach the `memory` library now.
 
-Creates `memory_archive`, `nightly_job_log`, `processing_lock`, `nightly_watermark` (`nightly_watermark`
-is the non-pruned table the pipeline uses to persist the resumed watermark, see commit `5743d04`).
+## B3. (Optional) Purge stale rows from the already-running production database
 
-### A3. Mistral Console setup
-
-- Confirm/obtain the production **`memory` library id** → this is `MISTRAL_LIBRARY_ID`.
-- Attach the `memory` library to the existing live conversation agent for RAG. Safe to do now — the current
-  (pre-cutover) system prompt doesn't reference it, so it's inert until Part B.
-- Create a new agent named **`yasmin-nightly`**, with the system prompt from
-  `mistral_config/nightly/nightly_system_prompt.txt`, and register its 4 function-calling tools from
-  `mistral_config/nightly/functions/{list_long_term_files,get_long_term_file,read_todays_journals,stage_update}.json`.
-  Library wiring for this agent is optional (only useful for cross-file discovery during integration — the
-  pipeline reads full files from `memory_archive` directly, not via RAG). Note its agent id →
-  `AGENT_ID_NIGHTLY`.
-- Issue a **production API key** with access to the library and both agents. Verify it can
-  `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before continuing.
-
-### A4. Set environment variables
-
-`MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, optionally `MEMORY_TZ` (default `Europe/Berlin`) and
-`NIGHTLY_MAX_RETRIES` (default `3`).
-
-**This is not optional for Part A.** The nightly scheduler now runs in-process inside the main API
-server (`src/nightly/scheduler.ts`, started from `app.ts`) — `validateEnv()` requires
-`MISTRAL_LIBRARY_ID` and `AGENT_ID_NIGHTLY` unconditionally, so the server itself refuses to start
-without them, not just the standalone nightly script. Set these on the container the app runs in
-(e.g. `docker run -e MISTRAL_LIBRARY_ID=... -e AGENT_ID_NIGHTLY=...`, or the `environment:` block of a
-compose file) before starting/restarting it in step A9.
-
-### A5. Build
-
-```
-npm run build
-```
-
-Produces `dist/src/nightly/run.js` (matches the `nightly` / `nightly:dry-run` npm scripts).
-
-### A6. Bootstrap — run exactly once, before the first real nightly run
-
-```
-npm run bootstrap-memory
-```
-
-Reads the _existing_ `context_entries` rows and seeds `memory_archive` + the Mistral library from them.
-**This step is critical**: skipping it means the verbose store starts empty, and the nightly job's
-eager-cache regeneration would otherwise wipe the live profiles on its first run. (In practice this can't
-happen silently — the pipeline's eager-cache phase only ever _upserts_ titles that have a verbose source, so
-a missed bootstrap degrades to "no change," not data loss — but don't rely on that safety net; just run this
-step.) Safe to re-run: hash-based no-churn means a repeat run uploads nothing new.
-
-### A7. Dry run
-
-Checks DB + Mistral connectivity, logs what a real run would see, writes nothing.
-
-```
-npm run nightly:dry-run
-```
-
-### A8. One real manual run
-
-```
-npm run nightly
-```
-
-Inspect the log and the `nightly_job_log` table afterward. Confirm: journals were created for any recent
-conversations, `memory_archive` has new/unchanged versions as expected, `context_entries` was regenerated
-(spot-check a `Profile of X` row), and the job's `nightly_job_log` row has `status = 'completed'`.
-
-### A9. Start/restart the app
-
-No cron job to install. The nightly run is scheduled in-process by `src/nightly/scheduler.ts`, started
-automatically from `app.ts` alongside the API server (`npm start` / the container's normal entrypoint) —
-restarting the container after step A4's env vars are set is enough. It computes the next 23:00 (or
-whatever `MEMORY_TZ` resolves to) on its own and logs `INFO Nightly scheduler started ...` on boot; check
-`docker logs` (or wherever the container's stdout goes) for that line to confirm it's armed.
-
-### A10. Monitor, then open the Part B PR
+The updated `schema.sql` only affects _fresh_ installs, it won't retroactively delete existing rows:
 
 ```sql
-SELECT id, started_at, completed_at, status, last_completed_phase, error_message
-FROM nightly_job_log ORDER BY id DESC LIMIT 14;
+DELETE FROM context_entries WHERE title LIKE 'Session with %' OR title LIKE 'Journal with %';
 ```
 
-Expect `status = 'completed'` most nights. A `'partial'` status is not an emergency — read
-`error_message`/the log, it's typically a single skipped conversation or a transient upload failure that
-will self-heal next night — but investigate a `'failed'` status or repeated `'partial'`s before opening the
-Part B PR. See the implementation doc's §11 runbook for troubleshooting specific symptoms.
+Harmless to skip — those rows just sit there empty and unused either way.
 
-Once you're confident, open the Part B PR (branch based on top of this one) — it makes the live agent
-read-only for memory and retires the old `Session`/`Journal` entries. See that PR's own deployment
-checklist for its rollout steps.
+## B4. Deploy the code
+
+Have a real conversation afterward and confirm: profile/family-notes context still loads correctly on turn
+1, and the agent no longer attempts (or is able) to write memory.
+
+## B5. Keep monitoring
+
+The nightly job (the pipeline from Part A) is the sole writer of `context_entries` from this point on —
+`nightly_job_log` is only that job's run log and never writes context itself.
 
 ---
 
 ## Rollback
 
 See `nightly_memory_processing_implementation.md` §11 for the full runbook (stale lock recovery, restoring
-a prior `memory_archive` version, re-running a partial/failed job, etc.). Part A is additive/reversible at
-the code level — reverting this PR alone restores the pre-nightly-job state; the live agent's read/write
-path is never touched by it.
+a prior `memory_archive` version, re-running a partial/failed job, etc.). Reverting this PR alone
+(redeploying the pre-cutover `chat_agent.ts` / `context.service.ts` / `system_prompt.txt`) restores live
+write access without touching the nightly job from Part A.
 
 ## Further reading
 
