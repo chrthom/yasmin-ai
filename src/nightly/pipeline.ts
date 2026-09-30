@@ -34,6 +34,8 @@ import {
 } from './tools';
 import {
   buildTranscript,
+  compactSession,
+  formatRunDate,
   runCompact,
   runIntegrate,
   runJournal,
@@ -218,7 +220,16 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         try {
           const messages = await getConversationMessages(conv.id);
           const transcript = buildTranscript(messages);
+          const textPartCount = messages.reduce(
+            (n, m) => n + (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').length : 0),
+            0
+          );
+          console.log(
+            `DEBUG Journal transcript for ${conv.name} (${conv.id}): ` +
+              `${messages.length} messages, ${textPartCount} text parts, ${transcript.length} chars`
+          );
           journalText = await runJournal(conv.name, transcript);
+          console.log(`DEBUG Journal entry for ${conv.name} (${conv.id}): ${journalText.length} chars`);
         } catch (error) {
           skippedIds.push(conv.id);
           await updateJobLog(jobId, { skippedConversationIds: skippedIds });
@@ -240,6 +251,32 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
     setTodaysJournals(todaysJournals);
     await updateJobLog(jobId, { lastCompletedPhase: '2-journal' });
+
+    // -----------------------------------------------------------------------
+    // Phase 2b -- Session compacts (last-conversation summaries for the live agent)
+    // -----------------------------------------------------------------------
+    // For each user who had a conversation processed this run, condense their latest journal into a
+    // short "what our last conversation was about" note and write it to the "Session with <user>"
+    // context entry the live agent reads on turn 1. When Phase 7 deletes the Mistral conversation,
+    // this compact is what lets the live agent pick the thread back up. Users with no NEW conversation
+    // this run are intentionally left untouched -- their previous compact stays ("no new conversation
+    // -> keep the old one"). Each user is isolated so a single failure can't abort the run.
+    const latestJournalByUser = new Map<string, string>();
+    for (const entry of todaysJournals) {
+      // For a user with multiple conversations tonight, the last one processed wins.
+      latestJournalByUser.set(entry.userName, entry.content);
+    }
+    const dateLabel = formatRunDate(collectedAt, config.nightly.tz);
+    for (const [userName, journalContent] of latestJournalByUser) {
+      try {
+        const compact = await compactSession(userName, journalContent, dateLabel);
+        const title = `Session with ${userName}`;
+        await upsertContextEntry(title, compact);
+        console.log(`INFO Wrote last-conversation compact to ${title}`);
+      } catch (error) {
+        console.error(`ERROR Failed to write Session compact for ${userName}: ${error}`);
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
@@ -277,16 +314,35 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
         // corrected full replacement, then re-review. This turns a persistent "rejected forever" case
-        // into one that converges within a bounded number of revisions.
+        // into one that converges within a bounded number of revisions. All revisions for this file reuse
+        // the SAME conversation (revisionConversationId), so the full proposal->feedback history stays in
+        // the agent's context window instead of each call starting from scratch. The reviewer above stays
+        // stateless (a fresh call every time) -- only the reviser accumulates state.
         let revisions = 0;
+        let revisionConversationId: string | undefined;
         while (!verdict.approved && revisions < config.nightly.maxRevisions) {
-          proposal = await reviseProposal(update, currentContent, proposal, verdict.reason, todaysJournals);
+          const revised = await reviseProposal(
+            update,
+            currentContent,
+            proposal,
+            verdict.reason,
+            todaysJournals,
+            revisionConversationId
+          );
+          revisionConversationId = revised.conversationId || revisionConversationId;
+          proposal = revised.content;
           verdict = await runReview(
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
             todaysJournals
           );
           revisions++;
+        }
+
+        // The per-file revision conversation is nightly-agent scratch (filtered out of every future
+        // collection, so it can never loop back in), but delete it now so we don't accumulate orphans.
+        if (revisionConversationId) {
+          await deleteConversation(revisionConversationId);
         }
 
         if (verdict.approved) {

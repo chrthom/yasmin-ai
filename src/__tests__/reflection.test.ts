@@ -26,7 +26,10 @@ import {
   runIntegrate,
   runReview,
   reviseProposal,
-  runCompact
+  runCompact,
+  compactSession,
+  formatRunDate,
+  sessionCompactPrompt
 } from '../nightly/reflection';
 
 const mockAskAgent = askAgent as jest.Mock;
@@ -78,6 +81,35 @@ describe('reflection', () => {
 
       expect(result).toBe('assistant: ok');
     });
+
+    it('drops tool/function/system plumbing so giant internal tool results never reach the journal prompt', () => {
+      const messages = [
+        {
+          type: 'message.tool_calls',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'huge web scrape of a whole page'.repeat(500) }]
+        },
+        { type: 'function.call', role: 'function', content: 'some function result' },
+        { type: 'message.input', role: 'user', content: 'what did you find?' },
+        { type: 'message.output', role: 'assistant', content: 'here is the answer' }
+      ];
+
+      const result = buildTranscript(messages);
+
+      expect(result).toBe('user: what did you find?\nassistant: here is the answer');
+    });
+
+    it('caps an oversized transcript so a single huge reply cannot blow up the journal prompt', () => {
+      const big = 'b'.repeat(30000);
+      const messages = [{ type: 'message.output', role: 'assistant', content: big }];
+
+      const result = buildTranscript(messages);
+
+      expect(result.includes('transcript truncated by nightly harness')).toBe(true);
+      expect(result.endsWith('…[transcript truncated by nightly harness; kept first 20000 chars]')).toBe(
+        true
+      );
+    });
   });
 
   describe('journalPrompt', () => {
@@ -114,6 +146,27 @@ describe('reflection', () => {
       expect(result).toBe(truncateToCap(tooLong, JOURNAL_SOFT_CAP_CHARS));
       expect(result.endsWith('…[truncated]')).toBe(true);
       expect(result.length).toBe(JOURNAL_SOFT_CAP_CHARS);
+    });
+
+    it('retries once with a clarification when the first attempt is empty, then returns the retry text', async () => {
+      mockAskAgent
+        .mockResolvedValueOnce({ outputText: '   ' })
+        .mockResolvedValueOnce({ outputText: 'concise journal entry' });
+
+      const result = await runJournal('Alice', 'transcript text');
+
+      expect(mockAskAgent).toHaveBeenCalledTimes(2);
+      expect(result).toBe('concise journal entry');
+      expect(mockAskAgent.mock.calls[1][0].inputs[0].content).toContain('was empty');
+    });
+
+    it('throws when both the first attempt and the retry come back empty, rather than persisting an empty journal', async () => {
+      mockAskAgent
+        .mockResolvedValueOnce({ outputText: '' })
+        .mockResolvedValueOnce({ outputText: '   ' });
+
+      await expect(runJournal('Alice', 'transcript text')).rejects.toThrow(/empty entry/);
+      expect(mockAskAgent).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -164,20 +217,38 @@ describe('reflection', () => {
       expect(result.approved).toBe(false);
       expect(result.reason).toBe('Could not parse reviewer verdict; rejecting as a safe default.');
     });
+
+    it('instructs the reviewer that dropping ephemeral day-detail is correct compaction, not a reject reason', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
+
+      await runReview(update, 'old content', [
+        { conversationId: 'c1', userName: 'Alice', content: 'Alice bought crisps today' }
+      ]);
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('deliberately COMPACT');
+      expect(prompt).toContain('Omitting the ephemeral day-to-day detail');
+      expect(prompt).toContain('do NOT reject for that');
+      expect(prompt).toContain('dropping a durable fact that the profile should retain');
+    });
   });
 
   describe('reviseProposal', () => {
     const update = { path: 'people/alice.md', content: 'new content', isNew: true };
 
-    it('passes the nightly agent the path, current content, rejected proposal, feedback and journals', async () => {
-      mockAskAgent.mockResolvedValueOnce({ outputText: '# Corrected profile content' });
+    it('opens a fresh conversation with full context on the first call', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: '# Corrected profile content',
+        conversationId: 'rev-conv-1'
+      });
 
-      await reviseProposal(update, 'old content', 'rejected content', 'add the date please', [
+      const result = await reviseProposal(update, 'old content', 'rejected content', 'add the date please', [
         { conversationId: 'conv-1', userName: 'Alice', content: 'journal text' }
       ]);
 
       const call = mockAskAgent.mock.calls[0][0];
       expect(call.agentId).toBe('nightly-agent-1');
+      expect(call.conversationId).toBeUndefined();
       expect(call.inputs[0].role).toBe('user');
       const prompt = call.inputs[0].content;
       expect(prompt).toContain('people/alice.md');
@@ -186,6 +257,36 @@ describe('reflection', () => {
       expect(prompt).toContain('add the date please');
       expect(prompt).toContain('journal text');
       expect(prompt).toContain('complete replacement');
+
+      expect(result).toEqual({ content: '# Corrected profile content', conversationId: 'rev-conv-1' });
+    });
+
+    it('continues the SAME conversation when a conversationId is passed (no reseed of journals)', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: '# Second correction',
+        conversationId: 'rev-conv-1'
+      });
+
+      const result = await reviseProposal(
+        update,
+        'old content',
+        'rejected again',
+        'still wrong',
+        [{ conversationId: 'conv-1', userName: 'Alice', content: 'journal text' }],
+        'rev-conv-1'
+      );
+
+      const call = mockAskAgent.mock.calls[0][0];
+      expect(call.conversationId).toBe('rev-conv-1');
+      const prompt = call.inputs[0].content;
+      // The follow-up points at the latest rejection + feedback and RE-EMBEDS the day's journals so
+      // every turn re-grounds in the evidence; the base file context is not re-seeded wholesale.
+      expect(prompt).toContain('rejected again');
+      expect(prompt).toContain('still wrong');
+      expect(prompt).toContain('journal text');
+      expect(prompt).not.toContain('old content');
+
+      expect(result).toEqual({ content: '# Second correction', conversationId: 'rev-conv-1' });
     });
 
     it('returns the agent output trimmed of surrounding whitespace', async () => {
@@ -193,7 +294,20 @@ describe('reflection', () => {
 
       const result = await reviseProposal(update, null, 'rejected content', 'reason', []);
 
-      expect(result).toBe('corrected\n  content');
+      expect(result.content).toBe('corrected\n  content');
+    });
+
+    it('reminds the agent of the first-person voice rule for self-reflection/profile.md', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: 'profile',
+        conversationId: 'rev-conv-2'
+      });
+      const selfUpdate = { path: 'self-reflection/profile.md', content: 'new', isNew: false };
+
+      await reviseProposal(selfUpdate, 'old', 'rejected', 'third person!', [], 'rev-conv-2');
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('first person');
     });
   });
 
@@ -218,6 +332,32 @@ describe('reflection', () => {
       expect(mockAskAgent).toHaveBeenCalledTimes(2);
       expect(result).toBe(truncateToCap(tooLong, 2000));
       expect(result.endsWith('…[truncated]')).toBe(true);
+    });
+  });
+
+  describe('session compact', () => {
+    it('formats a run date as YYYY-MM-DD in the requested timezone', () => {
+      // 2026-09-30 22:30 UTC is already 10-01 in Europe/Berlin (CEST, +2).
+      expect(formatRunDate(new Date('2026-09-30T22:30:00Z'), 'Europe/Berlin')).toBe('2026-10-01');
+      expect(formatRunDate(new Date('2026-09-30T10:00:00Z'), 'Europe/Berlin')).toBe('2026-09-30');
+    });
+
+    it('delimits the journal, embeds the date label, and marks the journal as data', () => {
+      const prompt = sessionCompactPrompt('Alice', 'talked about the concert', '2026-09-30');
+
+      expect(prompt).toContain('<<<BEGIN JOURNAL>>>');
+      expect(prompt).toContain('<<<END JOURNAL>>>');
+      expect(prompt).toContain('talked about the concert');
+      expect(prompt).toContain('Last conversation on 2026-09-30');
+    });
+
+    it('returns the trimmed agent output using the nightly agent', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '  Last conversation on 2026-09-30 -- concert.  ' });
+
+      const result = await compactSession('Alice', 'content', '2026-09-30');
+
+      expect(result).toBe('Last conversation on 2026-09-30 -- concert.');
+      expect(mockAskAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'nightly-agent-1' }));
     });
   });
 });
