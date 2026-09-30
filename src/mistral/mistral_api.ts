@@ -247,7 +247,13 @@ const ConversationMessageResponseSchema = z.object({
   created_at: z.string().optional()
 });
 
-const ConversationMessagesResponseSchema = z.array(ConversationMessageResponseSchema);
+// GET /v1/conversations/{id}/messages returns an ENVELOPED object (`{ conversation_id, messages: [...],
+// object }`), not a bare array -- see Mistral's conversations endpoint docs. We accept the documented
+// enveloped shape, with a bare-array fallback so a shape change doesn't hard-fail the collect phase.
+const ConversationMessageListResponseSchema = z.union([
+  z.object({ messages: z.array(ConversationMessageResponseSchema) }).passthrough(),
+  z.array(ConversationMessageResponseSchema)
+]);
 
 /**
  * Fetches the full message history for a conversation
@@ -256,10 +262,11 @@ export async function getConversationMessages(conversationId: string): Promise<C
   const data = await requestJson(
     'GET',
     '/conversations/' + conversationId + '/messages',
-    ConversationMessagesResponseSchema
+    ConversationMessageListResponseSchema
   );
 
-  return data.map(m => ({
+  const rows = Array.isArray(data) ? data : data.messages;
+  return rows.map(m => ({
     id: m.id,
     type: m.type,
     role: m.role,
