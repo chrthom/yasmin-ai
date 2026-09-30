@@ -48,6 +48,13 @@ function buildPersonProfile(coreFacts: string, sessionContent: string): string {
  * safe to call repeatedly without creating duplicate versions or duplicate uploads).
  */
 async function seedFile(file: SeedFile): Promise<boolean> {
+  // An empty memory file carries no information and Mistral rejects empty document uploads (HTTP 400),
+  // so skip it entirely rather than seeding a useless archive row or failing the bootstrap.
+  if (file.content.trim().length === 0) {
+    console.log('INFO ' + file.path + ' has no content, skipping seed/upload');
+    return false;
+  }
+
   const { row, created } = await insertNextVersion(file.path, file.content);
 
   if (!created) {
