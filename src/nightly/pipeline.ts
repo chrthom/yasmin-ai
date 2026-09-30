@@ -32,7 +32,15 @@ import {
   setTodaysJournals,
   stage_update
 } from './tools';
-import { buildTranscript, runCompact, runIntegrate, runJournal, runReview, CompactKind } from './reflection';
+import {
+  buildTranscript,
+  runCompact,
+  runIntegrate,
+  runJournal,
+  runReview,
+  reviseProposal,
+  CompactKind
+} from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
 import {
@@ -260,10 +268,29 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         const currentVersion = await getCurrentVersion(update.path);
         const currentContent = currentVersion ? currentVersion.content : null;
 
-        const verdict = await runReview(update, currentContent, todaysJournals);
+        let proposal = update.content;
+        let verdict = await runReview(
+          { path: update.path, content: proposal, isNew: update.isNew },
+          currentContent,
+          todaysJournals
+        );
+
+        // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
+        // corrected full replacement, then re-review. This turns a persistent "rejected forever" case
+        // into one that converges within a bounded number of revisions.
+        let revisions = 0;
+        while (!verdict.approved && revisions < config.nightly.maxRevisions) {
+          proposal = await reviseProposal(update, currentContent, proposal, verdict.reason, todaysJournals);
+          verdict = await runReview(
+            { path: update.path, content: proposal, isNew: update.isNew },
+            currentContent,
+            todaysJournals
+          );
+          revisions++;
+        }
 
         if (verdict.approved) {
-          const { created } = await insertNextVersion(update.path, update.content, collectedAt);
+          const { created } = await insertNextVersion(update.path, proposal, collectedAt);
           // Classify create-vs-update from whether an archived version already existed, not from
           // the AI-supplied isNew flag, which is never cross-checked against real archive state.
           if (created && currentContent === null) {
@@ -272,11 +299,13 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             filesUpdatedFromReview++;
           }
         } else {
-          // A reviewer rejection is a normal, handled outcome -- the proposal is simply not written.
-          // It must not degrade a healthy run to 'partial' (which would block the watermark and reprocess
-          // the same conversations forever). Log it so it stays observable; a later revision loop can
-          // feed the reason back to the agent (see the follow-up design in reflection.ts).
-          console.warn('WARN Rejected staged update for ' + update.path + ': ' + verdict.reason);
+          // A reviewer rejection -- even after the revision cap -- is a normal, handled outcome: the
+          // proposal is simply not written. It must not degrade a healthy run to 'partial' (which would
+          // block the watermark and reprocess the same conversations forever). Log it so it stays
+          // observable; the run still completes and advances the watermark.
+          console.warn(
+            'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
+          );
         }
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
