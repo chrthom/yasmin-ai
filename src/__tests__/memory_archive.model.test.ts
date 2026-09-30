@@ -84,11 +84,7 @@ describe('memory_archive.model', () => {
         .mockResolvedValueOnce([[newRow]]); // re-select
 
       const createdAt = new Date('2026-09-30T15:59:45Z');
-      const { row, created } = await insertNextVersion(
-        'people/christopher.md',
-        'new content',
-        createdAt
-      );
+      const { row, created } = await insertNextVersion('people/christopher.md', 'new content', createdAt);
 
       expect(created).toBe(true);
       expect(row.version).toBe(3);

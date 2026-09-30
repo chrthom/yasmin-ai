@@ -317,7 +317,11 @@ describe('nightly pipeline integration', () => {
       'Journal about Carol',
       expect.any(Date)
     );
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice profile content', expect.any(Date));
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice profile content',
+      expect.any(Date)
+    );
 
     expect(mockUpsertContextEntry).toHaveBeenCalledWith('Profile of Alice', 'compacted profile');
 
