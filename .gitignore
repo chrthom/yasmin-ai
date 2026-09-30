@@ -6,6 +6,10 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 
+# Local agent/assistant state
+.claude/
+.openclaude/
+
 # Vendors
 node_modules/
 

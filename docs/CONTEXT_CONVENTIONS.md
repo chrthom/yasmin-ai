@@ -131,11 +131,11 @@ that this cache is regenerated from every night:
 
 ### Files & Their `context_entries` Counterpart
 
-| Path                             | Purpose                                                                                                                                                                             | Regenerates (nightly, compacted + privacy-stripped) |
-| :------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------- |
+| Path                             | Purpose                                                                                                                                                                                                                         | Regenerates (nightly, compacted + privacy-stripped) |
+| :------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------- |
 | **`people/<name>.md`**           | Verbose, structured profile per family member/contact: Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions. May contain `[PRIVACY:SENSITIVE]` blocks. | `Profile of [Name]`                                 |
-| **`self-reflection/profile.md`** | Yasmin's own long-term self-reflection, written in first person.                                                                                                                    | `Profile of Yasmin`                                 |
-| **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                          | `Family notes`                                      |
+| **`self-reflection/profile.md`** | Yasmin's own long-term self-reflection, written in first person.                                                                                                                                                                | `Profile of Yasmin`                                 |
+| **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                                                                      | `Family notes`                                      |
 
 (`journals/<name>/<conversation-id>.md` also lives in `memory_archive` as an intermediate artifact of the
 nightly pipeline, but has no mapping to a `context_entries` title or the Mistral library — see the legacy-row
@@ -150,8 +150,8 @@ note in §3.)
   tool call needed, unlike the eager/lazy `context_entries` groups above.
 - **Current status:** as of today (pre-cutover), the library is being populated nightly, but the live
   agent's system prompt has not yet been wired up to mention or rely on it — RAG consumption begins at the
-  same read-only cutover described in §2.1, when `mistral_config/system_prompt.txt` is updated to tell the
-  agent that deeper facts and past conversations surface automatically from this library.
+  same read-only cutover described in §2.1, when `mistral_config/conversation/system_prompt.txt` is updated
+  to tell the agent that deeper facts and past conversations surface automatically from this library.
 - **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. Such
   content is always stripped before it's compacted into the `context_entries` eager cache, but remains in
   the Mistral library itself, gated only by prompt-level enforcement (the library is shared across the whole

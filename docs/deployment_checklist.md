@@ -36,8 +36,8 @@ is the non-pruned table the pipeline uses to persist the resumed watermark, see 
 - Attach the `memory` library to the existing live conversation agent for RAG. Safe to do now — the current
   (pre-cutover) system prompt doesn't reference it, so it's inert until Part B.
 - Create a new agent named **`yasmin-nightly`**, with the system prompt from
-  `mistral_config/nightly_system_prompt.txt`, and register its 4 function-calling tools from
-  `mistral_config/functions/{list_long_term_files,get_long_term_file,read_todays_journals,stage_update}.json`.
+  `mistral_config/nightly/nightly_system_prompt.txt`, and register its 4 function-calling tools from
+  `mistral_config/nightly/functions/{list_long_term_files,get_long_term_file,read_todays_journals,stage_update}.json`.
   Library wiring for this agent is optional (only useful for cross-file discovery during integration — the
   pipeline reads full files from `memory_archive` directly, not via RAG). Note its agent id →
   `AGENT_ID_NIGHTLY`.
