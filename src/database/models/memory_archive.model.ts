@@ -59,7 +59,8 @@ export async function getCurrentVersion(filePath: string): Promise<MemoryArchive
  */
 export async function insertNextVersion(
   filePath: string,
-  content: string
+  content: string,
+  createdAt?: Date
 ): Promise<{ row: MemoryArchiveRow; created: boolean }> {
   try {
     const contentHash = computeContentHash(content);
@@ -70,9 +71,13 @@ export async function insertNextVersion(
     }
 
     const nextVersion = current ? current.version + 1 : 1;
+    // Write created_at explicitly (in the same UTC serialization the pool uses for every JS Date,
+    // matching nightly_job_log.completed_at) rather than relying on the DB server's CURRENT_TIMESTAMP
+    // default, whose local timezone may differ from the nightly pipeline's own timestamps.
+    const created = createdAt ?? new Date();
     const [result]: any = await executeQuery(
-      'INSERT INTO memory_archive (file_path, content, content_hash, version, mistral_doc_id, synced_at) VALUES (?, ?, ?, ?, NULL, NULL)',
-      [filePath, content, contentHash, nextVersion]
+      'INSERT INTO memory_archive (file_path, content, content_hash, version, mistral_doc_id, synced_at, created_at) VALUES (?, ?, ?, ?, NULL, NULL, ?)',
+      [filePath, content, contentHash, nextVersion, created]
     );
 
     const [rows]: any = await executeQuery('SELECT * FROM memory_archive WHERE id = ? LIMIT 1', [
