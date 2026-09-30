@@ -160,14 +160,17 @@ async function requestDelete(path: string, opts?: RetryOptions): Promise<void> {
 
 export interface ConversationMeta {
   id: string;
-  name?: string;
+  name?: string | null;
   agentId?: string;
   updatedAt: string;
 }
 
 const ConversationMetaResponseSchema = z.object({
   id: z.string(),
-  name: z.string().optional(),
+  // Mistral returns `name: null` for conversations that were created without a name, which Zod's
+  // `.optional()` would reject (it only accepts `undefined`). `.nullish()` permits both `null` and
+  // `undefined` so a nameless conversation doesn't abort paginated listing.
+  name: z.string().nullish(),
   agent_id: z.string().optional(),
   updated_at: z.string()
 });

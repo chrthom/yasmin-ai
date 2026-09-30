@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { config, validateEnv } from '../config';
-import { getDatabasePool } from '../database/connection';
+import { getDatabasePool, closeDatabasePool } from '../database/connection';
 import { listConversations, listDocuments } from '../mistral/mistral_api';
 import { computeSinceIso, LockHeldError, runNightlyPipeline } from './pipeline';
 
@@ -39,10 +39,15 @@ async function main(): Promise<void> {
   const isDryRun = process.argv.includes('--dry-run');
 
   if (isDryRun) {
+    // The dry-run leaves the DB pool open (the real-run path closes it via process.exit below), and an
+    // open pool keeps the Node event loop alive, so the process would otherwise never return to the
+    // prompt. Close it explicitly before handing control back.
     try {
       await runDryRun();
+      await closeDatabasePool();
     } catch (error) {
       console.error('ERROR Dry run failed: ' + error);
+      await closeDatabasePool();
       process.exit(1);
     }
     return;
