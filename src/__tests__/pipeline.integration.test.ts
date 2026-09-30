@@ -97,7 +97,14 @@ import {
   pruneOldVersions
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
-import { buildTranscript, runCompact, runIntegrate, runJournal, runReview, reviseProposal } from '../nightly/reflection';
+import {
+  buildTranscript,
+  runCompact,
+  runIntegrate,
+  runJournal,
+  runReview,
+  reviseProposal
+} from '../nightly/reflection';
 import {
   deleteConversation,
   deleteDocument,

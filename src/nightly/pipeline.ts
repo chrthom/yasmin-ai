@@ -269,21 +269,23 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         const currentContent = currentVersion ? currentVersion.content : null;
 
         let proposal = update.content;
-        let verdict = await runReview({ path: update.path, content: proposal, isNew: update.isNew }, currentContent, todaysJournals);
+        let verdict = await runReview(
+          { path: update.path, content: proposal, isNew: update.isNew },
+          currentContent,
+          todaysJournals
+        );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
         // corrected full replacement, then re-review. This turns a persistent "rejected forever" case
         // into one that converges within a bounded number of revisions.
         let revisions = 0;
         while (!verdict.approved && revisions < config.nightly.maxRevisions) {
-          proposal = await reviseProposal(
-            update,
+          proposal = await reviseProposal(update, currentContent, proposal, verdict.reason, todaysJournals);
+          verdict = await runReview(
+            { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
-            proposal,
-            verdict.reason,
             todaysJournals
           );
-          verdict = await runReview({ path: update.path, content: proposal, isNew: update.isNew }, currentContent, todaysJournals);
           revisions++;
         }
 
@@ -301,7 +303,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           // proposal is simply not written. It must not degrade a healthy run to 'partial' (which would
           // block the watermark and reprocess the same conversations forever). Log it so it stays
           // observable; the run still completes and advances the watermark.
-          console.warn('WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason);
+          console.warn(
+            'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
+          );
         }
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
