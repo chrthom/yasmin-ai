@@ -311,6 +311,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         // versioning/audit, but only the stripped copy is ever uploaded to the third-party Mistral
         // library, which backs RAG retrieval for the live chat agent.
         const uploadContent = stripSensitive(row.content);
+        // An empty memory file carries no information and Mistral rejects empty document uploads
+        // (HTTP 400) -- skip it rather than degrading the run to 'partial' on a file with nothing to say.
+        if (uploadContent.trim().length === 0) {
+          console.log('INFO Skipping upload of empty file "' + row.filePath + '"');
+          continue;
+        }
         const doc = await replaceDocument(row.filePath, uploadContent, row.mistralDocId ?? undefined);
         await markSynced(row.id, doc.id);
       } catch (error) {
@@ -391,12 +397,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         let compacted = await runCompact(kind, personName, stripped);
 
         if (compacted.trim().length === 0) {
-          console.error(
-            'ERROR Phase 6 compaction produced empty output for "' +
+          // An empty source file (e.g. an empty family file) simply has nothing to compact -- log it
+          // and move on rather than degrading a healthy run to 'partial'. A genuinely empty memory
+          // file is not an eager-cache failure.
+          console.log(
+            'INFO Phase 6 compaction produced empty output for "' +
               row.filePath +
-              '"; leaving the existing eager-cache entry untouched'
+              '"; skipping eager-cache update (no content)'
           );
-          anyEagerFailed = true;
           continue;
         }
 

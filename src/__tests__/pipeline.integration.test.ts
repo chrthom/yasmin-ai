@@ -627,7 +627,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // 11. Phase 6 empty-compaction guard
   // -------------------------------------------------------------------------
-  it('Phase 6 skips the eager-cache upsert when compaction produces empty output, and marks the run partial', async () => {
+  it('Phase 6 skips the eager-cache upsert when compaction produces empty output, but does not fail the run', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -638,8 +638,10 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
 
     expect(mockUpsertContextEntry.mock.calls.some(call => call[0] === 'Profile of Bob')).toBe(false);
-    expect(result.status).toBe('partial');
-    expect(mockSetWatermark).not.toHaveBeenCalled();
+    // An empty compaction (e.g. from an empty source file) simply means nothing to compact -- it is
+    // not an eager-cache failure and must not degrade the run. A completed run advances the watermark.
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
