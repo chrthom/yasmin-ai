@@ -22,6 +22,7 @@ jest.mock('../config', () => ({
     },
     nightly: {
       lockStaleMs: 2 * 60 * 60 * 1000,
+      maxRevisions: 3,
       maxIterations: 15,
       archiveKeepVersions: 10,
       eagerMaxChars: 2000
@@ -58,6 +59,7 @@ jest.mock('../nightly/reflection', () => ({
   runJournal: jest.fn(),
   runIntegrate: jest.fn(),
   runReview: jest.fn(),
+  reviseProposal: jest.fn(),
   runCompact: jest.fn()
 }));
 
@@ -95,7 +97,14 @@ import {
   pruneOldVersions
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
-import { buildTranscript, runCompact, runIntegrate, runJournal, runReview } from '../nightly/reflection';
+import {
+  buildTranscript,
+  runCompact,
+  runIntegrate,
+  runJournal,
+  runReview,
+  reviseProposal
+} from '../nightly/reflection';
 import {
   deleteConversation,
   deleteDocument,
@@ -129,6 +138,7 @@ const mockBuildTranscript = buildTranscript as jest.Mock;
 const mockRunJournal = runJournal as jest.Mock;
 const mockRunIntegrate = runIntegrate as jest.Mock;
 const mockRunReview = runReview as jest.Mock;
+const mockReviseProposal = reviseProposal as jest.Mock;
 const mockRunCompact = runCompact as jest.Mock;
 
 const mockListConversations = listConversations as jest.Mock;
@@ -269,6 +279,8 @@ describe('nightly pipeline integration', () => {
     mockRunJournal.mockResolvedValue('journal text');
     mockRunIntegrate.mockResolvedValue({ finalText: '', iterations: 0 });
     mockRunReview.mockResolvedValue({ approved: true, reason: '' });
+    // Default: a revision that leaves content unchanged; individual tests override this as needed.
+    mockReviseProposal.mockImplementation(async (_update: any, _current: any, rejected: any) => rejected);
     mockRunCompact.mockResolvedValue('compacted');
   });
 
@@ -302,10 +314,26 @@ describe('nightly pipeline integration', () => {
     expect(mockSetWatermark).toHaveBeenCalledTimes(1);
     expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
 
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/alice/conv-1.md', 'Journal about Alice');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/bob/conv-2.md', 'Journal about Bob');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/carol/conv-3.md', 'Journal about Carol');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice profile content');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/alice/conv-1.md',
+      'Journal about Alice',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/bob/conv-2.md',
+      'Journal about Bob',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/carol/conv-3.md',
+      'Journal about Carol',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice profile content',
+      expect.any(Date)
+    );
 
     expect(mockUpsertContextEntry).toHaveBeenCalledWith('Profile of Alice', 'compacted profile');
 
@@ -339,7 +367,11 @@ describe('nightly pipeline integration', () => {
 
     const result = await runNightlyPipeline();
 
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Existing alice content');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Existing alice content',
+      expect.any(Date)
+    );
 
     const archivePhaseUpdate = mockUpdateJobLog.mock.calls.find(
       call => call[1] && call[1].lastCompletedPhase === '4-archive'
@@ -382,7 +414,11 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
 
     // The rejected proposal is NOT written; the accepted one is.
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/alice.md', 'Alice new profile');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice new profile',
+      expect.any(Date)
+    );
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'people/bob.md')).toBe(false);
 
     // A reviewer rejection is a handled, benign outcome -- it must not degrade the run to 'partial',
@@ -394,6 +430,79 @@ describe('nightly pipeline integration', () => {
     expect(mockPruneOldJobLogs).toHaveBeenCalled();
 
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reviewer rejects then accepts a revised proposal: the revised content is archived', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile v1',
+        isNew: true
+      });
+      return { finalText: 'staged 1 file', iterations: 1 };
+    });
+    // First review rejects with feedback; after one revision, the revised content is accepted.
+    mockRunReview
+      .mockResolvedValueOnce({ approved: false, reason: 'missing date, please add it' })
+      .mockResolvedValueOnce({ approved: true, reason: 'now includes the date' });
+    mockReviseProposal.mockResolvedValue('Alice profile v2 with date');
+
+    const result = await runNightlyPipeline();
+
+    expect(mockReviseProposal).toHaveBeenCalledTimes(1);
+    // The REVISED content (not the original staged proposal) is what gets archived.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/alice.md',
+      'Alice profile v2 with date',
+      expect.any(Date)
+    );
+
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalled();
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reviewer still rejects after the revision cap: WARNs, completes, sets watermark, archives nothing for that path', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile v1',
+        isNew: true
+      });
+      await executeTool('stage_update', { path: 'people/bob.md', content: 'Bob profile v1', isNew: true });
+      return { finalText: 'staged 2 files', iterations: 1 };
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    // Reject forever for alice, including through every revision; bob is accepted on first review.
+    mockRunReview.mockImplementation(async (update: any) =>
+      update.path === 'people/bob.md'
+        ? { approved: true, reason: 'looks solid' }
+        : { approved: false, reason: 'still missing evidence' }
+    );
+
+    const result = await runNightlyPipeline();
+
+    // The revision loop runs exactly maxRevisions (default 3) times for the persistently rejected path.
+    expect(mockReviseProposal).toHaveBeenCalledTimes(3);
+    // Nothing is archived for the never-accepted path; the accepted path still is.
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'people/alice.md')).toBe(false);
+    expect(mockInsertNextVersion).toHaveBeenCalledWith('people/bob.md', 'Bob profile v1', expect.any(Date));
+    // The final rejection stays observable in the log.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('WARN Rejected staged update for people/alice.md after enough revisions')
+    );
+
+    // Rejection must not degrade the run to 'partial': it completes and advances the watermark.
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalled();
+    expect(mockDeleteConversation).toHaveBeenCalledWith('conv-1');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+
+    warnSpy.mockRestore();
   });
 
   // -------------------------------------------------------------------------
@@ -424,8 +533,16 @@ describe('nightly pipeline integration', () => {
     expect(mockCreateJobLog).not.toHaveBeenCalled();
     expect(result.jobId).toBe(77);
 
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-9/conv-9.md', 'journal text');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-10/conv-10.md', 'journal text');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/conv-9/conv-9.md',
+      'journal text',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/conv-10/conv-10.md',
+      'journal text',
+      expect.any(Date)
+    );
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
     expect(mockDeleteConversation).not.toHaveBeenCalledWith('conv-999');
@@ -464,7 +581,11 @@ describe('nightly pipeline integration', () => {
 
     // conv-10: not yet journaled -- must still be journaled fresh this run.
     expect(mockGetConversationMessages).toHaveBeenCalledWith('conv-10');
-    expect(mockInsertNextVersion).toHaveBeenCalledWith('journals/conv-10/conv-10.md', 'journal text');
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/conv-10/conv-10.md',
+      'journal text',
+      expect.any(Date)
+    );
 
     // Both conversations are still cleaned up in Phase 7 regardless of which path journaled them.
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');

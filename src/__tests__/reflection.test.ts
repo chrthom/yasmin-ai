@@ -25,6 +25,7 @@ import {
   JOURNAL_SOFT_CAP_CHARS,
   runIntegrate,
   runReview,
+  reviseProposal,
   runCompact
 } from '../nightly/reflection';
 
@@ -162,6 +163,37 @@ describe('reflection', () => {
 
       expect(result.approved).toBe(false);
       expect(result.reason).toBe('Could not parse reviewer verdict; rejecting as a safe default.');
+    });
+  });
+
+  describe('reviseProposal', () => {
+    const update = { path: 'people/alice.md', content: 'new content', isNew: true };
+
+    it('passes the nightly agent the path, current content, rejected proposal, feedback and journals', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '# Corrected profile content' });
+
+      await reviseProposal(update, 'old content', 'rejected content', 'add the date please', [
+        { conversationId: 'conv-1', userName: 'Alice', content: 'journal text' }
+      ]);
+
+      const call = mockAskAgent.mock.calls[0][0];
+      expect(call.agentId).toBe('nightly-agent-1');
+      expect(call.inputs[0].role).toBe('user');
+      const prompt = call.inputs[0].content;
+      expect(prompt).toContain('people/alice.md');
+      expect(prompt).toContain('old content');
+      expect(prompt).toContain('rejected content');
+      expect(prompt).toContain('add the date please');
+      expect(prompt).toContain('journal text');
+      expect(prompt).toContain('complete replacement');
+    });
+
+    it('returns the agent output trimmed of surrounding whitespace', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '  corrected\n  content  ' });
+
+      const result = await reviseProposal(update, null, 'rejected content', 'reason', []);
+
+      expect(result).toBe('corrected\n  content');
     });
   });
 
