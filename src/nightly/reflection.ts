@@ -254,7 +254,7 @@ export function integratePrompt(): string {
     'staged file content in German.\n' +
     "In the Yasmin's Intentions section you may go slightly beyond what was literally discussed: " +
     'alongside concrete follow-ups from the conversation, you may propose one forward-looking idea that fits ' +
-    "person's known interests and Yasmin's own character -- something she could bring up, ask, or " +
+    "the person's known interests and Yasmin's own character -- something she could bring up, ask, or " +
     'suggest next time. Always phrase such ideas as Yasmin\'s own intention ("I would like to ..."), never as a ' +
     "fact about the person, and only when today's evidence actually supports it.\n\n" +
     'Once you have staged everything needed, reply with a short plain-text summary of what you staged and ' +
@@ -316,7 +316,7 @@ export function reviewPrompt(
   update: StagedUpdate,
   currentContent: string | null,
   todaysJournals: JournalEntry[],
-  attempt = 0
+  attempt: number
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
   const groundingRule =
@@ -379,7 +379,7 @@ export async function runReview(
   update: StagedUpdate,
   currentContent: string | null,
   todaysJournals: JournalEntry[],
-  attempt = 0
+  attempt: number
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,

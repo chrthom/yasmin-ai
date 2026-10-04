@@ -199,7 +199,7 @@ describe('reflection', () => {
     it('parses a clean JSON verdict', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "looks good"}' });
 
-      const result = await runReview(update, 'old content', []);
+      const result = await runReview(update, 'old content', [], 0);
 
       expect(result).toEqual({ approved: true, reason: 'looks good' });
     });
@@ -209,7 +209,7 @@ describe('reflection', () => {
         outputText: '```json\n{"approved": false, "reason": "hallucinated"}\n```'
       });
 
-      const result = await runReview(update, 'old content', []);
+      const result = await runReview(update, 'old content', [], 0);
 
       expect(result).toEqual({ approved: false, reason: 'hallucinated' });
     });
@@ -217,7 +217,7 @@ describe('reflection', () => {
     it('safely defaults to approved: false on unparseable output', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: 'not json at all' });
 
-      const result = await runReview(update, 'old content', []);
+      const result = await runReview(update, 'old content', [], 0);
 
       expect(result.approved).toBe(false);
       expect(result.reason).toBe('Could not parse reviewer verdict; rejecting as a safe default.');
@@ -226,9 +226,12 @@ describe('reflection', () => {
     it('instructs the reviewer that dropping ephemeral day-detail is correct compaction, not a reject reason', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
 
-      await runReview(update, 'old content', [
-        { conversationId: 'c1', userName: 'Alice', content: 'Alice bought crisps today' }
-      ]);
+      await runReview(
+        update,
+        'old content',
+        [{ conversationId: 'c1', userName: 'Alice', content: 'Alice bought crisps today' }],
+        0
+      );
 
       const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(prompt).toContain('deliberately COMPACT');
