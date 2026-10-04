@@ -95,8 +95,8 @@ export function journalPrompt(userName: string, transcript: string): string {
     'Focus on meaningful interactions, emotional exchanges, milestones, shared experiences, inside jokes, ' +
     'and any facts or commitments that should be remembered. Also actively look for: opinions or ideas ' +
     userName +
-    ' expressed, personal projects, hobbies, or goals they mentioned, topics they returned to or that echo ' +
-    'something from earlier conversations, moments where they reflected on themselves, and any cues about ' +
+    ' expressed, personal projects, hobbies, or goals they mentioned, topics they came back to more ' +
+    'than once within this conversation, moments where they reflected on themselves, and any cues about ' +
     'how they like to be talked to (tone, humor, directness, formality). Note these explicitly rather than ' +
     'only describing what happened.\n' +
     'Additionally, record explicitly how ' +
