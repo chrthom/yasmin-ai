@@ -56,8 +56,6 @@ jest.mock('../database/models/context.model', () => ({
 
 jest.mock('../nightly/reflection', () => ({
   buildTranscript: jest.fn(),
-  compactSession: jest.fn(),
-  formatRunDate: jest.fn(() => '2026-09-30'),
   runJournal: jest.fn(),
   runIntegrate: jest.fn(),
   runReview: jest.fn(),
@@ -101,8 +99,6 @@ import {
 import { upsertContextEntry } from '../database/models/context.model';
 import {
   buildTranscript,
-  compactSession,
-  formatRunDate,
   runCompact,
   runIntegrate,
   runJournal,
@@ -139,8 +135,6 @@ const mockPruneOldVersions = pruneOldVersions as jest.Mock;
 const mockUpsertContextEntry = upsertContextEntry as jest.Mock;
 
 const mockBuildTranscript = buildTranscript as jest.Mock;
-const mockCompactSession = compactSession as jest.Mock;
-const mockFormatRunDate = formatRunDate as jest.Mock;
 const mockRunJournal = runJournal as jest.Mock;
 const mockRunIntegrate = runIntegrate as jest.Mock;
 const mockRunReview = runReview as jest.Mock;
@@ -253,10 +247,8 @@ function conversation(id: string, name: string, agentId: string = FAMILY_AGENT_I
 describe('nightly pipeline integration', () => {
   beforeEach(() => {
     jest.resetAllMocks();
-    resetNightlyToolsState();
 
-    // resetAllMocks wipes the factory default, so re-establish a deterministic run date.
-    mockFormatRunDate.mockReturnValue('2026-09-30');
+    resetNightlyToolsState();
 
     archive = new MemoryArchiveFake();
     mockGetCurrentVersion.mockImplementation(archive.getCurrentVersion);
@@ -713,12 +705,9 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
 
     expect(result.status).toBe('partial');
-    // Phase 2b still writes per-user "Session with ..." compacts, but Phase 6 -- which upserts the
-    // mapped profile/family titles -- must NOT have run, so the eager cache is untouched.
-    const phase6Titles = mockUpsertContextEntry.mock.calls
-      .map((call: any) => call[0])
-      .filter((title: string) => !String(title).startsWith('Session with '));
-    expect(phase6Titles).toHaveLength(0);
+    // Phase 6 -- which upserts the mapped profile/family titles -- must NOT have run, so the eager
+    // cache is untouched.
+    expect(mockUpsertContextEntry).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
@@ -740,35 +729,8 @@ describe('nightly pipeline integration', () => {
     // journals/alice/conv-1.md is an unmapped path and must not produce an upsert call.
     const titlesUpserted = mockUpsertContextEntry.mock.calls.map(call => call[0]);
     expect(titlesUpserted).not.toContain('journals/alice/conv-1.md');
-    // Phase 2b also writes per-user "Session with ..." compacts, so count only the Phase-6 mapped titles.
-    const phase6Titles = titlesUpserted.filter(title => !title.startsWith('Session with '));
-    expect(phase6Titles).toHaveLength(3);
+    expect(titlesUpserted).toHaveLength(3);
 
-    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
-  });
-
-  // -------------------------------------------------------------------------
-  // 9b. Phase 2b session compacts
-  // -------------------------------------------------------------------------
-  it('Phase 2b: writes a timestamped Session compact for each user that had a new conversation', async () => {
-    mockListConversations.mockResolvedValueOnce([
-      conversation('conv-9a', 'Alice'),
-      conversation('conv-9b', 'Bob')
-    ]);
-    mockCompactSession.mockImplementation(async (userName: string) => `compact for ${userName}`);
-
-    const result = await runNightlyPipeline();
-
-    // Each user's latest journal is condensed, with the run's date stamp flowing through.
-    expect(mockCompactSession).toHaveBeenCalledWith('Alice', expect.any(String), '2026-09-30');
-    expect(mockCompactSession).toHaveBeenCalledWith('Bob', expect.any(String), '2026-09-30');
-    expect(mockUpsertContextEntry).toHaveBeenCalledWith('Session with Alice', 'compact for Alice');
-    expect(mockUpsertContextEntry).toHaveBeenCalledWith('Session with Bob', 'compact for Bob');
-
-    // A user with no new conversation is never touched (old compact is kept).
-    expect(mockUpsertContextEntry.mock.calls.map((call: any) => call[0])).not.toContain('Session with Carol');
-
-    expect(result.status).toBe('completed');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 

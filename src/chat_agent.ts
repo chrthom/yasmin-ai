@@ -268,6 +268,19 @@ export class ChatAgent {
                 tool_call_id: call.id,
                 result: resultStr
               });
+            } else {
+              // Unknown tool (e.g. a stray update_context_entry call from a not-yet-reconfigured
+              // Mistral Console agent): answer the call so the conversation cannot stall, but
+              // never execute it.
+              console.warn(`WARNING Ignoring unsupported tool call "${call.name}"`);
+              toolInputs.push({
+                type: 'function.result',
+                tool_call_id: call.id,
+                result: JSON.stringify({
+                  success: false,
+                  error: `Unsupported tool: ${call.name}`
+                })
+              });
             }
           }
 

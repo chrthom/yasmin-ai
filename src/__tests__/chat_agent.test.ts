@@ -441,7 +441,7 @@ describe('ChatAgent', () => {
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
     });
 
-    it('read-only agent (post-cutover): does not handle an update_context_entry tool call -- no write tool exists', async () => {
+    it('read-only agent (post-cutover): answers a stray update_context_entry tool call with an error result instead of executing it', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
 
       const mockToolCallResponse = {
@@ -470,13 +470,33 @@ describe('ChatAgent', () => {
         json: () => Promise.resolve(mockToolCallResponse)
       });
 
+      // Second fetch: the tool-result POST carrying the error result for the stray call.
+      const mockAfterToolResponse = {
+        id: 'conv-123',
+        outputs: [{ type: 'message.output', content: 'I cannot update memory myself.' }]
+      };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockAfterToolResponse)
+      });
       const result = await chatAgent.processRequest('Update Anjali profile', 'christopher');
 
-      // Since no branch handles update_context_entry, no tool result is ever sent back to Mistral --
-      // exactly one fetch call happens (the initial request), never a second "send tool results" call.
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-      // The unhandled tool_calls output is returned as-is, not a message.output.
-      expect(result).toEqual(mockToolCallResponse.outputs);
+      // The stray write tool call is answered with an error result (so the Mistral conversation
+      // cannot stall on an unanswered tool_call_id), and no write ever reaches the DB layer.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const secondCallArgs = mockFetch.mock.calls[1];
+      expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
+      const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs).toHaveLength(1);
+      expect(secondBody.inputs[0].type).toBe('function.result');
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-write-1');
+      expect(JSON.parse(secondBody.inputs[0].result)).toEqual({
+        success: false,
+        error: 'Unsupported tool: update_context_entry'
+      });
+      expect(result).toEqual(mockAfterToolResponse.outputs);
     });
 
     it('respawns a fresh conversation when resuming a deleted conversation (HTTP 404)', async () => {
