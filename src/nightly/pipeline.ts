@@ -309,7 +309,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         let verdict = await runReview(
           { path: update.path, content: proposal, isNew: update.isNew },
           currentContent,
-          todaysJournals
+          todaysJournals,
+          0
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -334,7 +335,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           verdict = await runReview(
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
-            todaysJournals
+            todaysJournals,
+            revisions + 1
           );
           revisions++;
         }

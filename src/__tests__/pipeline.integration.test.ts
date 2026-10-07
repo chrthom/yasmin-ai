@@ -751,7 +751,10 @@ describe('nightly pipeline integration', () => {
   // 9b. Phase 2b session compacts
   // -------------------------------------------------------------------------
   it('Phase 2b: writes a timestamped Session compact for each user that had a new conversation', async () => {
-    mockListConversations.mockResolvedValueOnce([conversation('conv-9a', 'Alice'), conversation('conv-9b', 'Bob')]);
+    mockListConversations.mockResolvedValueOnce([
+      conversation('conv-9a', 'Alice'),
+      conversation('conv-9b', 'Bob')
+    ]);
     mockCompactSession.mockImplementation(async (userName: string) => `compact for ${userName}`);
 
     const result = await runNightlyPipeline();
@@ -763,9 +766,7 @@ describe('nightly pipeline integration', () => {
     expect(mockUpsertContextEntry).toHaveBeenCalledWith('Session with Bob', 'compact for Bob');
 
     // A user with no new conversation is never touched (old compact is kept).
-    expect(mockUpsertContextEntry.mock.calls.map((call: any) => call[0])).not.toContain(
-      'Session with Carol'
-    );
+    expect(mockUpsertContextEntry.mock.calls.map((call: any) => call[0])).not.toContain('Session with Carol');
 
     expect(result.status).toBe('completed');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
