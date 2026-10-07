@@ -370,18 +370,29 @@ export class ChatAgent {
   }
 
   convertMultiPart(outputs: MistralConversationResponseOutput[]): string {
-    const messageOutput = outputs.find(o => o.type == 'message.output');
-    if (!messageOutput) {
+    const messageOutputs = outputs.filter(o => o.type == 'message.output');
+    if (messageOutputs.length === 0) {
       console.log('WARN No output of type message.output was found!');
       return '';
     }
-    if (typeof messageOutput.content === 'string') {
-      return messageOutput.content;
-    } else {
-      return (<MistralConversationResponseOutputPart[]>messageOutput.content)
-        .filter(p => p.type == 'text')
-        .map(p => p.text)
-        .join(' ');
+
+    const texts: string[] = [];
+    for (const messageOutput of messageOutputs) {
+      if (typeof messageOutput.content === 'string') {
+        texts.push(messageOutput.content);
+      } else {
+        texts.push(
+          ...(<MistralConversationResponseOutputPart[]>messageOutput.content)
+            .filter(p => p.type == 'text')
+            .map(p => p.text)
+        );
+      }
     }
+
+    const text = texts.join(' ').trim();
+    if (!text) {
+      console.log('WARN No text part found in message.output entries!');
+    }
+    return text;
   }
 }
