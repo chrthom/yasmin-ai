@@ -161,9 +161,7 @@ describe('reflection', () => {
     });
 
     it('throws when both the first attempt and the retry come back empty, rather than persisting an empty journal', async () => {
-      mockAskAgent
-        .mockResolvedValueOnce({ outputText: '' })
-        .mockResolvedValueOnce({ outputText: '   ' });
+      mockAskAgent.mockResolvedValueOnce({ outputText: '' }).mockResolvedValueOnce({ outputText: '   ' });
 
       await expect(runJournal('Alice', 'transcript text')).rejects.toThrow(/empty entry/);
       expect(mockAskAgent).toHaveBeenCalledTimes(2);
