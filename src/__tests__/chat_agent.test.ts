@@ -222,6 +222,53 @@ describe('ChatAgent', () => {
       expect(result).toBe('');
     });
 
+    it('should skip thinking-only message.output and use later text message (web search flow)', () => {
+      const outputs = [
+        {
+          content: [{ type: 'thinking', text: 'Let me search...' }],
+          type: 'message.output'
+        },
+        {
+          content: [
+            { type: 'thinking', text: 'I found it.' },
+            { type: 'text', text: '02.03.2027. Ziggo Dome, Amsterdam.' }
+          ],
+          type: 'message.output'
+        }
+      ];
+
+      const result = chatAgent.convertMultiPart(<any>outputs);
+      expect(result).toBe('02.03.2027. Ziggo Dome, Amsterdam.');
+    });
+
+    it('should join text parts across multiple message.output entries', () => {
+      const outputs = [
+        {
+          content: [{ type: 'text', text: 'Hello' }],
+          type: 'message.output'
+        },
+        {
+          content: [{ type: 'text', text: 'world!' }],
+          type: 'message.output'
+        }
+      ];
+
+      const result = chatAgent.convertMultiPart(<any>outputs);
+      expect(result).toBe('Hello world!');
+    });
+
+    it('should return empty string when all message.output entries are thinking-only', () => {
+      const outputs = [
+        {
+          content: [{ type: 'thinking', text: 'Hmm...' }],
+          type: 'message.output'
+        }
+      ];
+
+      const result = chatAgent.convertMultiPart(<any>outputs);
+      expect(result).toBe('');
+    });
+
     it('should handle null/undefined outputs', () => {
       const result = chatAgent.convertMultiPart([]);
       expect(result).toBe('');
