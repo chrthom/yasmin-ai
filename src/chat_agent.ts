@@ -39,6 +39,7 @@ interface CachedConversation {
   conversationId: string;
   expiresAt: number;
   loadedContextTitles: string[];
+  turnCount: number;
 }
 
 export class ChatAgent {
@@ -47,7 +48,9 @@ export class ChatAgent {
   private agentId: string;
   private conversationCache = new Map<string, CachedConversation>();
   private poisonedConversations = new Map<string, Set<string>>();
+  private userQueues = new Map<string, Promise<unknown>>();
   private conversationTtlMs = config.mistral.conversationTtlMs;
+  private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
 
   constructor(url: string, apiKey: string, agentId: string) {
     this.url = url;
@@ -95,13 +98,15 @@ export class ChatAgent {
         .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at))
         .pop()?.id;
 
-      // Cache the result if found, preserving any already loaded context titles
+      // Cache the result if found, preserving any already loaded context titles and turn count
       if (conversationId) {
         const loadedTitles = cached ? cached.loadedContextTitles : [];
+        const turnCount = cached ? cached.turnCount : 0;
         this.conversationCache.set(username, {
           conversationId,
           expiresAt: Date.now() + this.conversationTtlMs,
-          loadedContextTitles: loadedTitles
+          loadedContextTitles: loadedTitles,
+          turnCount
         });
         console.log(`DEBUG Cached conversation ${conversationId} for ${username}`);
       }
@@ -113,14 +118,28 @@ export class ChatAgent {
     }
   }
 
-  async processRequest(
+  processRequest(
+    userText: string,
+    username: string,
+    shortAnswer: boolean = false
+  ): Promise<MistralConversationResponseOutput[]> {
+    const previous = this.userQueues.get(username) || Promise.resolve();
+    const run = previous.then(() => this.processRequestInternal(userText, username, shortAnswer, false));
+    this.userQueues.set(
+      username,
+      run.catch(() => undefined)
+    );
+    return run;
+  }
+
+  private async processRequestInternal(
     userText: string,
     username: string,
     shortAnswer: boolean = false,
     isRespawn: boolean = false
   ): Promise<MistralConversationResponseOutput[]> {
     try {
-      const conversationId = await this.getActiveConversationId(username);
+      let conversationId = await this.getActiveConversationId(username);
       console.log(`DEBUG Existing conversation ${conversationId}`);
 
       // Get or initialize cached conversation for this user
@@ -129,9 +148,33 @@ export class ChatAgent {
         cached = {
           conversationId: conversationId || '',
           expiresAt: Date.now() + this.conversationTtlMs,
-          loadedContextTitles: []
+          loadedContextTitles: [],
+          turnCount: 0
         };
         this.conversationCache.set(username, cached);
+      }
+
+      // Turn-based compaction: long conversations make every turn slower because Mistral
+      // reprocesses the full history each time. Once the turn budget is exhausted, close
+      // the current conversation (the nightly job still journals and deletes it later) and
+      // start a fresh one so latency resets. The compacted "Session with <user>" context
+      // entry keeps the thread alive across the cutover, exactly as it does overnight.
+      let isCompactedSessionStart = false;
+      if (conversationId && cached.turnCount >= this.maxTurnsPerSession) {
+        console.log(
+          `INFO Compacting session for ${username}: conversation ${conversationId} reached ` +
+            `${cached.turnCount} turns (max ${this.maxTurnsPerSession}); starting a fresh conversation`
+        );
+        this.conversationCache.delete(username);
+        conversationId = undefined;
+        cached = {
+          conversationId: '',
+          expiresAt: Date.now() + this.conversationTtlMs,
+          loadedContextTitles: [],
+          turnCount: 0
+        };
+        this.conversationCache.set(username, cached);
+        isCompactedSessionStart = true;
       }
 
       // Query ContextService to find newly relevant context
@@ -152,6 +195,18 @@ export class ChatAgent {
         promptContent = `${promptContent}\n\nYour answer must be shorter than 1500 characters.`;
       }
 
+      // After mid-session compaction the fresh conversation has no shared history with the user;
+      // tell Yasmin so she picks the thread back up from the session context instead of pretending
+      // she remembers the just-archived turns verbatim.
+      if (isCompactedSessionStart) {
+        promptContent =
+          `${promptContent}\n\n` +
+          'Note: your previous conversation with this user was just archived to keep response times ' +
+          'fast. You are starting a fresh conversation now. Use the loaded context (especially the ' +
+          '"Session with [sender]" entry) to pick up where you left off. Do not mention archiving, ' +
+          'technical limits, or this note; just continue naturally.';
+      }
+
       // Keep tool usage within the model's completion token budget: batch-rewriting many long
       // context entries in a single turn exhausts the budget during reasoning, so the turn ends
       // with no text part at all.
@@ -161,6 +216,8 @@ export class ChatAgent {
       if (newlyLoadedTitles.length > 0) {
         cached.loadedContextTitles.push(...newlyLoadedTitles);
       }
+
+      cached.turnCount++;
 
       const body: any = {
         agent_id: conversationId ? undefined : this.agentId,
@@ -199,7 +256,7 @@ export class ChatAgent {
         // isRespawn guards against looping if the freshly created conversation also fails.
         if (isStale && conversationId && !isRespawn) {
           console.log(`INFO Respawning a fresh conversation for ${username}`);
-          return this.processRequest(userText, username, shortAnswer, true);
+          return this.processRequestInternal(userText, username, shortAnswer, true);
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
@@ -212,6 +269,7 @@ export class ChatAgent {
       if (!conversationId && returnedId) {
         cached.conversationId = returnedId;
         cached.expiresAt = Date.now() + this.conversationTtlMs;
+        cached.turnCount = 1;
         console.log(`DEBUG Cached new conversation ${returnedId} for ${username}`);
       }
 

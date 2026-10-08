@@ -317,6 +317,61 @@ describe('ChatAgent', () => {
   });
 
   describe('processRequest', () => {
+    it('should start a fresh conversation once the turn limit is reached (compaction)', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-old');
+      const mockResponse = {
+        outputs: [{ content: 'Test response', type: 'message.output' }]
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockResponse)
+      });
+      // Simulate an exhausted session: maxTurnsPerSession default is 80
+      chatAgent['conversationCache'].set('testuser', {
+        conversationId: 'conv-old',
+        expiresAt: Date.now() + 60_000,
+        loadedContextTitles: ['Profile of testuser'],
+        turnCount: 80
+      });
+      const result = await chatAgent.processRequest('Hello', 'testuser');
+      expect(result).toEqual(mockResponse.outputs);
+      // Fresh conversation: POST goes to the base URL, not the old conversation URL
+      expect(mockFetch.mock.calls[0][0]).toBe('https://test.url');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.agent_id).toBe('test-agent-id');
+      expect(body.name).toBe('testuser');
+      // Compaction note present, stale loaded titles reset
+      expect(body.inputs[0].content).toContain('previous conversation with this user was just archived');
+      const cached = chatAgent['conversationCache'].get('testuser')!;
+      expect(cached.turnCount).toBe(1);
+      expect(cached.loadedContextTitles).not.toContain('Profile of testuser');
+    });
+
+    it('should keep the existing conversation below the turn limit', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      const mockResponse = {
+        outputs: [{ content: 'Test response', type: 'message.output' }]
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve(mockResponse)
+      });
+      chatAgent['conversationCache'].set('testuser', {
+        conversationId: 'conv-123',
+        expiresAt: Date.now() + 60_000,
+        loadedContextTitles: [],
+        turnCount: 0
+      });
+      await chatAgent.processRequest('Hello', 'testuser');
+      expect(mockFetch.mock.calls[0][0]).toBe('https://test.url/conv-123');
+      const cached = chatAgent['conversationCache'].get('testuser')!;
+      expect(cached.turnCount).toBe(1);
+    });
+
     it('should create new conversation when no active conversation exists', async () => {
       // Mock getActiveConversationId to return undefined
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce(undefined);
@@ -404,6 +459,53 @@ describe('ChatAgent', () => {
       mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
       await expect(chatAgent.processRequest('Hello', 'testuser')).rejects.toThrow('Network error');
+    });
+
+    it('should process overlapping requests from the same user sequentially', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+
+      const order: string[] = [];
+      mockFetch.mockImplementation(async () => {
+        order.push('start');
+        await new Promise(resolve => setTimeout(resolve, 20));
+        order.push('end');
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () =>
+            Promise.resolve({
+              outputs: [{ content: 'Test response', type: 'message.output' }]
+            })
+        };
+      });
+
+      const [first, second] = await Promise.all([
+        chatAgent.processRequest('Hello', 'sameuser'),
+        chatAgent.processRequest('World', 'sameuser')
+      ]);
+
+      expect(first).toEqual([{ content: 'Test response', type: 'message.output' }]);
+      expect(second).toEqual([{ content: 'Test response', type: 'message.output' }]);
+      expect(order).toEqual(['start', 'end', 'start', 'end']);
+    });
+
+    it('should keep processing later requests after a failed one', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+
+      mockFetch.mockRejectedValueOnce(new Error('Network error')).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Recovered response', type: 'message.output' }]
+          })
+      });
+
+      await expect(chatAgent.processRequest('Fail', 'testuser')).rejects.toThrow('Network error');
+      const result = await chatAgent.processRequest('Recover', 'testuser');
+      expect(result).toEqual([{ content: 'Recovered response', type: 'message.output' }]);
     });
 
     it('should handle API errors', async () => {
