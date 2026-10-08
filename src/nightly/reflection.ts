@@ -541,7 +541,9 @@ export function compactPrompt(
 ): string {
   const cap = config.nightly.eagerMaxChars;
   const footer =
-    '\n\nReply with ONLY the compacted content -- no preamble, no explanation of what you did. Write the ' +
+    '\n\nThe character limit is a ceiling, not a target -- never pad or add filler to get closer to it. ' +
+    'Stay as concise as the content allows.\n\n' +
+    'Reply with ONLY the compacted content -- no preamble, no explanation of what you did. Write the ' +
     'compacted content in German.\n\n' +
     'Content to compact:\n' +
     strippedContent;

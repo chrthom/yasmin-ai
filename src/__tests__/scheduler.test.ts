@@ -6,7 +6,7 @@ jest.mock('../config', () => ({
       lockStaleMs: 1000,
       maxIterations: 15,
       archiveKeepVersions: 10,
-      eagerMaxChars: 2000
+      eagerMaxChars: 10000
     }
   }
 }));
