@@ -426,7 +426,7 @@ export class ChatAgent {
               );
               if (!isRespawn) {
                 console.log(`INFO Respawning a fresh conversation for ${username}`);
-                return this.processRequest(userText, username, shortAnswer, true);
+                return this.processRequestInternal(userText, username, shortAnswer, true);
               }
               throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
             }
