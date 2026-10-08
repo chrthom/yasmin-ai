@@ -380,6 +380,53 @@ describe('ChatAgent', () => {
       await expect(chatAgent.processRequest('Hello', 'testuser')).rejects.toThrow('Network error');
     });
 
+    it('should process overlapping requests from the same user sequentially', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+
+      const order: string[] = [];
+      mockFetch.mockImplementation(async () => {
+        order.push('start');
+        await new Promise(resolve => setTimeout(resolve, 20));
+        order.push('end');
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () =>
+            Promise.resolve({
+              outputs: [{ content: 'Test response', type: 'message.output' }]
+            })
+        };
+      });
+
+      const [first, second] = await Promise.all([
+        chatAgent.processRequest('Hello', 'sameuser'),
+        chatAgent.processRequest('World', 'sameuser')
+      ]);
+
+      expect(first).toEqual([{ content: 'Test response', type: 'message.output' }]);
+      expect(second).toEqual([{ content: 'Test response', type: 'message.output' }]);
+      expect(order).toEqual(['start', 'end', 'start', 'end']);
+    });
+
+    it('should keep processing later requests after a failed one', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+
+      mockFetch.mockRejectedValueOnce(new Error('Network error')).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () =>
+          Promise.resolve({
+            outputs: [{ content: 'Recovered response', type: 'message.output' }]
+          })
+      });
+
+      await expect(chatAgent.processRequest('Fail', 'testuser')).rejects.toThrow('Network error');
+      const result = await chatAgent.processRequest('Recover', 'testuser');
+      expect(result).toEqual([{ content: 'Recovered response', type: 'message.output' }]);
+    });
+
     it('should handle API errors', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
