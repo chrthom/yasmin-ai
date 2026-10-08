@@ -879,9 +879,7 @@ describe('ChatAgent', () => {
       expect(mockFetch.mock.calls[1][0]).toContain('conv-poisoned');
       // The respawn went to a fresh conversation, not the poisoned one
       expect(mockFetch.mock.calls[2][0]).not.toContain('conv-poisoned');
-      expect((chatAgent as any).conversationCache.get('christopher').conversationId).toBe(
-        'conv-fresh'
-      );
+      expect((chatAgent as any).conversationCache.get('christopher').conversationId).toBe('conv-fresh');
     });
 
     it('poisons the conversation on HTTP 400 so the respawn is not sent to the same broken conversation', async () => {
