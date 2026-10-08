@@ -292,9 +292,7 @@ describe('ChatAgent', () => {
 
   describe('processRequest', () => {
     it('should start a fresh conversation once the turn limit is reached (compaction)', async () => {
-      jest
-        .spyOn(chatAgent as any, 'getActiveConversationId')
-        .mockResolvedValue('conv-old');
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-old');
       const mockResponse = {
         outputs: [{ content: 'Test response', type: 'message.output' }]
       };
@@ -326,9 +324,7 @@ describe('ChatAgent', () => {
     });
 
     it('should keep the existing conversation below the turn limit', async () => {
-      jest
-        .spyOn(chatAgent as any, 'getActiveConversationId')
-        .mockResolvedValue('conv-123');
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
       const mockResponse = {
         outputs: [{ content: 'Test response', type: 'message.output' }]
       };
