@@ -173,6 +173,32 @@ describe('ChatAgent', () => {
       expect(result).toBe('conv-456');
     });
 
+    it('should skip conversations marked as poisoned', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => [
+          {
+            name: 'christopher',
+            id: 'conv-broken',
+            agent_id: 'test-agent-id',
+            updated_at: new Date().toISOString()
+          },
+          {
+            name: 'christopher',
+            id: 'conv-healthy',
+            agent_id: 'test-agent-id',
+            updated_at: new Date(Date.now() - 1000).toISOString()
+          }
+        ]
+      });
+      (chatAgent as any).poisonedConversations.set('christopher', new Set(['conv-broken']));
+
+      const result = await chatAgent['getActiveConversationId']('christopher');
+      expect(result).toBe('conv-healthy');
+    });
+
     it('should handle network errors gracefully', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
@@ -702,6 +728,90 @@ describe('ChatAgent', () => {
       expect(mockFetch.mock.calls[1][0]).not.toContain('conv-123');
       // The new conversation id is cached so the next turn resumes it
       expect((chatAgent as any).conversationCache.get('christopher').conversationId).toBe('conv-fresh');
+    });
+
+    it('does not re-select a poisoned conversation after a tool request fails', async () => {
+      // First turn resumes an existing conversation whose answer contains a function call
+      jest
+        .spyOn(chatAgent as any, 'getActiveConversationId')
+        .mockResolvedValueOnce('conv-poisoned')
+        .mockResolvedValue(undefined);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-poisoned',
+          outputs: [
+            {
+              type: 'function.call',
+              tool_call_id: 'call-1',
+              name: 'read_context_entry',
+              arguments: JSON.stringify({ title: 'Profile of Christopher' })
+            }
+          ]
+        })
+      });
+      // Tool result submission fails with HTTP 500, poisoning the conversation
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error'
+      });
+      // Respawn in a fresh conversation succeeds
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-fresh',
+          outputs: [{ type: 'message.output', content: 'Fresh answer' }]
+        })
+      });
+
+      const result = await chatAgent.processRequest('Hello', 'christopher');
+
+      expect(result).toHaveLength(1);
+      // The tool result went to the poisoned conversation
+      expect(mockFetch.mock.calls[1][0]).toContain('conv-poisoned');
+      // The respawn went to a fresh conversation, not the poisoned one
+      expect(mockFetch.mock.calls[2][0]).not.toContain('conv-poisoned');
+      expect((chatAgent as any).conversationCache.get('christopher').conversationId).toBe(
+        'conv-fresh'
+      );
+    });
+
+    it('poisons the conversation on HTTP 400 so the respawn is not sent to the same broken conversation', async () => {
+      jest
+        .spyOn(chatAgent as any, 'getActiveConversationId')
+        .mockResolvedValueOnce('conv-broken')
+        .mockResolvedValue(undefined);
+
+      // Resume attempt -> 400 (conversation left broken by a pending function call)
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request'
+      });
+      // Fresh-conversation attempt -> success
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-fresh',
+          outputs: [{ type: 'message.output', content: 'New conversation!' }]
+        })
+      });
+
+      const result = await chatAgent.processRequest('Hello', 'christopher');
+
+      expect(result).toHaveLength(1);
+      expect(mockFetch.mock.calls[0][0]).toContain('conv-broken');
+      expect(mockFetch.mock.calls[1][0]).not.toContain('conv-broken');
+      const poisoned = (chatAgent as any).poisonedConversations.get('christopher');
+      expect(poisoned.has('conv-broken')).toBe(true);
     });
 
     it('clears the cache and throws when a fresh conversation 404s (no respawn loop)', async () => {
