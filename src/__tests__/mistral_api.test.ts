@@ -304,12 +304,37 @@ describe('mistral_api', () => {
       });
     });
 
-    it('does not retry the conversation POST, so an ambiguous failure cannot duplicate a conversation/message', async () => {
+    it('does not retry the conversation POST on an ambiguous network failure, so a committed request cannot be duplicated', async () => {
       mockFetch.mockRejectedValue(new Error('socket hang up'));
 
       await expect(
         askAgent({ agentId: 'agent-1', inputs: [{ role: 'user', content: 'hi' }] })
       ).rejects.toThrow('socket hang up');
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries the conversation POST on a transient 503 response, which proves the server rejected the request without committing it', async () => {
+      mockFetch
+        .mockResolvedValueOnce({ ok: false, status: 503 })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ id: 'conv-5', outputs: [{ type: 'message.output', content: 'recovered' }] })
+        });
+
+      const result = await askAgent({ agentId: 'agent-1', inputs: [{ role: 'user', content: 'hi' }] });
+
+      expect(result.outputText).toBe('recovered');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry the conversation POST on a typed 4xx response', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 400 });
+
+      await expect(
+        askAgent({ agentId: 'agent-1', inputs: [{ role: 'user', content: 'hi' }] })
+      ).rejects.toThrow(MistralApiError);
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });

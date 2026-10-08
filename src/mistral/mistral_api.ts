@@ -19,6 +19,13 @@ export interface RetryOptions {
   retries?: number;
   baseMs?: number;
   jitter?: boolean;
+  /**
+   * Only retry typed MistralApiErrors with a retryable HTTP status (429/5xx). Such a response proves
+   * the server rejected the request without processing it, so a re-POST cannot duplicate anything.
+   * Network-style errors (timeouts, socket failures) stay non-retryable because the request may have
+   * been committed; used for non-idempotent POSTs like creating/appending to a conversation.
+   */
+  safeRetry?: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -64,7 +71,10 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
     } catch (error) {
       const isApiError = error instanceof MistralApiError;
       const status = isApiError ? error.status : undefined;
-      const retryable = !isApiError || status === 429 || (typeof status === 'number' && status >= 500);
+      const retryableStatus = status === 429 || (typeof status === 'number' && status >= 500);
+      const retryable = opts?.safeRetry
+        ? isApiError && retryableStatus
+        : !isApiError || retryableStatus;
 
       if (!retryable || attempt >= retries) {
         throw error;
@@ -372,9 +382,11 @@ export async function askAgent(params: {
   const body = conversationId ? { inputs } : { agent_id: agentId, name, inputs };
 
   // Creating a new conversation (or appending a turn to an existing one) is NOT idempotent: a
-  // commit-then-retry would duplicate the conversation or the message. Retrying those is worse than
-  // surfacing the transient failure, so the phase fails and gets reprocessed next night instead.
-  const data = await requestJson('POST', path, AgentCallResponseSchema, body, { retries: 0 });
+  // commit-then-retry would duplicate the conversation or the message. So use safeRetry: only a typed
+  // HTTP error response (429/5xx) is retried -- the server provably rejected the request without
+  // committing it -- while ambiguous network-style failures still fail fast and get reprocessed next
+  // night. Without this, a single transient 503 aborts the whole nightly run.
+  const data = await requestJson('POST', path, AgentCallResponseSchema, body, { safeRetry: true });
   const outputs = data.outputs;
 
   const outputText = outputs
