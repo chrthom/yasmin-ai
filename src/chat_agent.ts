@@ -47,6 +47,7 @@ export class ChatAgent {
   private apiKey: string;
   private agentId: string;
   private conversationCache = new Map<string, CachedConversation>();
+  private poisonedConversations = new Map<string, Set<string>>();
   private userQueues = new Map<string, Promise<unknown>>();
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
@@ -84,13 +85,15 @@ export class ChatAgent {
         throw new Error(`Failed to fetch conversations: HTTP ${response.status}`);
       }
 
+      const poisoned = this.poisonedConversations.get(username);
       const data = await response.json();
       const conversationId = (<MistralConversationMeta[]>data)
         .filter(
           c =>
             c.name == username &&
             c.agent_id == this.agentId &&
-            Date.parse(c.updated_at) > Date.now() - this.conversationTtlMs
+            Date.parse(c.updated_at) > Date.now() - this.conversationTtlMs &&
+            !poisoned?.has(c.id)
         )
         .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at))
         .pop()?.id;
@@ -242,6 +245,9 @@ export class ChatAgent {
         console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
         const isStale = response.status === 400 || response.status === 404;
         if (isStale) {
+          if (conversationId) {
+            this.markConversationPoisoned(username, conversationId);
+          }
           this.conversationCache.delete(username);
           console.log(`INFO Cleared cached conversation for ${username} due to HTTP ${response.status}`);
         }
@@ -410,6 +416,18 @@ export class ChatAgent {
               console.error(
                 `ERROR Mistral API request for tool failed: HTTP ${toolResponse.status} ${toolResponse.statusText}`
               );
+              // A failed tool-result request can leave the conversation in a broken state (pending
+              // function call) that rejects all further turns with HTTP 400. Poison it so it is never
+              // re-selected, and respawn the user's message once in a fresh conversation.
+              this.markConversationPoisoned(username, currentConversationId);
+              this.conversationCache.delete(username);
+              console.log(
+                `INFO Cleared cached conversation for ${username} due to tool request HTTP ${toolResponse.status}`
+              );
+              if (!isRespawn) {
+                console.log(`INFO Respawning a fresh conversation for ${username}`);
+                return this.processRequest(userText, username, shortAnswer, true);
+              }
               throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
             }
 
@@ -430,6 +448,16 @@ export class ChatAgent {
       console.error(`ERROR Failed to process request for ${username}: ${error}`);
       throw error;
     }
+  }
+
+  private markConversationPoisoned(username: string, conversationId: string): void {
+    let poisoned = this.poisonedConversations.get(username);
+    if (!poisoned) {
+      poisoned = new Set<string>();
+      this.poisonedConversations.set(username, poisoned);
+    }
+    poisoned.add(conversationId);
+    console.log(`INFO Marked conversation ${conversationId} as poisoned for ${username}`);
   }
 
   convertMultiPart(outputs: MistralConversationResponseOutput[]): string {
