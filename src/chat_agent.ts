@@ -47,6 +47,7 @@ export class ChatAgent {
   private apiKey: string;
   private agentId: string;
   private conversationCache = new Map<string, CachedConversation>();
+  private userQueues = new Map<string, Promise<unknown>>();
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
 
@@ -114,7 +115,21 @@ export class ChatAgent {
     }
   }
 
-  async processRequest(
+  processRequest(
+    userText: string,
+    username: string,
+    shortAnswer: boolean = false
+  ): Promise<MistralConversationResponseOutput[]> {
+    const previous = this.userQueues.get(username) || Promise.resolve();
+    const run = previous.then(() => this.processRequestInternal(userText, username, shortAnswer, false));
+    this.userQueues.set(
+      username,
+      run.catch(() => undefined)
+    );
+    return run;
+  }
+
+  private async processRequestInternal(
     userText: string,
     username: string,
     shortAnswer: boolean = false,
@@ -235,7 +250,7 @@ export class ChatAgent {
         // isRespawn guards against looping if the freshly created conversation also fails.
         if (isStale && conversationId && !isRespawn) {
           console.log(`INFO Respawning a fresh conversation for ${username}`);
-          return this.processRequest(userText, username, shortAnswer, true);
+          return this.processRequestInternal(userText, username, shortAnswer, true);
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
