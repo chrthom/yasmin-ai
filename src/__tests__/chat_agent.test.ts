@@ -328,12 +328,12 @@ describe('ChatAgent', () => {
         statusText: 'OK',
         json: () => Promise.resolve(mockResponse)
       });
-      // Simulate an exhausted session: maxTurnsPerSession default is 80
+      // Simulate an exhausted session: maxTurnsPerSession default is 50
       chatAgent['conversationCache'].set('testuser', {
         conversationId: 'conv-old',
         expiresAt: Date.now() + 60_000,
         loadedContextTitles: ['Profile of testuser'],
-        turnCount: 80
+        turnCount: 50
       });
       const result = await chatAgent.processRequest('Hello', 'testuser');
       expect(result).toEqual(mockResponse.outputs);
