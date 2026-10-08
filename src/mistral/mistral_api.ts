@@ -72,9 +72,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
       const isApiError = error instanceof MistralApiError;
       const status = isApiError ? error.status : undefined;
       const retryableStatus = status === 429 || (typeof status === 'number' && status >= 500);
-      const retryable = opts?.safeRetry
-        ? isApiError && retryableStatus
-        : !isApiError || retryableStatus;
+      const retryable = opts?.safeRetry ? isApiError && retryableStatus : !isApiError || retryableStatus;
 
       if (!retryable || attempt >= retries) {
         throw error;

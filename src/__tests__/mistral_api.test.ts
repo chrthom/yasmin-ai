@@ -315,13 +315,11 @@ describe('mistral_api', () => {
     });
 
     it('retries the conversation POST on a transient 503 response, which proves the server rejected the request without committing it', async () => {
-      mockFetch
-        .mockResolvedValueOnce({ ok: false, status: 503 })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({ id: 'conv-5', outputs: [{ type: 'message.output', content: 'recovered' }] })
-        });
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 503 }).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: 'conv-5', outputs: [{ type: 'message.output', content: 'recovered' }] })
+      });
 
       const result = await askAgent({ agentId: 'agent-1', inputs: [{ role: 'user', content: 'hi' }] });
 
