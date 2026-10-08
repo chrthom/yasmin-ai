@@ -149,6 +149,11 @@ export class ChatAgent {
         promptContent = `${promptContent}\n\nYour answer must be shorter than 1500 characters.`;
       }
 
+      // Keep tool usage within the model's completion token budget: batch-rewriting many long
+      // context entries in a single turn exhausts the budget during reasoning, so the turn ends
+      // with no text part at all.
+      promptContent = `${promptContent}\n\nWhen updating context entries: update at most two entries per turn and keep each entry's content concise. Do not plan or draft full entry contents in your visible reasoning; emit tool calls directly.`;
+
       // Track newly loaded titles to avoid duplicates on future turns
       if (newlyLoadedTitles.length > 0) {
         cached.loadedContextTitles.push(...newlyLoadedTitles);
