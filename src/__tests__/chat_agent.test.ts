@@ -65,6 +65,21 @@ describe('ChatAgent', () => {
 
       expect(promptContent).toContain('Your answer must be shorter than 1500 characters');
     });
+
+    it('should include memory update guidance in every prompt', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ outputs: [] })
+      });
+      await chatAgent.processRequest('Hello', 'anjali', false);
+      const fetchArgs = mockFetch.mock.calls[0];
+      const body = JSON.parse(fetchArgs[1].body);
+      const promptContent = body.inputs[0].content;
+
+      expect(promptContent).toContain('update at most two entries per turn');
+    });
   });
 
   describe('getActiveConversationId', () => {
