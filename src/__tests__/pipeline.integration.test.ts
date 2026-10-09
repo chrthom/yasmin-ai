@@ -980,7 +980,7 @@ describe('nightly pipeline integration', () => {
     expect(mockClearPendingNotes).not.toHaveBeenCalled();
   });
 
-  it('outbox: a failed note read does not fail the run (consolidation continues on journals alone)', async () => {
+  it('outbox: a failed note read does not fail the run, and the outbox is NOT cleared (notes stay for tomorrow)', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
@@ -988,5 +988,34 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
     expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), []);
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+  });
+
+  it('outbox: is NOT emptied when the integrate loop hit maxIterations (notes may be unconsolidated)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'staged', iterations: 15 });
+    const result = await runNightlyPipeline();
+    // integrateTruncated itself already degrades the run to 'partial'
+    expect(result.status).toBe('partial');
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+  });
+
+  it('outbox: clearing deletes only up to the snapshot max id, never younger concurrently inserted notes', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockClearPendingNotes).toHaveBeenCalledWith(5);
   });
 });

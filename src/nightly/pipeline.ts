@@ -258,15 +258,23 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // evidence so a message that never reached its recipient still survives in long-term
     // memory. A failed read must not fail the run -- consolidation continues on journals alone.
     let undeliveredNotes: PendingNote[] = [];
+    // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
+    // never a note the live agent staged after the snapshot while the review loop was running.
+    let notesSnapshotMaxId = 0;
+    let notesConsolidated = true;
     try {
       undeliveredNotes = await getUnconsolidatedNotes();
+      notesSnapshotMaxId = undeliveredNotes.reduce((max, note) => Math.max(max, note.id), 0);
       if (undeliveredNotes.length > 0) {
         console.log(
           'INFO Feeding ' + undeliveredNotes.length + ' undelivered pending note(s) to the integrate agent'
         );
       }
     } catch (error) {
+      // The notes themselves were never consolidated here, so phase 6.5 must NOT delete them;
+      // they stay in the outbox and are included again tomorrow.
       console.error('ERROR Failed to load undelivered pending notes; continuing without them: ' + error);
+      notesConsolidated = false;
     }
     const integrateResult = await runIntegrate(executeIntegrateTool, undeliveredNotes);
     // Scratch conversation of the nightly agent; journal/review/compact calls use store:false instead.
@@ -284,10 +292,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           config.nightly.maxIterations +
           '); staged updates for this run may be incomplete'
       );
+      // A truncated integrate may never have processed the pending-note evidence, so the notes
+      // must survive for the next nightly run rather than be deleted unconsolidated.
+      notesConsolidated = false;
     }
     const stagedUpdates: StagedUpdate[] = getStagedUpdates();
     await updateJobLog(jobId, { lastCompletedPhase: '3-integrate' });
-    let notesConsolidated = true;
 
     // -----------------------------------------------------------------------
     // Phase 4 -- Review + Archive
@@ -562,8 +572,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // (e.g. a failed upload) may still empty the outbox.
     if (notesConsolidated) {
       try {
-        await clearPendingNotes();
-        console.log('INFO Cleared the pending_notes outbox after successful consolidation');
+        await clearPendingNotes(notesSnapshotMaxId);
+        console.log(
+          'INFO Cleared the pending_notes outbox (notes up to #' +
+            notesSnapshotMaxId +
+            ') after successful consolidation'
+        );
       } catch (error) {
         console.error('ERROR Failed to clear the pending_notes outbox: ' + error);
       }

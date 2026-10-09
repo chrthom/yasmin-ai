@@ -1020,6 +1020,104 @@ describe('ChatAgent', () => {
       expect(body.inputs[0].content).not.toContain('<nachrichten_fuer_dich>');
     });
 
+    it('passes claimed notes through to the respawned conversation (notes are not lost on 404)', async () => {
+      jest
+        .spyOn(chatAgent as any, 'getActiveConversationId')
+        .mockResolvedValueOnce('conv-stale')
+        .mockResolvedValue(undefined);
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 3, fromUsername: 'anjali', content: 'Dinner at 7' }
+      ]);
+      // Resume attempt -> 404 (conversation deleted by the nightly job)
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found'
+      });
+      // Fresh-conversation attempt -> success
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-fresh',
+          outputs: [{ type: 'message.output', content: 'Ok!' }]
+        })
+      });
+      (chatAgent as any).conversationCache.set('zara', {
+        conversationId: 'conv-stale',
+        expiresAt: Date.now() + 100000,
+        loadedContextTitles: [],
+        turnCount: 0
+      });
+      const result = await chatAgent.processRequest('Hello', 'zara');
+      expect(result).toHaveLength(1);
+      // The respawned prompt carries the already-claimed notes block...
+      const respawnBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+      expect(respawnBody.inputs[0].content).toContain('<nachrichten_fuer_dich>');
+      expect(respawnBody.inputs[0].content).toContain('Anjali wants me to tell you: Dinner at 7');
+      // ...and the notes were claimed exactly once, never re-claimed on the respawn
+      expect(mockClaimNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockGetUndeliveredNotesForUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes claimed notes through when the respawn is triggered by a failed tool request', async () => {
+      jest
+        .spyOn(chatAgent as any, 'getActiveConversationId')
+        .mockResolvedValueOnce('conv-tool')
+        .mockResolvedValue(undefined);
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 4, fromUsername: 'christopher', content: 'Call me' }
+      ]);
+      // First turn -> a tool call
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-tool',
+          outputs: [
+            {
+              type: 'message.tool_calls',
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  function: { name: 'read_context_entry', arguments: '{"title":"Family notes"}' }
+                }
+              ]
+            }
+          ]
+        })
+      });
+      // Tool-result request -> 400 (broken conversation)
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request'
+      });
+      // Fresh-conversation respawn -> success
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          conversation_id: 'conv-fresh',
+          outputs: [{ type: 'message.output', content: 'Done' }]
+        })
+      });
+      (chatAgent as any).conversationCache.set('zara', {
+        conversationId: 'conv-tool',
+        expiresAt: Date.now() + 100000,
+        loadedContextTitles: [],
+        turnCount: 0
+      });
+      const result = await chatAgent.processRequest('Hello', 'zara');
+      expect(result).toHaveLength(1);
+      const respawnBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+      expect(respawnBody.inputs[0].content).toContain('Christopher wants me to tell you: Call me');
+      expect(mockClaimNoteDelivery).toHaveBeenCalledTimes(1);
+    });
+
     it('keeps the chat working when the outbox read fails (note stays pending)', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
       mockGetUndeliveredNotesForUser.mockRejectedValue(new Error('db down'));

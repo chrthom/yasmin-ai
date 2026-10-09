@@ -236,7 +236,11 @@ export class ChatAgent {
     username: string,
     shortAnswer: boolean = false,
     isRespawn: boolean = false,
-    handoffFrom?: string
+    handoffFrom?: string,
+    // Notes already claimed (and therefore marked delivered) for this input. The respawn path
+    // passes them through: a respawn re-builds the prompt for the SAME input, so the notes must
+    // ride along again -- getUndeliveredNotesForUser no longer returns them once claimed.
+    claimedNotesBlock?: string
   ): Promise<MistralConversationResponseOutput[]> {
     try {
       let conversationId = await this.getActiveConversationId(username);
@@ -288,8 +292,10 @@ export class ChatAgent {
         !conversationId && handoffFrom ? await this.resolveHandoff(username, handoffFrom) : undefined;
 
       // Real-time outbox delivery: notes other people asked to pass to this user travel with
-      // their next input, so a session that is already 20 turns old still receives them.
-      const notesBlock = await this.deliverPendingNotes(username);
+      // their next input, so a session that is already 20 turns old still receives them. On a
+      // respawn the notes were already claimed for this input and are passed through instead
+      // (claiming again would silently drop them -- see processRequestInternal's respawn paths).
+      const notesBlock = isRespawn ? claimedNotesBlock : await this.deliverPendingNotes(username);
       // Prepend dynamic XML context (and handoff) to user text if present
       let promptContent = userText;
       if (handoffBlock) {
@@ -351,7 +357,14 @@ export class ChatAgent {
         // isRespawn guards against looping if the freshly created conversation also fails.
         if (isStale && conversationId && !isRespawn) {
           console.log(`INFO Respawning a fresh conversation for ${username}`);
-          return this.processRequestInternal(userText, username, shortAnswer, true, conversationId);
+          return this.processRequestInternal(
+            userText,
+            username,
+            shortAnswer,
+            true,
+            conversationId,
+            notesBlock
+          );
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
@@ -513,7 +526,8 @@ export class ChatAgent {
                   username,
                   shortAnswer,
                   true,
-                  currentConversationId
+                  currentConversationId,
+                  notesBlock
                 );
               }
               throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);

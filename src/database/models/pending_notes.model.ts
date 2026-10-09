@@ -8,6 +8,14 @@ export interface PendingNote {
   createdAt: Date;
 }
 
+interface PendingNoteRow {
+  id: number;
+  from_username: string;
+  to_username: string | null;
+  content: string;
+  created_at: Date;
+}
+
 export interface PendingNoteForDelivery {
   id: number;
   fromUsername: string;
@@ -17,7 +25,7 @@ export interface PendingNoteForDelivery {
 /**
  * Maps a raw snake_case DB row into a camelCase PendingNote
  */
-function mapRow(row: any): PendingNote {
+function mapRow(row: PendingNoteRow): PendingNote {
   return {
     id: row.id,
     fromUsername: row.from_username,
@@ -101,14 +109,17 @@ export async function claimNoteDelivery(noteId: number, username: string): Promi
  */
 export async function getUnconsolidatedNotes(): Promise<PendingNote[]> {
   const [rows]: any = await executeQuery('SELECT * FROM pending_notes WHERE delivered_at IS NULL');
-  return rows.map(mapRow);
+  return (rows as PendingNoteRow[]).map(mapRow);
 }
 
 /**
- * Empties the outbox after a successful nightly consolidation. Deliberately a plain
- * DELETE without WHERE (no TRUNCATE -- it needs DROP privileges and its implicit commit
- * breaks transaction logic), so a cleanly defined daily cycle starts on an empty outbox.
+ * Empties the outbox after a successful nightly consolidation, up to the snapshot's max note
+ * id. Deliberately a plain DELETE (no TRUNCATE -- it needs DROP privileges and its implicit
+ * commit breaks transaction logic). The id bound closes the race with the unconditional
+ * delete: a note inserted after the consolidation snapshot was taken (e.g. while the review
+ * loop was still running) is NOT deleted -- it is still undelivered and unconsolidated, so
+ * it stays for the next nightly run.
  */
-export async function clearPendingNotes(): Promise<void> {
-  await executeQuery('DELETE FROM pending_notes');
+export async function clearPendingNotes(maxId: number): Promise<void> {
+  await executeQuery('DELETE FROM pending_notes WHERE id <= ?', [maxId]);
 }

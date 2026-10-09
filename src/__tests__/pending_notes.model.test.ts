@@ -135,12 +135,12 @@ describe('pending_notes.model', () => {
   });
 
   describe('clearPendingNotes', () => {
-    it('empties the table with a plain DELETE, no WHERE, no TRUNCATE', async () => {
+    it('empties only notes up to the snapshot max id (never younger, concurrently inserted ones)', async () => {
       mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 4 }]);
-      await clearPendingNotes();
+      await clearPendingNotes(17);
       const [sql, params] = mockExecuteQuery.mock.calls[0];
-      expect(sql).toBe('DELETE FROM pending_notes');
-      expect(params).toBeUndefined();
+      expect(sql).toBe('DELETE FROM pending_notes WHERE id <= ?');
+      expect(params).toEqual([17]);
     });
   });
 });
