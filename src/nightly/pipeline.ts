@@ -200,10 +200,6 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       conversations = filtered.map(c => ({ id: c.id, name: c.name || c.id }));
     }
 
-    // KNOWN GAP: the nightly agent's own scratch conversations (journal/integrate/review calls
-    // below) are not currently cleaned up -- each is a short-lived one-shot or short tool-loop
-    // conversation; revisit if Mistral conversation volume becomes a concern.
-
     // -----------------------------------------------------------------------
     // Phase 2 -- Journal
     // -----------------------------------------------------------------------
@@ -254,6 +250,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
     // -----------------------------------------------------------------------
     const integrateResult = await runIntegrate(executeIntegrateTool);
+    // Scratch conversation of the nightly agent; journal/review/compact calls use store:false instead.
+    if (integrateResult.conversationId) {
+      await deleteConversation(integrateResult.conversationId).catch(error =>
+        console.warn(
+          'WARN Failed to delete integrate conversation ' + integrateResult.conversationId + ': ' + error
+        )
+      );
+    }
     const integrateTruncated = integrateResult.iterations >= config.nightly.maxIterations;
     if (integrateTruncated) {
       console.warn(

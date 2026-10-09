@@ -144,7 +144,8 @@ export async function runJournal(userName: string, transcript: string): Promise<
   let text = (
     await askAgent({
       agentId: config.mistral.nightlyAgentId,
-      inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }]
+      inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
+      store: false
     })
   ).outputText.trim();
 
@@ -163,7 +164,8 @@ export async function runJournal(userName: string, transcript: string): Promise<
             journalPrompt(userName, transcript) +
             '\n\nYour previous answer was empty. Write the journal entry now.'
         }
-      ]
+      ],
+      store: false
     });
     text = retry.outputText.trim();
     if (text.length === 0) {
@@ -182,7 +184,8 @@ export async function runJournal(userName: string, transcript: string): Promise<
     ' characters, keeping only the most important points.';
   const second = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: tighterPrompt }]
+    inputs: [{ role: 'user', content: tighterPrompt }],
+    store: false
   });
   text = second.outputText.trim();
 
@@ -278,11 +281,13 @@ export function integratePrompt(): string {
 }
 
 /**
- * Runs the Phase-3 tool loop; the caller reads back what was staged via tools.ts's getStagedUpdates()
+ * Runs the Phase-3 tool loop; the caller reads back what was staged via tools.ts's getStagedUpdates().
+ * The conversation must stay stored (the loop continues it turn by turn), so the caller deletes the
+ * returned conversationId once it is done.
  */
 export async function runIntegrate(
   executeTool: (name: string, args: Record<string, unknown>) => Promise<string>
-): Promise<{ finalText: string; iterations: number }> {
+): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
     initialInputs: [{ role: 'user', content: integratePrompt() }],
@@ -290,7 +295,11 @@ export async function runIntegrate(
     executeTool
   });
 
-  return { finalText: result.finalText, iterations: result.iterations };
+  return {
+    finalText: result.finalText,
+    iterations: result.iterations,
+    conversationId: result.conversationId
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +407,8 @@ export async function runReview(
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals, attempt) }]
+    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals, attempt) }],
+    store: false
   });
 
   try {
@@ -620,7 +630,8 @@ export async function runCompact(
 
   const first = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: compactPrompt(kind, personName, strippedContent) }]
+    inputs: [{ role: 'user', content: compactPrompt(kind, personName, strippedContent) }],
+    store: false
   });
   let text = first.outputText.trim();
   if (!isOverCap(text, cap)) {
@@ -634,7 +645,8 @@ export async function runCompact(
     ' character limit -- cut it down further, keep only what is essential.';
   const second = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: tighterPrompt }]
+    inputs: [{ role: 'user', content: tighterPrompt }],
+    store: false
   });
   text = second.outputText.trim();
 

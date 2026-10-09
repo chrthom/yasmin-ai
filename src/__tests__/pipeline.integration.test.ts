@@ -279,7 +279,7 @@ describe('nightly pipeline integration', () => {
 
     mockBuildTranscript.mockReturnValue('transcript');
     mockRunJournal.mockResolvedValue('journal text');
-    mockRunIntegrate.mockResolvedValue({ finalText: '', iterations: 0 });
+    mockRunIntegrate.mockResolvedValue({ finalText: '', iterations: 0, conversationId: '' });
     mockRunReview.mockResolvedValue({ approved: true, reason: '' });
     // Default: a revision that leaves content unchanged (no conversation to clean up); tests override.
     mockReviseProposal.mockImplementation(async (_update: any, _current: any, rejected: any) => ({
@@ -287,6 +287,21 @@ describe('nightly pipeline integration', () => {
       conversationId: undefined
     }));
     mockRunCompact.mockResolvedValue('compacted');
+  });
+
+  it('deletes the nightly agent integrate conversation, and a failed delete does not abort the run', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: '', iterations: 1, conversationId: 'integrate-1' });
+    mockDeleteConversation.mockImplementation(async (id: string) => {
+      if (id === 'integrate-1') {
+        throw new Error('boom');
+      }
+    });
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(mockDeleteConversation).toHaveBeenCalledWith('integrate-1');
   });
 
   // -------------------------------------------------------------------------
