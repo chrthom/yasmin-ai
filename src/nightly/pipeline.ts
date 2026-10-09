@@ -281,7 +281,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         let verdict = await runReview(
           { path: update.path, content: proposal, isNew: update.isNew },
           currentContent,
-          todaysJournals
+          todaysJournals,
+          0
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -306,7 +307,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           verdict = await runReview(
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
-            todaysJournals
+            todaysJournals,
+            revisions + 1
           );
           revisions++;
         }
@@ -534,6 +536,39 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // than the job log, which pruneOldJobLogs may delete from.
     if (finalStatus === 'completed') {
       await setWatermark(collectedAt);
+    } else if (skippedIds.length > 0) {
+      // Poison-pill valve: a conversation that fails journaling every night freezes the watermark
+      // forever (see above), so each run re-collects a growing batch while the blocked conversation
+      // never clears. When the watermark has been stalled beyond the configured threshold -- and only
+      // when journal data is actually at stake (skippedIds non-empty; other 'partial' causes like
+      // upload/eager/delete failures are self-healing and re-picked-up independently of the
+      // watermark) -- abandon the stalled window: advance the watermark to now - threshold, bounding
+      // the data loss to the threshold window instead of blocking indefinitely. This is deliberately
+      // loud (ERROR log + errorMessage on the job row) so the abandoned conversation ids stay
+      // auditable, because their content is permanently lost to memory consolidation.
+      const stalledWatermark = await getWatermark();
+      if (stalledWatermark && Date.now() - stalledWatermark.getTime() > config.nightly.watermarkStalenessMs) {
+        const cutoff = new Date(Date.now() - config.nightly.watermarkStalenessMs);
+        const abandoned = skippedIds.join(', ');
+        console.error(
+          'ERROR Watermark stalled since ' +
+            stalledWatermark.toISOString() +
+            ' (> ' +
+            config.nightly.watermarkStalenessMs +
+            'ms) with skipped conversations; advancing watermark to ' +
+            cutoff.toISOString() +
+            ' and abandoning conversation(s): ' +
+            abandoned
+        );
+        try {
+          await updateJobLog(jobId, {
+            errorMessage: 'Watermark staleness threshold exceeded; abandoned conversation(s): ' + abandoned
+          });
+          await setWatermark(cutoff);
+        } catch (advanceError) {
+          console.error('ERROR Failed to advance stalled watermark: ' + advanceError);
+        }
+      }
     }
 
     return { jobId, status: finalStatus, conversationsProcessed, filesUpdated, filesCreated };

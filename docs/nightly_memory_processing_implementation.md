@@ -315,7 +315,7 @@ nightly: {
   lockStaleMs:   2 * 60 * 60 * 1000,
   maxIterations: 15,
   archiveKeepVersions: 10,
-  eagerMaxChars: 2000,
+  eagerMaxChars: 10000,
 }
 ```
 
@@ -440,6 +440,16 @@ scheduler (23:00) → runNightlyPipeline → acquireLock
 ## Appendix B — Error codes handled
 
 `429/5xx` → retry+backoff; `4xx` (non-429) → fail fast; conversation `DELETE 404` → treat as done; DB `ER_GET_CONNECTION_TIMEOUT/ETIMEDOUT` → existing retry (`connection.ts`); lock duplicate → abort or steal-if-stale.
+
+**Watermark staleness cutoff (poison-pill valve):** a `partial` run never advances the watermark, so a
+conversation that fails journaling every night would freeze it indefinitely (each subsequent run
+re-collects a growing batch while the blocked conversation never clears). When the watermark has been
+stalled longer than `config.nightly.watermarkStalenessMs` (10 days) **and** the current run actually
+skipped conversations (`skippedIds` non-empty — other `partial` causes like upload/eager/delete
+failures are self-healing and independent of the watermark), the run abandons the stalled window:
+the watermark advances to `now - watermarkStalenessMs`, bounding the data loss to the threshold
+window instead of blocking forever. The abandonment is loud (ERROR log + `errorMessage` on the job
+row listing the abandoned conversation ids) so the permanent loss stays auditable.
 
 ## Appendix C — Feedback triage (`feedback_v3_concept.md`)
 

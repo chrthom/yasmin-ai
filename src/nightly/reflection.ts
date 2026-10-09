@@ -95,10 +95,19 @@ export function journalPrompt(userName: string, transcript: string): string {
     'Focus on meaningful interactions, emotional exchanges, milestones, shared experiences, inside jokes, ' +
     'and any facts or commitments that should be remembered. Also actively look for: opinions or ideas ' +
     userName +
-    ' expressed, personal projects, hobbies, or goals they mentioned, topics they returned to or that echo ' +
-    'something from earlier conversations, moments where they reflected on themselves, and any cues about ' +
+    ' expressed, personal projects, hobbies, or goals they mentioned, topics they came back to more ' +
+    'than once within this conversation, moments where they reflected on themselves, and any cues about ' +
     'how they like to be talked to (tone, humor, directness, formality). Note these explicitly rather than ' +
     'only describing what happened.\n' +
+    'Additionally, record explicitly how ' +
+    userName +
+    ' reacted to Yasmin herself during the conversation -- praise, enthusiasm, agreement, criticism, ' +
+    'correction, complaint, or rejection of what Yasmin said or did, and how Yasmin responded to that ' +
+    'reaction. Also note the overall emotional tone of the exchange and anything it reveals about the ' +
+    'current state of the relationship between ' +
+    userName +
+    " and Yasmin. This is the evidence base for Yasmin's nightly self-reflection, so do not omit it " +
+    'even when the rest of the conversation was unremarkable.\n' +
     'Actively do NOT record: routine, eventless business; one-off instructions that only applied to that ' +
     'moment; transient operational detail; or trivia that will never be referenced again. When in doubt, ' +
     'prefer to leave something out rather than pad the entry.\n' +
@@ -218,7 +227,13 @@ export function integratePrompt(): string {
     'claim, not ground truth. If two different files assert conflicting facts, fix the wrong one rather than ' +
     'leaving both standing.\n' +
     "Apply the same restraint when integrating: skip facts that are now irrelevant to this person's profile, " +
-    'and never keep a stale fact just because it was recorded before.\n\n' +
+    'and never keep a stale fact just because it was recorded before.\n' +
+    "Look beyond single files as well: when today's journals show something that connects TWO OR MORE " +
+    'people -- a shared interest, a common plan, a topic several family members returned to, a change ' +
+    'that affects the whole family -- consolidate that pattern into general/family.md instead of ' +
+    'duplicating it across the individual profiles.\n' +
+    'Budget your tool calls: read only the files you actually intend to update, and stage only files that ' +
+    'genuinely need a change. You do not have unlimited iterations.\n\n' +
     'Remember the file path conventions: ' +
     "people/<name>.md for a person's profile, self-reflection/profile.md for Yasmin's own " +
     'self-profile, and general/family.md for family-wide notes. ' +
@@ -236,7 +251,12 @@ export function integratePrompt(): string {
     'description of how the person themselves speaks; ' +
     'any passage the concerned person would not want casually surfaced to other family members should be ' +
     'wrapped in [PRIVACY:SENSITIVE] / [/PRIVACY:SENSITIVE] markers, each on its own line. Write all ' +
-    'staged file content in German.\n\n' +
+    'staged file content in German.\n' +
+    "In the Yasmin's Intentions section you may go slightly beyond what was literally discussed: " +
+    'alongside concrete follow-ups from the conversation, you may propose one forward-looking idea that fits ' +
+    "the person's known interests and Yasmin's own character -- something she could bring up, ask, or " +
+    'suggest next time. Always phrase such ideas as Yasmin\'s own intention ("I would like to ..."), never as a ' +
+    "fact about the person, and only when today's evidence actually supports it.\n\n" +
     'Once you have staged everything needed, reply with a short plain-text summary of what you staged and ' +
     'make no further tool calls.'
   );
@@ -286,17 +306,35 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
 }
 
 /**
- * Builds the Phase-4 review prompt for a single staged update, given the evidence base
+ * Builds the Phase-4 review prompt for a single staged update, given the evidence base. The attempt
+ * number (0 for the initial review, 1+ for re-reviews after a revision) relaxes the grounding bar: the
+ * first rejection is the only one that may cite weak grounding alone; later attempts must not keep a
+ * proposal stuck on interpretive disagreement, because a revision cannot create evidence that the
+ * journals never contained.
  */
 export function reviewPrompt(
   update: StagedUpdate,
   currentContent: string | null,
-  todaysJournals: JournalEntry[]
+  todaysJournals: JournalEntry[],
+  attempt: number
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
-
+  const groundingRule =
+    attempt === 0
+      ? 'On this first review, apply the full grounding standard: reject if the content invents ' +
+        'facts, events, statements, or outcomes that the evidence above does not support.\n'
+      : 'This proposal has already been revised at least once after an earlier reviewer flagged ' +
+        'its grounding. Do NOT reject it again merely because a statement is interpretive rather ' +
+        'than literally quoted in the journals. Accept interpretive synthesis -- including ' +
+        (update.path === 'self-reflection/profile.md'
+          ? 'personality traits, emotional patterns, and self-image derived from the interactions'
+          : 'recurring-topic and character conclusions drawn from the interactions') +
+        ' -- as long as it does not assert specific events, statements, or outcomes that ' +
+        'contradict or go beyond anything the evidence could plausibly support.\n';
   return (
-    'You are reviewing a proposed long-term memory file update before it is committed.\n\n' +
+    'You are reviewing a proposed long-term memory file update before it is committed.' +
+    (attempt > 0 ? ' (Review attempt ' + (attempt + 1) + ' -- an earlier version was rejected.)' : '') +
+    '\n\n' +
     'Proposed new content for ' +
     update.path +
     (update.isNew ? ' (this is a brand-new file)' : '') +
@@ -322,7 +360,12 @@ export function reviewPrompt(
     update.path +
     ' and the path is self-reflection/profile.md, reject it unless it is first person: ' +
     SELF_PROFILE_VOICE_RULE +
-    '\n\n' +
+    '\n' +
+    groundingRule +
+    'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
+    'German), broken file structure (the 7-section person template must stay intact and complete ' +
+    'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
+    'self-reflection/profile.md, or malformed/incomplete output.\n\n' +
     'Reply with STRICTLY a single JSON object of this exact shape and nothing else -- no markdown code ' +
     'fence, no extra prose:\n' +
     '{"approved": boolean, "reason": string}'
@@ -335,11 +378,12 @@ export function reviewPrompt(
 export async function runReview(
   update: StagedUpdate,
   currentContent: string | null,
-  todaysJournals: JournalEntry[]
+  todaysJournals: JournalEntry[],
+  attempt: number
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals) }]
+    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals, attempt) }]
   });
 
   try {
@@ -497,7 +541,9 @@ export function compactPrompt(
 ): string {
   const cap = config.nightly.eagerMaxChars;
   const footer =
-    '\n\nReply with ONLY the compacted content -- no preamble, no explanation of what you did. Write the ' +
+    '\n\nThe character limit is a ceiling, not a target -- never pad or add filler to get closer to it. ' +
+    'Stay as concise as the content allows.\n\n' +
+    'Reply with ONLY the compacted content -- no preamble, no explanation of what you did. Write the ' +
     'compacted content in German.\n\n' +
     'Content to compact:\n' +
     strippedContent;
