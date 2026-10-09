@@ -87,6 +87,37 @@ describe('SynologyClient', () => {
       timestamp
     });
 
+    it('should send the provided token override in the post_list payload', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true, data: { posts: [] } })
+      });
+      await synologyClient.fetchPreviousMessages(5, 2, 10, 'other-integration-token');
+      const call = (global.fetch as jest.Mock).mock.calls[0];
+      const payload = JSON.parse(call[1].body.get('payload'));
+      expect(payload.token).toBe('other-integration-token');
+    });
+
+    it('should default to the client token when no override is given', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true, data: { posts: [] } })
+      });
+      await synologyClient.fetchPreviousMessages(5, 2, 10);
+      const call = (global.fetch as jest.Mock).mock.calls[0];
+      const payload = JSON.parse(call[1].body.get('payload'));
+      expect(payload.token).toBe('test-token');
+    });
+
+    it('should return an empty array for a scalar posts value', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true, data: { posts: 'oops' } })
+      });
+      const posts = await synologyClient.fetchPreviousMessages(5, 2, 10);
+      expect(posts).toEqual([]);
+    });
+
     it('should pass an AbortSignal to fetch so a hung post_list cannot stall the webhook', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -186,6 +217,14 @@ describe('SynologyClient', () => {
     it('should return empty string when everything is filtered out', () => {
       const onlyBot = [{ postId: 1, userId: 99, username: 'yasmin', text: 'hi', timestamp: 100 }];
       expect(synologyClient.formatChannelHistory(onlyBot, 99)).toBe('');
+    });
+
+    it('should filter slash commands with leading whitespace', () => {
+      const result = synologyClient.formatChannelHistory(
+        [{ postId: 1, userId: 1, username: 'a', text: '  /yasmin do something', timestamp: 1 }],
+        99
+      );
+      expect(result).toBe('');
     });
 
     it('should allow filtering with a custom slash prefix', () => {

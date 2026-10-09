@@ -42,13 +42,15 @@ async function fetchChannelHistory(
   channelId: number,
   postId: number,
   botUserId: number,
-  stripPrefix?: string
+  stripPrefix: string | undefined,
+  token: string
 ): Promise<string | undefined> {
   try {
     const posts = await synologyClient.fetchPreviousMessages(
       channelId,
       postId,
-      config.synology.history.prevCount
+      config.synology.history.prevCount,
+      token
     );
     const transcript = synologyClient.formatChannelHistory(posts, botUserId, stripPrefix);
     if (!transcript) return undefined;
@@ -98,7 +100,8 @@ export function createChatController(
           reqBody.channel_id,
           reqBody.post_id,
           config.synology.history.botUserId,
-          options.stripPrefix
+          options.stripPrefix,
+          options.token
         );
       }
       const answer = await processRequest(

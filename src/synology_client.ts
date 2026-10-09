@@ -25,7 +25,12 @@ export class SynologyClient {
       .trim();
   }
 
-  async fetchPreviousMessages(channelId: number, postId: number, prevCount: number): Promise<SynologyPost[]> {
+  async fetchPreviousMessages(
+    channelId: number,
+    postId: number,
+    prevCount: number,
+    token: string = this.token
+  ): Promise<SynologyPost[]> {
     const url = new URL(this.baseUrl);
     url.searchParams.append('api', 'SYNO.Chat.External');
     url.searchParams.append('method', 'post_list');
@@ -36,7 +41,7 @@ export class SynologyClient {
         [
           'payload',
           JSON.stringify({
-            token: this.token,
+            token,
             channel_id: channelId,
             post_id: postId,
             prev_count: prevCount,
@@ -55,7 +60,9 @@ export class SynologyClient {
     const rawPosts = data?.data?.posts || [];
     const posts: Record<string, unknown>[] = Array.isArray(rawPosts)
       ? rawPosts
-      : Object.keys(rawPosts).map(key => ({ ...rawPosts[key], post_id: Number(key) }));
+      : typeof rawPosts === 'object'
+        ? Object.keys(rawPosts).map(key => ({ ...rawPosts[key], post_id: Number(key) }))
+        : [];
     return posts.map(post => ({
       postId: Number(post['post_id']),
       userId: Number(post['user_id']),
@@ -68,7 +75,7 @@ export class SynologyClient {
   formatChannelHistory(posts: SynologyPost[], botUserId: number, slashPrefix?: string): string {
     const prefix = slashPrefix ?? config.synology.history.slashPrefix;
     return posts
-      .filter(post => post.userId !== botUserId && !post.text.startsWith(prefix))
+      .filter(post => post.userId !== botUserId && !post.text.trimStart().startsWith(prefix))
       .sort((a, b) => a.timestamp - b.timestamp)
       .map(post => `${post.username}: ${post.text}`)
       .join('\n');
