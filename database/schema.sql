@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS pending_notes (
     from_username VARCHAR(64) NOT NULL,
     to_username  VARCHAR(64) NULL,      -- NULL = to everyone
     content      VARCHAR(500) NOT NULL,
-    created_at   DATETIME NOT NULL,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     delivered_at DATETIME NULL,          -- set on individual delivery
     delivered_to JSON NULL               -- collected recipients for to_username IS NULL
 );

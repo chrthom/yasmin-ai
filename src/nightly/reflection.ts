@@ -332,10 +332,6 @@ function stripCodeFence(text: string): string {
   return match ? match[1] : text.trim();
 }
 
-/**
- * Formats today's journal entries into the shared evidence block used by the integrate, review and
- * revision prompts.
- */
 /** Formats the still-undelivered pending notes into the integrate evidence block */
 function formatPendingNotesText(notes: PendingNote[]): string {
   return notes
@@ -353,6 +349,10 @@ function formatPendingNotesText(notes: PendingNote[]): string {
     .join('\n\n');
 }
 
+/**
+ * Formats today's journal entries into the shared evidence block used by the integrate, review and
+ * revision prompts.
+ */
 function formatJournalsText(todaysJournals: JournalEntry[]): string {
   return todaysJournals
     .map(entry => '--- Journal entry for ' + entry.userName + ' ---\n' + entry.content)

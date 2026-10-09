@@ -17,6 +17,22 @@ jest.mock('../database/models/pending_notes.model', () => ({
   releaseNoteDelivery: jest.fn()
 }));
 
+// isKnownPerson consults context_entries via the DB proxy; mock only that method so recipient
+// validation is deterministic (the proxy's own path is covered by the database suites), while
+// the read paths (getAllEntries, getContentByTitle, ...) keep their real proxy behavior.
+jest.mock('../database/db_proxy', () => {
+  const actual = jest.requireActual('../database/db_proxy');
+  // Spread the prototype too: DbProxy's methods live on DbProxy.prototype, not on the instance.
+  const merged = Object.create(Object.getPrototypeOf(actual.dbProxy));
+  return {
+    ...actual,
+    dbProxy: Object.assign(merged, actual.dbProxy, { isKnownPerson: jest.fn() })
+  };
+});
+import { dbProxy } from '../database/db_proxy';
+
+const mockIsKnownPerson = dbProxy.isKnownPerson as jest.Mock;
+
 // The handoff talks to Mistral through its own client; it has dedicated tests in handoff.test.ts.
 jest.mock('../handoff', () => ({
   ...jest.requireActual('../handoff'),
@@ -43,6 +59,7 @@ describe('ChatAgent', () => {
     mockClaimNoteDelivery.mockReset().mockResolvedValue(true);
     mockInsertPendingNote.mockReset().mockResolvedValue(1);
     mockReleaseNoteDelivery.mockReset().mockResolvedValue(undefined);
+    mockIsKnownPerson.mockReset().mockResolvedValue(true);
     mockBuildHandoff.mockResolvedValue('<previous_conversation>\nHANDOFF\n</previous_conversation>');
   });
 
@@ -1256,10 +1273,22 @@ describe('ChatAgent', () => {
     });
 
     it('rejects an unknown recipient', async () => {
+      mockIsKnownPerson.mockResolvedValueOnce(false);
       const result = await runShareNote({ to: 'stranger', content: 'hello' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('Unknown recipient');
       expect(mockInsertPendingNote).not.toHaveBeenCalled();
+    });
+
+    it('accepts a recipient whose profile exists only in the database (DB-first lookup)', async () => {
+      // A person the nightly integrate agent created a profile for -- not in the static
+      // proxy data ('Mira' has no PROXY_DATA entry). isKnownPerson must consult
+      // context_entries and recognize them; the mocked true stands in for that DB lookup.
+      mockIsKnownPerson.mockResolvedValueOnce(true);
+      const result = await runShareNote({ to: 'Mira', content: 'Welcome!' });
+      expect(result.success).toBe(true);
+      expect(result.to).toBe('Mira');
+      expect(mockInsertPendingNote).toHaveBeenCalledWith('christopher', 'Mira', 'Welcome!');
     });
 
     it('rejects empty content', async () => {

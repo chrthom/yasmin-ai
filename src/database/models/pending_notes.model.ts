@@ -1,5 +1,16 @@
 import { executeQuery } from '../connection';
 
+/**
+ * Canonical casing for usernames at the outbox boundary. Column comparisons (to_username = ?)
+ * follow the utf8mb4 *_ci collation and are case-insensitive, but the JSON_CONTAINS /
+ * JSON_SEARCH matching on delivered_to compares strings codepoint-sensitively -- without
+ * normalizing, a user appearing once as "Zara" and once as "zara" could receive an
+ * "everyone"-note twice. All delivered_to writes, comparisons and lookups use this form.
+ */
+function canonicalUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
 export interface PendingNote {
   id: number;
   fromUsername: string;
@@ -57,6 +68,7 @@ export async function insertPendingNote(
  * delivered_at is still NULL.
  */
 export async function getUndeliveredNotesForUser(username: string): Promise<PendingNoteForDelivery[]> {
+  const canonical = canonicalUsername(username);
   const [rows]: any = await executeQuery(
     `SELECT id, from_username, content FROM pending_notes
      WHERE from_username != ?
@@ -65,7 +77,7 @@ export async function getUndeliveredNotesForUser(username: string): Promise<Pend
          OR (to_username IS NULL AND NOT JSON_CONTAINS(COALESCE(delivered_to, JSON_ARRAY()), JSON_QUOTE(?)))
        )
      ORDER BY created_at, id`,
-    [username, username, username]
+    [username, username, canonical]
   );
   return rows.map((row: any) => ({
     id: row.id,
@@ -82,6 +94,7 @@ export async function getUndeliveredNotesForUser(username: string): Promise<Pend
  * returns false instead of double-delivering.
  */
 export async function claimNoteDelivery(noteId: number, username: string): Promise<boolean> {
+  const canonical = canonicalUsername(username);
   const [individual]: any = await executeQuery(
     'UPDATE pending_notes SET delivered_at = ? WHERE id = ? AND to_username = ? AND delivered_at IS NULL',
     [new Date(), noteId, username]
@@ -94,7 +107,7 @@ export async function claimNoteDelivery(noteId: number, username: string): Promi
      SET delivered_to = JSON_ARRAY_APPEND(COALESCE(delivered_to, JSON_ARRAY()), '$', JSON_QUOTE(?))
      WHERE id = ? AND to_username IS NULL AND delivered_at IS NULL
        AND NOT JSON_CONTAINS(COALESCE(delivered_to, JSON_ARRAY()), JSON_QUOTE(?))`,
-    [username, noteId, username]
+    [canonical, noteId, canonical]
   );
   return everyone.affectedRows > 0;
 }
@@ -132,6 +145,7 @@ export async function getUnconsolidatedNotes(maxId: number): Promise<PendingNote
  * next input instead of being lost. Best-effort and idempotent.
  */
 export async function releaseNoteDelivery(noteId: number, username: string): Promise<void> {
+  const canonical = canonicalUsername(username);
   const [individual]: any = await executeQuery(
     'UPDATE pending_notes SET delivered_at = NULL WHERE id = ? AND to_username = ?',
     [noteId, username]
@@ -144,7 +158,7 @@ export async function releaseNoteDelivery(noteId: number, username: string): Pro
      SET delivered_to = JSON_REMOVE(delivered_to, JSON_UNQUOTE(JSON_SEARCH(delivered_to, 'one', ?)))
      WHERE id = ? AND to_username IS NULL AND delivered_at IS NULL
        AND JSON_SEARCH(delivered_to, 'one', ?) IS NOT NULL`,
-    [username, noteId, username]
+    [canonical, noteId, canonical]
   );
 }
 

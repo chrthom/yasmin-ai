@@ -4,7 +4,7 @@
   "properties": {
     "to": {
       "type": "string",
-      "description": "Recipient of the note. Either 'everyone' for all family members, or the exact first name of one person (e.g. 'Zara', 'Christopher', 'Anjali', 'Samira', 'Ellena', 'Helge', 'Christine', 'Lennard', 'Jonas')."
+      "description": "Recipient of the note. Either 'everyone' for all family members, or the exact first name of one person whose profile you know (a 'Profile of <name>' memory entry)."
     },
     "content": {
       "type": "string",

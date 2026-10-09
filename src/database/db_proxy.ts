@@ -113,13 +113,26 @@ export class DbProxy {
   }
 
   /**
-   * Checks whether a first name is a known person (or Yasmin herself), via the
-   * canonical "Profile of [name]" entry titles
+   * Checks whether a first name is a known person (or Yasmin herself), via the canonical
+   * "Profile of [name]" entry titles. Consults the real database first (like the other
+   * readers) so people whose profile exists only in context_entries -- e.g. a brand-new
+   * person file the nightly integrate agent created -- are recognized too; falls back to
+   * the static proxy data when the DB is unavailable or disabled.
    */
-  isKnownPerson(name: string): boolean {
+  async isKnownPerson(name: string): Promise<boolean> {
     const sought = name.trim().toLowerCase();
     if (sought.length === 0) {
       return false;
+    }
+    if (this.useRealDb) {
+      try {
+        const titles = await this.getAllTitles();
+        if (titles.some(title => title.toLowerCase() === `profile of ${sought}`)) {
+          return true;
+        }
+      } catch (error) {
+        console.error('Error fetching titles from real DB, falling back to proxy:', error);
+      }
     }
     return PROXY_DATA.some(
       record =>

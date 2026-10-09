@@ -43,6 +43,16 @@ describe('pending_notes.model', () => {
   });
 
   describe('getUndeliveredNotesForUser', () => {
+    it('compares delivered_to entries case-insensitively (canonical lowercase parameter)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([[]]);
+      await getUndeliveredNotesForUser('Zara');
+      const [sql, params] = mockExecuteQuery.mock.calls[0];
+      expect(sql).toContain('JSON_QUOTE(?)');
+      // The JSON_CONTAINS comparison gets the lowercased form; the *_ci column comparisons
+      // keep the raw username.
+      expect(params).toEqual(['Zara', 'Zara', 'zara']);
+    });
+
     it('selects individual and everyone-notes excluding the sender and orders chronologically', async () => {
       mockExecuteQuery.mockResolvedValueOnce([
         [
@@ -84,6 +94,22 @@ describe('pending_notes.model', () => {
       const claimed = await claimNoteDelivery(5, 'zara');
       expect(claimed).toBe(false);
       expect(mockExecuteQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('normalizes the username casing for everyone-notes (same user, two casings, one delivery)', async () => {
+      // First delivery as "Zara": stored lowercased in delivered_to.
+      mockExecuteQuery
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([{ affectedRows: 1 }]);
+      expect(await claimNoteDelivery(9, 'Zara')).toBe(true);
+      const appendParams = mockExecuteQuery.mock.calls[1][1];
+      expect(appendParams).toEqual(['zara', 9, 'zara']);
+      // Second claim for the same user as "zara": the NOT JSON_CONTAINS guard matches the
+      // lowercased stored entry, so the claim loses the race and returns false.
+      mockExecuteQuery
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([{ affectedRows: 0 }]);
+      expect(await claimNoteDelivery(9, 'zara')).toBe(false);
     });
 
     it('claims an everyone-note by appending the recipient to delivered_to', async () => {

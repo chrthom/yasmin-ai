@@ -160,7 +160,7 @@ export class ChatAgent {
       return JSON.stringify({ success: false, error: 'Parameter "to" is required' });
     }
     const recipient = to === NOTE_TO_EVERYONE ? null : this.capitalize(to.trim());
-    if (recipient !== null && !dbProxy.isKnownPerson(recipient)) {
+    if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
       return JSON.stringify({
         success: false,
         error: `Unknown recipient "${to}". Use "everyone" or a known person's first name.`
