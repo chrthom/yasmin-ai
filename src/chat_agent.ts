@@ -207,11 +207,6 @@ export class ChatAgent {
           'technical limits, or this note; just continue naturally.';
       }
 
-      // Keep tool usage within the model's completion token budget: batch-rewriting many long
-      // context entries in a single turn exhausts the budget during reasoning, so the turn ends
-      // with no text part at all.
-      promptContent = `${promptContent}\n\nWhen updating context entries: update at most two entries per turn and keep each entry's content concise. Do not plan or draft full entry contents in your visible reasoning; emit tool calls directly.`;
-
       // Track newly loaded titles to avoid duplicates on future turns
       if (newlyLoadedTitles.length > 0) {
         cached.loadedContextTitles.push(...newlyLoadedTitles);
@@ -327,10 +322,20 @@ export class ChatAgent {
               }
               console.log(`INFO Tool execution: read_context_entry for title "${title}"`);
 
-              const content = await dbProxy.getContentByTitle(title);
-              const resultStr = content
-                ? JSON.stringify({ title, content: content.trim(), found: true })
-                : JSON.stringify({ title, found: false, error: 'Context entry not found' });
+              // Entries already injected into this conversation are still in its history; return a
+              // pointer instead of the full text to save tokens on every subsequent turn.
+              const alreadyLoaded = cached.loadedContextTitles.includes(title);
+              const content = alreadyLoaded ? null : await dbProxy.getContentByTitle(title);
+              const resultStr = alreadyLoaded
+                ? JSON.stringify({
+                    title,
+                    found: true,
+                    already_in_context: true,
+                    note: 'This entry is already in your context above; use that content.'
+                  })
+                : content
+                  ? JSON.stringify({ title, content: content.trim(), found: true })
+                  : JSON.stringify({ title, found: false, error: 'Context entry not found' });
 
               toolInputs.push({
                 type: 'function.result',

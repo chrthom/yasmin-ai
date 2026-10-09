@@ -65,21 +65,6 @@ describe('ChatAgent', () => {
 
       expect(promptContent).toContain('Your answer must be shorter than 1500 characters');
     });
-
-    it('should include memory update guidance in every prompt', async () => {
-      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ outputs: [] })
-      });
-      await chatAgent.processRequest('Hello', 'anjali', false);
-      const fetchArgs = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchArgs[1].body);
-      const promptContent = body.inputs[0].content;
-
-      expect(promptContent).toContain('update at most two entries per turn');
-    });
   });
 
   describe('getActiveConversationId', () => {
@@ -629,6 +614,49 @@ describe('ChatAgent', () => {
       expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-flat-xyz');
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
+    });
+
+    it('read_context_entry returns a pointer, not the full text, for an entry already injected this conversation', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce(undefined);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () =>
+          Promise.resolve({
+            id: 'conv-456',
+            outputs: [
+              {
+                type: 'message.tool_calls',
+                tool_calls: [
+                  {
+                    id: 'call-dup',
+                    type: 'function',
+                    function: { name: 'read_context_entry', arguments: '{"title":"Profile of Christopher"}' }
+                  }
+                ]
+              }
+            ]
+          })
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ id: 'conv-456', outputs: [{ content: 'ok', type: 'message.output' }] })
+      });
+
+      // First turn of a new conversation: the sender's profile is injected as XML context up front.
+      await chatAgent.processRequest('Hello', 'christopher');
+
+      const firstBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(firstBody.inputs[0].content).toContain('title="Profile of Christopher"');
+
+      const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+      const result = JSON.parse(secondBody.inputs[0].result);
+      expect(result.already_in_context).toBe(true);
+      expect(result.content).toBeUndefined();
     });
 
     it('read-only agent (post-cutover): answers a stray update_context_entry tool call with an error result instead of executing it', async () => {
