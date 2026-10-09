@@ -373,11 +373,15 @@ export async function askAgent(params: {
   conversationId?: string;
   name?: string;
   inputs: AgentInput[];
+  /** false = ask Mistral not to persist a new conversation (one-shot calls); ignored when continuing one */
+  store?: boolean;
 }): Promise<AgentCallResult> {
-  const { agentId, conversationId, name, inputs } = params;
+  const { agentId, conversationId, name, inputs, store } = params;
 
   const path = conversationId ? '/conversations/' + conversationId : '/conversations';
-  const body = conversationId ? { inputs } : { agent_id: agentId, name, inputs };
+  const body = conversationId
+    ? { inputs }
+    : { agent_id: agentId, name, inputs, ...(store === undefined ? {} : { store }) };
 
   // Creating a new conversation (or appending a turn to an existing one) is NOT idempotent: a
   // commit-then-retry would duplicate the conversation or the message. So use safeRetry: only a typed

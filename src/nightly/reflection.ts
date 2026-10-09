@@ -12,7 +12,7 @@ export type RawConversationMessage = ConversationMessage;
 
 // Joins the text parts of a single message's content (string, or array of {type, text} parts) --
 // mirrors the same content-shape assumptions as extractOutputText in mistral_api.ts.
-function extractMessageText(content: unknown): string {
+export function extractMessageText(content: unknown): string {
   if (typeof content === 'string') {
     return content;
   }
@@ -26,6 +26,15 @@ function extractMessageText(content: unknown): string {
   return '';
 }
 
+// The live agent seeds a fresh conversation (turn-limit reset or respawn) with a replayed summary and the
+// last few messages of the previous one, wrapped in this block. It is context, not something the user said,
+// and the previous conversation is journaled on its own -- so it must never reach the journal transcript.
+const HANDOFF_BLOCK_RE = /<previous_conversation>[\s\S]*?<\/previous_conversation>\s*/g;
+
+export function stripHandoffBlock(text: string): string {
+  return text.replace(HANDOFF_BLOCK_RE, '').trim();
+}
+
 // Hard ceiling for the journal transcript. The live conversation can carry large internal tool results
 // (e.g. a web_search read of a whole web page), which are low-information for memory yet, if allowed
 // through, would balloon the journal prompt and can cause the journal agent to misbehave or emit nothing.
@@ -33,7 +42,7 @@ const TRANSCRIPT_MAX_CHARS = 20000;
 
 // Internal plumbing isn't conversation content: tool calls, function calls/results (including giant
 // web_search reads), system/service rows and errors should never reach the transcript that feeds memory.
-function isDialogueMessage(message: ConversationMessage): boolean {
+export function isDialogueMessage(message: ConversationMessage): boolean {
   const t = message.type.toLowerCase();
   return !(
     t.includes('tool') ||
@@ -56,7 +65,7 @@ export function buildTranscript(messages: ConversationMessage[]): string {
     if (!isDialogueMessage(message)) {
       continue;
     }
-    const text = extractMessageText(message.content);
+    const text = stripHandoffBlock(extractMessageText(message.content));
     if (text.length === 0) {
       continue;
     }

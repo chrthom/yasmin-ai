@@ -13,13 +13,20 @@ export const config = {
     // (not deleted -- the nightly job still journals it) and the next turn starts a fresh one.
     // The Mistral conversation API exposes no cumulative token count, so turns are the proxy.
     maxTurnsPerSession: parseInt(process.env['MAX_TURNS_PER_SESSION'] || '50', 10),
+    // How many of the previous conversation's last turns (user + assistant) are replayed verbatim into a
+    // fresh conversation, and how long the next turn waits for the background summary before going without.
+    handoffRecentTurns: 3,
+    handoffWaitMs: 5000,
     apiRoot: 'https://api.mistral.ai/v1',
     // Required for every process: the nightly scheduler runs in-process inside app.ts (same Node process
     // as the API server), so MISTRAL_LIBRARY_ID and AGENT_ID_NIGHTLY are always required. validateEnv()
     // enforces them at startup for all processes, so the `!` is safe -- the server refuses to start
     // without them.
     libraryId: process.env['MISTRAL_LIBRARY_ID']!,
-    nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!
+    nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!,
+    // Optional: Mistral agent that summarizes a conversation for the turn-limit/respawn handoff. Without it
+    // the handoff degrades to replaying just the last turns.
+    summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || ''
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',

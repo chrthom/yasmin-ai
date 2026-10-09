@@ -1,4 +1,12 @@
 import { ChatAgent } from '../chat_agent';
+import { buildHandoff } from '../handoff';
+
+// The handoff talks to Mistral through its own client; it has dedicated tests in handoff.test.ts.
+jest.mock('../handoff', () => ({
+  ...jest.requireActual('../handoff'),
+  buildHandoff: jest.fn()
+}));
+const mockBuildHandoff = buildHandoff as jest.Mock;
 
 // Mock fetch
 const mockFetch = jest.fn();
@@ -10,6 +18,8 @@ describe('ChatAgent', () => {
   beforeEach(() => {
     chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
     mockFetch.mockClear();
+    mockBuildHandoff.mockReset();
+    mockBuildHandoff.mockResolvedValue('<previous_conversation>\nHANDOFF\n</previous_conversation>');
   });
 
   describe('capitalize', () => {
@@ -327,11 +337,69 @@ describe('ChatAgent', () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.agent_id).toBe('test-agent-id');
       expect(body.name).toBe('testuser');
-      // Compaction note present, stale loaded titles reset
-      expect(body.inputs[0].content).toContain('previous conversation with this user was just archived');
+      // Handoff block from the old conversation is prepended; stale loaded titles are reset
+      expect(mockBuildHandoff).toHaveBeenCalledWith('conv-old');
+      expect(body.inputs[0].content).toContain('<previous_conversation>\nHANDOFF');
       const cached = chatAgent['conversationCache'].get('testuser')!;
       expect(cached.turnCount).toBe(1);
       expect(cached.loadedContextTitles).not.toContain('Profile of testuser');
+    });
+
+    it('prepares the handoff in the background once the turn that exhausts the budget is answered', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ outputs: [{ content: 'ok', type: 'message.output' }] })
+      });
+      chatAgent['conversationCache'].set('testuser', {
+        conversationId: 'conv-123',
+        expiresAt: Date.now() + 60_000,
+        loadedContextTitles: [],
+        turnCount: 49
+      });
+      await chatAgent.processRequest('Hello', 'testuser');
+      expect(mockBuildHandoff).toHaveBeenCalledTimes(1);
+      expect(mockBuildHandoff).toHaveBeenCalledWith('conv-123');
+      // The next turn starts a fresh conversation and reuses the precomputed handoff (no second build)
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      await chatAgent.processRequest('Next', 'testuser');
+      expect(mockBuildHandoff).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+      expect(body.agent_id).toBe('test-agent-id');
+      expect(body.inputs[0].content).toContain('HANDOFF');
+    });
+
+    it('falls back to the last turns only when the summary is not ready in time', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-old');
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ outputs: [{ content: 'ok', type: 'message.output' }] })
+      });
+      const { config } = jest.requireActual('../config');
+      const original = config.mistral.handoffWaitMs;
+      config.mistral.handoffWaitMs = 20;
+      mockBuildHandoff.mockImplementation((_id: string, opts?: { withSummary: boolean }) =>
+        opts?.withSummary === false
+          ? Promise.resolve('<previous_conversation>\nRECENT ONLY\n</previous_conversation>')
+          : new Promise(() => undefined)
+      );
+      chatAgent['conversationCache'].set('testuser', {
+        conversationId: 'conv-old',
+        expiresAt: Date.now() + 60_000,
+        loadedContextTitles: [],
+        turnCount: 50
+      });
+      try {
+        await chatAgent.processRequest('Hello', 'testuser');
+      } finally {
+        config.mistral.handoffWaitMs = original;
+      }
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.inputs[0].content).toContain('RECENT ONLY');
     });
 
     it('should keep the existing conversation below the turn limit', async () => {
