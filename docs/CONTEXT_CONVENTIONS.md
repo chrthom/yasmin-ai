@@ -152,11 +152,12 @@ nightly pipeline, but has no mapping to a `context_entries` title or the Mistral
 - **Written by:** the nightly job only — every run re-reads that day's conversations, updates the relevant
   verbose files, versions each change in `memory_archive` (MariaDB; the durable source of truth and backup),
   and uploads changed files to the Mistral library.
-- **Read by:** the live conversation agent, via the Mistral library's built-in RAG (semantic search) — no
-  tool call needed, unlike the eager/lazy `context_entries` groups above.
+- **Read by:** the live conversation agent, via the `document_library` tool attached to it in Mistral Studio
+  (semantic search). The model decides when to search; there is no application code for it, unlike the
+  eager/lazy `context_entries` groups above.
 - **Current status:** the library is populated nightly, and the live agent's system prompt (§2.1) tells it
-  that deeper facts and past conversations from earlier days surface automatically from this library — RAG
-  consumption is live. Conversations from the current day are not in it yet.
+  to search this library for deeper facts and past conversations from earlier days. Conversations from the
+  current day are not in it yet.
 - **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. That
   content is stripped before it's compacted into the `context_entries` eager cache, and also stripped before it's ever uploaded to the Mistral library in the first place —
   it never leaves local storage (`memory_archive` keeps the unstripped version for versioning/audit only).

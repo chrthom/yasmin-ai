@@ -97,8 +97,9 @@ The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ev
 - `ContextService`'s eager-loaded set is just `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
   There are no `Session with X` / `Journal with X` entries in the data model.
 - `mistral_config/conversation/system_prompt.txt` tells the agent that deeper facts and conversation history
-  from earlier days surface automatically via the Mistral library's RAG (no tool call needed). Conversations
-  from the current day are not in the library yet.
+  from earlier days can be searched via the agent's attached Mistral library (`document_library` tool; the
+  model decides when to search, no application code involved). Conversations from the current day are not in
+  the library yet.
 
 #### Conversation restarts and the handoff
 
