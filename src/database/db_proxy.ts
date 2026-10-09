@@ -111,6 +111,22 @@ export class DbProxy {
     const found = PROXY_DATA.find(record => record.title.toLowerCase() === title.toLowerCase());
     return found ? found.content : null;
   }
+
+  /**
+   * Checks whether a first name is a known person (or Yasmin herself), via the
+   * canonical "Profile of [name]" entry titles
+   */
+  isKnownPerson(name: string): boolean {
+    const sought = name.trim().toLowerCase();
+    if (sought.length === 0) {
+      return false;
+    }
+    return PROXY_DATA.some(
+      record =>
+        record.title.toLowerCase() === `profile of ${sought}` ||
+        (sought === 'yasmin' && record.title === 'Profile of Yasmin')
+    );
+  }
 }
 
 export const dbProxy = new DbProxy(process.env['NODE_ENV'] !== 'test');

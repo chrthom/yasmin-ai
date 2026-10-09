@@ -1,7 +1,18 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
 import { dbProxy } from './database/db_proxy';
+import {
+  claimNoteDelivery,
+  getUndeliveredNotesForUser,
+  insertPendingNote,
+  PendingNoteForDelivery
+} from './database/models/pending_notes.model';
 import { buildHandoff, waitFor } from './handoff';
+
+// The live agent is the only filter between sender and recipient (no nightly reviewer sits in
+// between), so the share_note tool validates as strictly as stage_update does on the nightly side.
+const NOTE_CONTENT_MAX_CHARS = 500;
+const NOTE_TO_EVERYONE = 'everyone';
 
 interface MistralConversationResponseOutputPart {
   type: string;
@@ -66,6 +77,88 @@ export class ChatAgent {
 
   private capitalize(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  /**
+   * Delivers undelivered pending notes to the given user, claiming each note's delivery
+   * atomically right before it is used, so a concurrent duplicate input can never deliver
+   * the same note to the same person twice (the lost UPDATE race returns false and the note
+   * is skipped). Returns the formatted <nachrichten_fuer_dich> block, or undefined if there
+   * is nothing to deliver. A failed outbox read must not break the chat -- the notes simply
+   * stay pending and are delivered with the next input.
+   */
+  private async deliverPendingNotes(username: string): Promise<string | undefined> {
+    let notes: PendingNoteForDelivery[];
+    try {
+      notes = await getUndeliveredNotesForUser(username);
+    } catch (error) {
+      console.error(`ERROR Failed to load pending notes for ${username}: ${error}`);
+      return undefined;
+    }
+    if (notes.length === 0) {
+      return undefined;
+    }
+    const claimed: PendingNoteForDelivery[] = [];
+    for (const note of notes) {
+      try {
+        if (await claimNoteDelivery(note.id, username)) {
+          claimed.push(note);
+        }
+      } catch (error) {
+        console.error(`ERROR Failed to claim delivery of note ${note.id} for ${username}: ${error}`);
+      }
+    }
+    if (claimed.length === 0) {
+      return undefined;
+    }
+    console.log(
+      `INFO Delivering ${claimed.length} pending note(s) to ${username}: ` +
+        claimed.map(n => `#${n.id} from ${n.fromUsername}`).join(', ')
+    );
+    const lines = claimed.map(
+      note => `${this.capitalize(note.fromUsername)} wants me to tell you: ${note.content}`
+    );
+    return `<nachrichten_fuer_dich>\n${lines.join('\n')}\n</nachrichten_fuer_dich>`;
+  }
+
+  /**
+   * Executes the live agent's share_note tool: validates the recipient and content, then
+   * writes the note to the pending_notes outbox. The note is delivered with the recipient's
+   * next user input; the nightly pipeline consolidates anything still undelivered.
+   */
+  private async shareNote(username: string, to: unknown, content: unknown): Promise<string> {
+    if (typeof to !== 'string' || to.length === 0) {
+      return JSON.stringify({ success: false, error: 'Parameter "to" is required' });
+    }
+    const recipient = to === NOTE_TO_EVERYONE ? null : this.capitalize(to.trim());
+    if (recipient !== null && !dbProxy.isKnownPerson(recipient)) {
+      return JSON.stringify({
+        success: false,
+        error: `Unknown recipient "${to}". Use "everyone" or a known person's first name.`
+      });
+    }
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      return JSON.stringify({ success: false, error: 'Content must be a non-empty message' });
+    }
+    if (content.length > NOTE_CONTENT_MAX_CHARS) {
+      return JSON.stringify({
+        success: false,
+        error: `Content exceeds the ${NOTE_CONTENT_MAX_CHARS} character cap (${content.length} characters)`
+      });
+    }
+    try {
+      const id = await insertPendingNote(username, recipient, content.trim());
+      console.log(`INFO Staged pending note #${id} from ${username} to ${recipient ?? 'everyone'}`);
+      return JSON.stringify({
+        success: true,
+        id,
+        to: recipient ?? 'everyone',
+        delivery: "The note will be delivered with the recipient's next message."
+      });
+    } catch (error) {
+      console.error(`ERROR Failed to store pending note from ${username}: ${error}`);
+      return JSON.stringify({ success: false, error: 'Failed to store the note' });
+    }
   }
 
   private async getActiveConversationId(username: string): Promise<string | undefined> {
@@ -194,10 +287,16 @@ export class ChatAgent {
       const handoffBlock =
         !conversationId && handoffFrom ? await this.resolveHandoff(username, handoffFrom) : undefined;
 
+      // Real-time outbox delivery: notes other people asked to pass to this user travel with
+      // their next input, so a session that is already 20 turns old still receives them.
+      const notesBlock = await this.deliverPendingNotes(username);
       // Prepend dynamic XML context (and handoff) to user text if present
       let promptContent = userText;
       if (handoffBlock) {
         promptContent = `${handoffBlock}\n\n${promptContent}`;
+      }
+      if (notesBlock) {
+        promptContent = `${notesBlock}\n\n${promptContent}`;
       }
       if (formattedContext) {
         promptContent = `${formattedContext}\n\n${promptContent}`;
@@ -338,6 +437,20 @@ export class ChatAgent {
                   ? JSON.stringify({ title, content: content.trim(), found: true })
                   : JSON.stringify({ title, found: false, error: 'Context entry not found' });
 
+              toolInputs.push({
+                type: 'function.result',
+                tool_call_id: call.id,
+                result: resultStr
+              });
+            } else if (call.name === 'share_note') {
+              let args: any = {};
+              try {
+                args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
+              } catch (e) {
+                console.error(`ERROR Failed to parse share_note arguments: ${e}`);
+              }
+              console.log(`INFO Tool execution: share_note to "${String(args.to)}" for ${username}`);
+              const resultStr = await this.shareNote(username, args.to, args.content);
               toolInputs.push({
                 type: 'function.result',
                 tool_call_id: call.id,

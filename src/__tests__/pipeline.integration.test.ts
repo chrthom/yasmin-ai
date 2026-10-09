@@ -54,6 +54,10 @@ jest.mock('../database/models/memory_archive.model', () => ({
 jest.mock('../database/models/context.model', () => ({
   upsertContextEntry: jest.fn()
 }));
+jest.mock('../database/models/pending_notes.model', () => ({
+  getUnconsolidatedNotes: jest.fn(),
+  clearPendingNotes: jest.fn()
+}));
 
 jest.mock('../nightly/reflection', () => ({
   buildTranscript: jest.fn(),
@@ -98,6 +102,7 @@ import {
   pruneOldVersions
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
+import { clearPendingNotes, getUnconsolidatedNotes } from '../database/models/pending_notes.model';
 import {
   buildTranscript,
   runCompact,
@@ -134,6 +139,8 @@ const mockMarkSynced = markSynced as jest.Mock;
 const mockPruneOldVersions = pruneOldVersions as jest.Mock;
 
 const mockUpsertContextEntry = upsertContextEntry as jest.Mock;
+const mockGetUnconsolidatedNotes = getUnconsolidatedNotes as jest.Mock;
+const mockClearPendingNotes = clearPendingNotes as jest.Mock;
 
 const mockBuildTranscript = buildTranscript as jest.Mock;
 const mockRunJournal = runJournal as jest.Mock;
@@ -269,6 +276,8 @@ describe('nightly pipeline integration', () => {
     mockSetWatermark.mockResolvedValue(undefined);
 
     mockUpsertContextEntry.mockResolvedValue('updated');
+    mockGetUnconsolidatedNotes.mockResolvedValue([]);
+    mockClearPendingNotes.mockResolvedValue(undefined);
 
     mockListConversations.mockResolvedValue([]);
     mockGetConversationMessages.mockResolvedValue([]);
@@ -902,5 +911,82 @@ describe('nightly pipeline integration', () => {
     const archived = await archive.getCurrentVersion('people/bob.md');
     expect(archived?.content).toContain('secretly hates broccoli');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Pending-notes outbox (issue #46)
+  // -------------------------------------------------------------------------
+
+  it('outbox: undelivered notes are passed to the integrate agent, then the outbox is emptied', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+  });
+
+  it('outbox: is emptied on a merely partial run (failed upload) because consolidation succeeded', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockListUnsynced.mockImplementationOnce(() => {
+      throw new Error('db read failed');
+    });
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+  });
+
+  it('outbox: is NOT emptied when the review/archive phase failed (notes stay for tomorrow)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile content',
+        isNew: true
+      });
+      return { finalText: 'staged', iterations: 1 };
+    });
+    // The first two getCurrentVersion calls belong to phase 2 (journal check + re-read);
+    // the third is the failing phase-4 archive read of the staged update's current content.
+    mockGetCurrentVersion
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ content: 'Journal about Alice' })
+      .mockImplementationOnce(() => {
+        throw new Error('archive read failed');
+      });
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+  });
+
+  it('outbox: a failed note read does not fail the run (consolidation continues on journals alone)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetUnconsolidatedNotes.mockRejectedValueOnce(new Error('db down'));
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), []);
   });
 });

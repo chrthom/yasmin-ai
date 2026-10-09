@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["to", "content"],
+  "properties": {
+    "to": {
+      "type": "string",
+      "description": "Recipient of the note. Either 'everyone' for all family members, or the exact first name of one person (e.g. 'Zara', 'Christopher', 'Anjali', 'Samira', 'Ellena', 'Helge', 'Christine', 'Lennard', 'Jonas')."
+    },
+    "content": {
+      "type": "string",
+      "description": "The message to relay to that person, phrased as Yasmin (first person). It is delivered with that person's next message, so write it as something to tell them at the next contact, e.g. 'I'm supposed to tell you to be home by 6 pm.' Maximum 500 characters."
+    }
+  }
+}

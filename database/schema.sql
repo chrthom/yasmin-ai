@@ -20,3 +20,19 @@ INSERT INTO context_entries (title, content) VALUES
 -- Family-level entry
 ('Family notes', '')
 ON DUPLICATE KEY UPDATE content = VALUES(content);
+
+-- Outbox for real-time, cross-person notes between live sessions (issue #46).
+-- A note is written by the live agent's share_note tool and delivered -- exactly once per
+-- recipient -- with the recipient's next user input, in the <nachrichten_fuer_dich> block
+-- prepended in src/chat_agent.ts. The nightly pipeline (a) feeds still-undelivered notes to
+-- the integrate agent as evidence and (b) empties the table at the end of a healthy run,
+-- so the outbox holds at most one day of notes.
+CREATE TABLE IF NOT EXISTS pending_notes (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    from_username VARCHAR(64) NOT NULL,
+    to_username  VARCHAR(64) NULL,      -- NULL = to everyone
+    content      VARCHAR(500) NOT NULL,
+    created_at   DATETIME NOT NULL,
+    delivered_at DATETIME NULL,          -- set on individual delivery
+    delivered_to JSON NULL               -- collected recipients for to_username IS NULL
+);
