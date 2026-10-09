@@ -10,6 +10,7 @@ interface ChatControllerOptions {
   responseStatus: number;
   stripPrefix?: string;
   sendToSynology?: boolean;
+  includeChannelHistory?: boolean;
 }
 
 async function processRequest(
@@ -17,15 +18,45 @@ async function processRequest(
   synologyClient: SynologyClient,
   userText: string,
   username: string,
-  shortAnswer: boolean
+  shortAnswer: boolean,
+  channelContext?: string
 ): Promise<string> {
   try {
-    const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
+    let prompt = userText;
+    if (channelContext) {
+      prompt =
+        `${channelContext}\n\n` +
+        'The transcript above shows the recent channel conversation. ' +
+        `Answer the following message from ${username}:\n${userText}`;
+    }
+    const outputs = await chatAgent.processRequest(prompt, username, shortAnswer);
     const text = chatAgent.convertMultiPart(outputs);
     return text ? synologyClient.formatAnswer(text) : '';
   } catch (error) {
     console.error('Error in processRequest:', error);
     throw new Error('Failed to process chat request');
+  }
+}
+
+async function fetchChannelHistory(
+  synologyClient: SynologyClient,
+  logger: ReturnType<typeof createRequestLogger>,
+  channelId: number,
+  postId: number,
+  botUserId: number
+): Promise<string | undefined> {
+  try {
+    const posts = await synologyClient.fetchPreviousMessages(
+      channelId,
+      postId,
+      config.synology.history.prevCount
+    );
+    const transcript = synologyClient.formatChannelHistory(posts, botUserId);
+    if (!transcript) return undefined;
+    return `<channel_history>\n${transcript}\n</channel_history>`;
+  } catch (error) {
+    logger.warn('Failed to fetch channel history; continuing without it', { error });
+    return undefined;
   }
 }
 
@@ -60,12 +91,23 @@ export function createChatController(
       }
 
       const isShortAnswer = options.responseStatus === 200;
+      let channelContext: string | undefined;
+      if (options.includeChannelHistory && reqBody.channel_id && reqBody.post_id) {
+        channelContext = await fetchChannelHistory(
+          synologyClient,
+          logger,
+          reqBody.channel_id,
+          reqBody.post_id,
+          config.synology.history.botUserId
+        );
+      }
       const answer = await processRequest(
         chatAgent,
         synologyClient,
         userText,
         reqBody.username,
-        isShortAnswer
+        isShortAnswer,
+        channelContext
       );
 
       if (options.responseStatus === 200) {
@@ -107,6 +149,7 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.group,
     responseStatus: 200,
-    sendToSynology: false
+    sendToSynology: false,
+    includeChannelHistory: true
   });
 }

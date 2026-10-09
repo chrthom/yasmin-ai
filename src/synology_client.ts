@@ -1,5 +1,13 @@
 import { config } from './config';
 
+export interface SynologyPost {
+  postId: number;
+  userId: number;
+  username: string;
+  text: string;
+  timestamp: number;
+}
+
 export class SynologyClient {
   private baseUrl: string;
   private token: string;
@@ -15,6 +23,53 @@ export class SynologyClient {
       .replaceAll(/\*\*?([^*]+)\*\*?/gm, '$1')
       .replaceAll(/^#+(.*)$/gm, '$1')
       .trim();
+  }
+
+  async fetchPreviousMessages(channelId: number, postId: number, prevCount: number): Promise<SynologyPost[]> {
+    const url = new URL(this.baseUrl);
+    url.searchParams.append('api', 'SYNO.Chat.External');
+    url.searchParams.append('method', 'post_list');
+    url.searchParams.append('version', '2');
+    const response = await fetch(url.toString(), {
+      method: 'post',
+      body: new URLSearchParams([
+        [
+          'payload',
+          JSON.stringify({
+            token: this.token,
+            channel_id: channelId,
+            post_id: postId,
+            prev_count: prevCount,
+            next_count: 0
+          })
+        ]
+      ]),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data: any = await response.json();
+    if (!data?.success) {
+      throw new Error(data?.error?.errors?.[0] || 'post_list request was not successful');
+    }
+    const rawPosts = data?.data?.posts || [];
+    const posts: Record<string, unknown>[] = Array.isArray(rawPosts)
+      ? rawPosts
+      : Object.keys(rawPosts).map(key => ({ ...rawPosts[key], post_id: Number(key) }));
+    return posts.map(post => ({
+      postId: Number(post['post_id']),
+      userId: Number(post['user_id']),
+      username: String(post['username'] || ''),
+      text: String(post['text'] || ''),
+      timestamp: Number(post['timestamp']) || 0
+    }));
+  }
+
+  formatChannelHistory(posts: SynologyPost[], botUserId: number, slashPrefix = '/yasmin'): string {
+    return posts
+      .filter(post => post.userId !== botUserId && !post.text.startsWith(slashPrefix))
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map(post => `${post.username}: ${post.text}`)
+      .join('\n');
   }
 
   chunkText(str: string, maxLength: number = config.chunk.maxLength): string[] {
