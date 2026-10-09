@@ -1,4 +1,12 @@
 import { ChatAgent } from '../chat_agent';
+import { buildHandoff } from '../handoff';
+
+// The handoff talks to Mistral through its own client; it has dedicated tests in handoff.test.ts.
+jest.mock('../handoff', () => ({
+  ...jest.requireActual('../handoff'),
+  buildHandoff: jest.fn()
+}));
+const mockBuildHandoff = buildHandoff as jest.Mock;
 
 // Mock fetch
 const mockFetch = jest.fn();
@@ -10,6 +18,8 @@ describe('ChatAgent', () => {
   beforeEach(() => {
     chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
     mockFetch.mockClear();
+    mockBuildHandoff.mockReset();
+    mockBuildHandoff.mockResolvedValue('<previous_conversation>\nHANDOFF\n</previous_conversation>');
   });
 
   describe('capitalize', () => {
@@ -64,21 +74,6 @@ describe('ChatAgent', () => {
       const promptContent = body.inputs[0].content;
 
       expect(promptContent).toContain('Your answer must be shorter than 1500 characters');
-    });
-
-    it('should include memory update guidance in every prompt', async () => {
-      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ outputs: [] })
-      });
-      await chatAgent.processRequest('Hello', 'anjali', false);
-      const fetchArgs = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchArgs[1].body);
-      const promptContent = body.inputs[0].content;
-
-      expect(promptContent).toContain('update at most two entries per turn');
     });
   });
 
@@ -342,11 +337,69 @@ describe('ChatAgent', () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.agent_id).toBe('test-agent-id');
       expect(body.name).toBe('testuser');
-      // Compaction note present, stale loaded titles reset
-      expect(body.inputs[0].content).toContain('previous conversation with this user was just archived');
+      // Handoff block from the old conversation is prepended; stale loaded titles are reset
+      expect(mockBuildHandoff).toHaveBeenCalledWith('conv-old');
+      expect(body.inputs[0].content).toContain('<previous_conversation>\nHANDOFF');
       const cached = chatAgent['conversationCache'].get('testuser')!;
       expect(cached.turnCount).toBe(1);
       expect(cached.loadedContextTitles).not.toContain('Profile of testuser');
+    });
+
+    it('prepares the handoff in the background once the turn that exhausts the budget is answered', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ outputs: [{ content: 'ok', type: 'message.output' }] })
+      });
+      chatAgent['conversationCache'].set('testuser', {
+        conversationId: 'conv-123',
+        expiresAt: Date.now() + 60_000,
+        loadedContextTitles: [],
+        turnCount: 49
+      });
+      await chatAgent.processRequest('Hello', 'testuser');
+      expect(mockBuildHandoff).toHaveBeenCalledTimes(1);
+      expect(mockBuildHandoff).toHaveBeenCalledWith('conv-123');
+      // The next turn starts a fresh conversation and reuses the precomputed handoff (no second build)
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      await chatAgent.processRequest('Next', 'testuser');
+      expect(mockBuildHandoff).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+      expect(body.agent_id).toBe('test-agent-id');
+      expect(body.inputs[0].content).toContain('HANDOFF');
+    });
+
+    it('falls back to the last turns only when the summary is not ready in time', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-old');
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ outputs: [{ content: 'ok', type: 'message.output' }] })
+      });
+      const { config } = jest.requireActual('../config');
+      const original = config.mistral.handoffWaitMs;
+      config.mistral.handoffWaitMs = 20;
+      mockBuildHandoff.mockImplementation((_id: string, opts?: { withSummary: boolean }) =>
+        opts?.withSummary === false
+          ? Promise.resolve('<previous_conversation>\nRECENT ONLY\n</previous_conversation>')
+          : new Promise(() => undefined)
+      );
+      chatAgent['conversationCache'].set('testuser', {
+        conversationId: 'conv-old',
+        expiresAt: Date.now() + 60_000,
+        loadedContextTitles: [],
+        turnCount: 50
+      });
+      try {
+        await chatAgent.processRequest('Hello', 'testuser');
+      } finally {
+        config.mistral.handoffWaitMs = original;
+      }
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.inputs[0].content).toContain('RECENT ONLY');
     });
 
     it('should keep the existing conversation below the turn limit', async () => {
@@ -631,29 +684,67 @@ describe('ChatAgent', () => {
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
     });
 
-    it('should handle update_context_entry tool call and return success result', async () => {
+    it('read_context_entry returns a pointer, not the full text, for an entry already injected this conversation', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce(undefined);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () =>
+          Promise.resolve({
+            id: 'conv-456',
+            outputs: [
+              {
+                type: 'message.tool_calls',
+                tool_calls: [
+                  {
+                    id: 'call-dup',
+                    type: 'function',
+                    function: { name: 'read_context_entry', arguments: '{"title":"Profile of Christopher"}' }
+                  }
+                ]
+              }
+            ]
+          })
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ id: 'conv-456', outputs: [{ content: 'ok', type: 'message.output' }] })
+      });
+
+      // First turn of a new conversation: the sender's profile is injected as XML context up front.
+      await chatAgent.processRequest('Hello', 'christopher');
+
+      const firstBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(firstBody.inputs[0].content).toContain('title="Profile of Christopher"');
+
+      const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+      const result = JSON.parse(secondBody.inputs[0].result);
+      expect(result.already_in_context).toBe(true);
+      expect(result.content).toBeUndefined();
+    });
+
+    it('read-only agent (post-cutover): answers a stray update_context_entry tool call with an error result instead of executing it', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
 
       const mockToolCallResponse = {
         id: 'conv-123',
         outputs: [
           {
-            object: 'entry',
-            type: 'function.call',
-            tool_call_id: 'call-update-xyz',
-            name: 'update_context_entry',
-            arguments:
-              '{"title":"Journal with Christopher","content":"Christopher is building Yasmin AI with me."}'
-          }
-        ]
-      };
-
-      const mockFinalResponse = {
-        id: 'conv-123',
-        outputs: [
-          {
-            content: 'Got it, noted in my memory.',
-            type: 'message.output'
+            type: 'message.tool_calls',
+            tool_calls: [
+              {
+                id: 'call-write-1',
+                type: 'function',
+                function: {
+                  name: 'update_context_entry',
+                  arguments: '{"title":"Profile of Anjali","content":"malicious overwrite"}'
+                }
+              }
+            ]
           }
         ]
       };
@@ -665,127 +756,33 @@ describe('ChatAgent', () => {
         json: () => Promise.resolve(mockToolCallResponse)
       });
 
+      // Second fetch: the tool-result POST carrying the error result for the stray call.
+      const mockAfterToolResponse = {
+        id: 'conv-123',
+        outputs: [{ type: 'message.output', content: 'I cannot update memory myself.' }]
+      };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
         statusText: 'OK',
-        json: () => Promise.resolve(mockFinalResponse)
+        json: () => Promise.resolve(mockAfterToolResponse)
       });
+      const result = await chatAgent.processRequest('Update Anjali profile', 'christopher');
 
-      const result = await chatAgent.processRequest('Remember this about Christopher', 'christopher');
-      expect(result).toEqual(mockFinalResponse.outputs);
-
+      // The stray write tool call is answered with an error result (so the Mistral conversation
+      // cannot stall on an unanswered tool_call_id), and no write ever reaches the DB layer.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
       const secondCallArgs = mockFetch.mock.calls[1];
       expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
       const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.inputs).toHaveLength(1);
       expect(secondBody.inputs[0].type).toBe('function.result');
-      expect(secondBody.inputs[0].tool_call_id).toBe('call-update-xyz');
-      const resultData = JSON.parse(secondBody.inputs[0].result);
-      expect(resultData.success).toBe(true);
-      expect(resultData.title).toBe('Journal with Christopher');
-      expect(resultData.content).toBe('Christopher is building Yasmin AI with me.');
-    });
-
-    it('should return error result when update_context_entry is called with missing title', async () => {
-      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
-
-      const mockToolCallResponse = {
-        id: 'conv-123',
-        outputs: [
-          {
-            object: 'entry',
-            type: 'function.call',
-            tool_call_id: 'call-update-missing',
-            name: 'update_context_entry',
-            arguments: '{"content":"Some content"}'
-          }
-        ]
-      };
-
-      const mockFinalResponse = {
-        id: 'conv-123',
-        outputs: [
-          {
-            content: 'Done',
-            type: 'message.output'
-          }
-        ]
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(mockToolCallResponse)
+      expect(secondBody.inputs[0].tool_call_id).toBe('call-write-1');
+      expect(JSON.parse(secondBody.inputs[0].result)).toEqual({
+        success: false,
+        error: 'Unsupported tool: update_context_entry'
       });
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(mockFinalResponse)
-      });
-
-      await chatAgent.processRequest('Update something', 'christopher');
-
-      const secondCallArgs = mockFetch.mock.calls[1];
-      const secondBody = JSON.parse(secondCallArgs[1].body);
-      expect(secondBody.inputs[0].type).toBe('function.result');
-      expect(secondBody.inputs[0].tool_call_id).toBe('call-update-missing');
-      const resultData = JSON.parse(secondBody.inputs[0].result);
-      expect(resultData.success).toBe(false);
-      expect(resultData.error).toBe('Title parameter is required');
-    });
-
-    it('should return error result when update_context_entry is called with missing content', async () => {
-      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce('conv-123');
-
-      const mockToolCallResponse = {
-        id: 'conv-123',
-        outputs: [
-          {
-            object: 'entry',
-            type: 'function.call',
-            tool_call_id: 'call-update-no-content',
-            name: 'update_context_entry',
-            arguments: '{"title":"Journal with Christopher"}'
-          }
-        ]
-      };
-
-      const mockFinalResponse = {
-        id: 'conv-123',
-        outputs: [
-          {
-            content: 'Done',
-            type: 'message.output'
-          }
-        ]
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(mockToolCallResponse)
-      });
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: () => Promise.resolve(mockFinalResponse)
-      });
-
-      await chatAgent.processRequest('Update something', 'christopher');
-
-      const secondCallArgs = mockFetch.mock.calls[1];
-      const secondBody = JSON.parse(secondCallArgs[1].body);
-      expect(secondBody.inputs[0].type).toBe('function.result');
-      expect(secondBody.inputs[0].tool_call_id).toBe('call-update-no-content');
-      const resultData = JSON.parse(secondBody.inputs[0].result);
-      expect(resultData.success).toBe(false);
-      expect(resultData.error).toBe('Content parameter is required');
+      expect(result).toEqual(mockAfterToolResponse.outputs);
     });
 
     it('respawns a fresh conversation when resuming a deleted conversation (HTTP 404)', async () => {

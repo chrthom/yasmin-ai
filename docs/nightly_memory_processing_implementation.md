@@ -65,7 +65,7 @@ Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entr
 ### 2.3 Mistral Console
 
 1. **Library** — the `memory` library already exists in the production workspace. Obtain its **library id** and put it in `MISTRAL_LIBRARY_ID` (§10). _Do not_ reuse the temporary test id from earlier spikes.
-2. **Conversation agent** (`AGENT_ID_CONVERSATION`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/conversation/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (this step happens at cutover, §13 — after the nightly job is verified).
+2. **Conversation agent** (`AGENT_ID_CONVERSATION`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/conversation/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (done at cutover, §13 — after the nightly job is verified; the privacy block turned out to be unnecessary because the live agent never sees stripped text).
 3. **Nightly agent** — create a new agent `yasmin-nightly` with the memory-processor system prompt (§6.3). Library wiring **optional** (only for cross-file discovery; see v3 §1.2). Put its id in `AGENT_ID_NIGHTLY`.
 4. **API key** — issue a **production** key with access to the library + both agents; set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
 
@@ -97,7 +97,7 @@ New (`+`) and changed (`~`) files, following existing conventions (`src/**` → 
 + src/database/models/memory_archive.model.ts
 + src/database/models/nightly_job.model.ts   job log + lock
 ~ src/database/models/context.model.ts    (reuse insert/update; add upsert helper)
-~ src/chat_agent.ts                        remove update_context_entry + Session handling (read-only; at cutover, §13)
+~ src/chat_agent.ts                        remove update_context_entry + Session handling (read-only; done at cutover, §13)
 ~ src/services/context.service.ts          eager set: drop 'Session with X' (sender Profile + Yasmin + Family notes)
 - mistral_config/conversation/functions/update_context_entry.json   retired (agent read-only)
 + src/nightly/pipeline.ts                 phase orchestrator
@@ -395,7 +395,7 @@ Run once against a scratch library before go-live:
 
 ## 13. Rollout sequence
 
-1. Land code + `schema_memory.sql` + tests (green) as the Part A PR; review and merge.
+1. Land code + `schema_memory.sql` + tests (green) as the first (additive) change; review and merge.
 2. Apply schema to MariaDB (§2.1).
 3. Mistral console: get prod library id, attach to conversation agent, create `yasmin-nightly`, update prompts, issue prod key (§2.3). Run the manual spike (§12.3).
 4. Set env vars; `npm run build`.
@@ -403,7 +403,7 @@ Run once against a scratch library before go-live:
 6. `npm run nightly:dry-run`; inspect log (no writes in dry-run).
 7. One real manual run; verify journals, archive, regenerated eager cache, cleanup.
 8. Restart the app; the in-process scheduler arms itself automatically. Monitor `nightly_job_log` for a while.
-9. **Open the Part B PR and cutover to read-only agent** (only after the nightly job is verified over several nights): update the conversation agent's system prompt (remove write/Session instructions), retire the `update_context_entry` tool in `chat_agent.ts`, and drop `Session with X` from the eager set in `context.service.ts`. Until this step, live writes keep memory fresh — do not remove them earlier (avoids a consolidation gap).
+9. **Cut over to the read-only agent** (done; only after the nightly job is verified over several nights): update the conversation agent's system prompt (remove write/Session instructions), retire the `update_context_entry` tool in `chat_agent.ts`, and drop `Session with X` from the eager set in `context.service.ts`. Until this step, live writes keep memory fresh — do not remove them earlier (avoids a consolidation gap).
 
 ---
 

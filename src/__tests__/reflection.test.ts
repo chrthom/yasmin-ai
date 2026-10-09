@@ -27,10 +27,7 @@ import {
   runIntegrate,
   runReview,
   reviseProposal,
-  runCompact,
-  compactSession,
-  formatRunDate,
-  sessionCompactPrompt
+  runCompact
 } from '../nightly/reflection';
 
 const mockAskAgent = askAgent as jest.Mock;
@@ -369,32 +366,6 @@ describe('reflection', () => {
       expect(mockAskAgent).toHaveBeenCalledTimes(2);
       expect(result).toBe(truncateToCap(tooLong, 10000));
       expect(result.endsWith('…[truncated]')).toBe(true);
-    });
-  });
-
-  describe('session compact', () => {
-    it('formats a run date as YYYY-MM-DD in the requested timezone', () => {
-      // 2026-09-30 22:30 UTC is already 10-01 in Europe/Berlin (CEST, +2).
-      expect(formatRunDate(new Date('2026-09-30T22:30:00Z'), 'Europe/Berlin')).toBe('2026-10-01');
-      expect(formatRunDate(new Date('2026-09-30T10:00:00Z'), 'Europe/Berlin')).toBe('2026-09-30');
-    });
-
-    it('delimits the journal, embeds the date label, and marks the journal as data', () => {
-      const prompt = sessionCompactPrompt('Alice', 'talked about the concert', '2026-09-30');
-
-      expect(prompt).toContain('<<<BEGIN JOURNAL>>>');
-      expect(prompt).toContain('<<<END JOURNAL>>>');
-      expect(prompt).toContain('talked about the concert');
-      expect(prompt).toContain('Last conversation on 2026-09-30');
-    });
-
-    it('returns the trimmed agent output using the nightly agent', async () => {
-      mockAskAgent.mockResolvedValueOnce({ outputText: '  Last conversation on 2026-09-30 -- concert.  ' });
-
-      const result = await compactSession('Alice', 'content', '2026-09-30');
-
-      expect(result).toBe('Last conversation on 2026-09-30 -- concert.');
-      expect(mockAskAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'nightly-agent-1' }));
     });
   });
 });

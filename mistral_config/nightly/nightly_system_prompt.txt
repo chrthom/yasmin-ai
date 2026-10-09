@@ -79,7 +79,7 @@ with a relative date is meaningless once time passes.
 
 ## LANGUAGE
 
-Write ALL journal entries, memory file content, and session compacts in GERMAN. The family actually
+Write ALL journal entries and memory file content in GERMAN. The family actually
 converses in German, and the memory corpus must stay in that language so it matches the conversations it
 is derived from and the future conversations it will be matched against. The prompt instructions and the
 fixed section headings below stay exactly as specified (English); only the CONTENT is in German. Keep

@@ -1,6 +1,7 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
 import { dbProxy } from './database/db_proxy';
+import { buildHandoff, waitFor } from './handoff';
 
 interface MistralConversationResponseOutputPart {
   type: string;
@@ -49,6 +50,11 @@ export class ChatAgent {
   private conversationCache = new Map<string, CachedConversation>();
   private poisonedConversations = new Map<string, Set<string>>();
   private userQueues = new Map<string, Promise<unknown>>();
+  // Handoff (summary + last turns) being prepared in the background for a conversation about to be replaced
+  private pendingHandoffs = new Map<
+    string,
+    { conversationId: string; promise: Promise<string | undefined> }
+  >();
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
 
@@ -136,7 +142,8 @@ export class ChatAgent {
     userText: string,
     username: string,
     shortAnswer: boolean = false,
-    isRespawn: boolean = false
+    isRespawn: boolean = false,
+    handoffFrom?: string
   ): Promise<MistralConversationResponseOutput[]> {
     try {
       let conversationId = await this.getActiveConversationId(username);
@@ -155,16 +162,16 @@ export class ChatAgent {
       }
 
       // Turn-based compaction: long conversations make every turn slower because Mistral
-      // reprocesses the full history each time. Once the turn budget is exhausted, close
-      // the current conversation (the nightly job still journals and deletes it later) and
-      // start a fresh one so latency resets. The compacted "Session with <user>" context
-      // entry keeps the thread alive across the cutover, exactly as it does overnight.
-      let isCompactedSessionStart = false;
+      // reprocesses the full history each time. Once the turn budget is exhausted, close the
+      // current conversation (the nightly job still journals and deletes it later) and start a
+      // fresh one so latency resets. A summary of the old conversation plus its last turns is
+      // handed over in the new conversation's first prompt (see handoff.ts).
       if (conversationId && cached.turnCount >= this.maxTurnsPerSession) {
         console.log(
           `INFO Compacting session for ${username}: conversation ${conversationId} reached ` +
             `${cached.turnCount} turns (max ${this.maxTurnsPerSession}); starting a fresh conversation`
         );
+        handoffFrom = conversationId;
         this.conversationCache.delete(username);
         conversationId = undefined;
         cached = {
@@ -174,7 +181,6 @@ export class ChatAgent {
           turnCount: 0
         };
         this.conversationCache.set(username, cached);
-        isCompactedSessionStart = true;
       }
 
       // Query ContextService to find newly relevant context
@@ -184,33 +190,23 @@ export class ChatAgent {
         cached.loadedContextTitles
       );
 
-      // Prepend dynamic XML context to user text if present
+      // A fresh conversation that replaces an earlier one starts with the handoff block
+      const handoffBlock =
+        !conversationId && handoffFrom ? await this.resolveHandoff(username, handoffFrom) : undefined;
+
+      // Prepend dynamic XML context (and handoff) to user text if present
       let promptContent = userText;
+      if (handoffBlock) {
+        promptContent = `${handoffBlock}\n\n${promptContent}`;
+      }
       if (formattedContext) {
-        promptContent = `${formattedContext}\n\n${userText}`;
+        promptContent = `${formattedContext}\n\n${promptContent}`;
       }
 
       // Add short answer constraint if requested
       if (shortAnswer) {
         promptContent = `${promptContent}\n\nYour answer must be shorter than 1500 characters.`;
       }
-
-      // After mid-session compaction the fresh conversation has no shared history with the user;
-      // tell Yasmin so she picks the thread back up from the session context instead of pretending
-      // she remembers the just-archived turns verbatim.
-      if (isCompactedSessionStart) {
-        promptContent =
-          `${promptContent}\n\n` +
-          'Note: your previous conversation with this user was just archived to keep response times ' +
-          'fast. You are starting a fresh conversation now. Use the loaded context (especially the ' +
-          '"Session with [sender]" entry) to pick up where you left off. Do not mention archiving, ' +
-          'technical limits, or this note; just continue naturally.';
-      }
-
-      // Keep tool usage within the model's completion token budget: batch-rewriting many long
-      // context entries in a single turn exhausts the budget during reasoning, so the turn ends
-      // with no text part at all.
-      promptContent = `${promptContent}\n\nWhen updating context entries: update at most two entries per turn and keep each entry's content concise. Do not plan or draft full entry contents in your visible reasoning; emit tool calls directly.`;
 
       // Track newly loaded titles to avoid duplicates on future turns
       if (newlyLoadedTitles.length > 0) {
@@ -256,7 +252,7 @@ export class ChatAgent {
         // isRespawn guards against looping if the freshly created conversation also fails.
         if (isStale && conversationId && !isRespawn) {
           console.log(`INFO Respawning a fresh conversation for ${username}`);
-          return this.processRequestInternal(userText, username, shortAnswer, true);
+          return this.processRequestInternal(userText, username, shortAnswer, true, conversationId);
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
@@ -327,66 +323,39 @@ export class ChatAgent {
               }
               console.log(`INFO Tool execution: read_context_entry for title "${title}"`);
 
-              const content = await dbProxy.getContentByTitle(title);
-              const resultStr = content
-                ? JSON.stringify({ title, content: content.trim(), found: true })
-                : JSON.stringify({ title, found: false, error: 'Context entry not found' });
+              // Entries already injected into this conversation are still in its history; return a
+              // pointer instead of the full text to save tokens on every subsequent turn.
+              const alreadyLoaded = cached.loadedContextTitles.includes(title);
+              const content = alreadyLoaded ? null : await dbProxy.getContentByTitle(title);
+              const resultStr = alreadyLoaded
+                ? JSON.stringify({
+                    title,
+                    found: true,
+                    already_in_context: true,
+                    note: 'This entry is already in your context above; use that content.'
+                  })
+                : content
+                  ? JSON.stringify({ title, content: content.trim(), found: true })
+                  : JSON.stringify({ title, found: false, error: 'Context entry not found' });
 
               toolInputs.push({
                 type: 'function.result',
                 tool_call_id: call.id,
                 result: resultStr
               });
-            }
-            if (call.name === 'update_context_entry') {
-              let args: any = {};
-              try {
-                args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
-              } catch (e) {
-                console.error(`ERROR Failed to parse tool arguments: ${e}`);
-              }
-
-              const title = args.title;
-              const content = args.content;
-              if (!title) {
-                console.warn('WARNING Tool execution: update_context_entry called with empty/missing title');
-                toolInputs.push({
-                  type: 'function.result',
-                  tool_call_id: call.id,
-                  result: JSON.stringify({ success: false, error: 'Title parameter is required' })
-                });
-                continue;
-              }
-              if (!content) {
-                console.warn(
-                  'WARNING Tool execution: update_context_entry called with empty/missing content'
-                );
-                toolInputs.push({
-                  type: 'function.result',
-                  tool_call_id: call.id,
-                  result: JSON.stringify({ success: false, error: 'Content parameter is required' })
-                });
-                continue;
-              }
-              console.log(`INFO Tool execution: update_context_entry for title "${title}"`);
-
-              try {
-                await dbProxy.updateEntry(title, content);
-                toolInputs.push({
-                  type: 'function.result',
-                  tool_call_id: call.id,
-                  result: JSON.stringify({ success: true, title, content: content.trim() })
-                });
-              } catch (err) {
-                console.error(
-                  `ERROR Tool execution: update_context_entry failed for title "${title}": ${err}`
-                );
-                toolInputs.push({
-                  type: 'function.result',
-                  tool_call_id: call.id,
-                  result: JSON.stringify({ success: false, title, error: 'Failed to update context entry' })
-                });
-              }
+            } else {
+              // Unknown tool (e.g. a stray update_context_entry call from a not-yet-reconfigured
+              // Mistral Console agent): answer the call so the conversation cannot stall, but
+              // never execute it.
+              console.warn(`WARNING Ignoring unsupported tool call "${call.name}"`);
+              toolInputs.push({
+                type: 'function.result',
+                tool_call_id: call.id,
+                result: JSON.stringify({
+                  success: false,
+                  error: `Unsupported tool: ${call.name}`
+                })
+              });
             }
           }
 
@@ -426,7 +395,13 @@ export class ChatAgent {
               );
               if (!isRespawn) {
                 console.log(`INFO Respawning a fresh conversation for ${username}`);
-                return this.processRequestInternal(userText, username, shortAnswer, true);
+                return this.processRequestInternal(
+                  userText,
+                  username,
+                  shortAnswer,
+                  true,
+                  currentConversationId
+                );
               }
               throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
             }
@@ -443,11 +418,37 @@ export class ChatAgent {
         }
       }
 
+      this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {
       console.error(`ERROR Failed to process request for ${username}: ${error}`);
       throw error;
     }
+  }
+
+  // Once the turn that exhausts the budget is answered, prepare the handoff in the background so the next
+  // turn (which starts the fresh conversation) does not have to wait for the summary.
+  private scheduleHandoff(username: string, cached: CachedConversation): void {
+    if (!cached.conversationId || cached.turnCount < this.maxTurnsPerSession) {
+      return;
+    }
+    if (this.pendingHandoffs.get(username)?.conversationId === cached.conversationId) {
+      return;
+    }
+    this.pendingHandoffs.set(username, {
+      conversationId: cached.conversationId,
+      promise: buildHandoff(cached.conversationId)
+    });
+  }
+
+  // Waits (bounded) for the background summary; if it is not ready, goes with the last turns only.
+  private async resolveHandoff(username: string, fromConversationId: string): Promise<string | undefined> {
+    const pending = this.pendingHandoffs.get(username);
+    this.pendingHandoffs.delete(username);
+    const promise =
+      pending?.conversationId === fromConversationId ? pending.promise : buildHandoff(fromConversationId);
+    const block = await waitFor(promise, config.mistral.handoffWaitMs);
+    return block ?? (await buildHandoff(fromConversationId, { withSummary: false }));
   }
 
   private markConversationPoisoned(username: string, conversationId: string): void {

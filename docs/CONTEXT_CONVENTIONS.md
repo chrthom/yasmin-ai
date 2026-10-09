@@ -29,13 +29,15 @@ high accuracy, minimize token bloat, and avoid cross-language keyword mismatch:
       │  (Eagerly Loaded)     │                       │  (Tool-Called/Lazy)   │
       └───────────┬───────────┘                       └───────────┬───────────┘
                   │                                               │
-      ┌───────────┼───────────────┬───────────┐                   ▼
-      ▼           ▼               ▼           ▼            Profile of [Person]
-   Profile     Family          Profile    Session with     (any person other than
-   of Yasmin   notes           of         [Sender] ⚠️        the current sender)
-                               [Sender]    phased out,
-                                           see §2.1
+      ┌───────────┼───────────────┐                               ▼
+      ▼           ▼               ▼                        Profile of [Person]
+   Profile     Family          Profile                     (any person other than
+   of Yasmin   notes           of [Sender]                  the current sender)
 ```
+
+`Session with [Sender]` and `Journal with [Sender]` — an earlier, never-fully-populated pattern — no longer
+exist in the data model at all: removed from both `src/database/db_proxy.ts` and `database/schema.sql`. See
+§2.1 for what they used to do and why/how they were retired.
 
 Beyond this table, a third, deeper tier — the **Mistral knowledge library** plus its local
 `memory_archive` backup — holds the full verbose, long-term memory that `context_entries` is compacted
@@ -56,25 +58,37 @@ batch, via `ContextService`/`ChatAgent`.
 
 ### Eager Entries List
 
-| Title                       | Description / Content                                                                                                                 | Loading Behavior                                                                |
-| :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------ |
-| **`Profile of Yasmin`**     | Yasmin's own identity, personality, preferences and interests, written in first person.                                               | Mandatory on the initial turn.                                                  |
-| **`Family notes`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                            | Mandatory on the initial turn.                                                  |
-| **`Profile of [Sender]`**   | Everything known about the person Yasmin is currently talking to: facts, preferences, relationship, communication style, open topics. | Mandatory on the initial turn.                                                  |
-| **`Session with [Sender]`** | Topics to bring up and questions Yasmin wants to ask this sender next.                                                                | Mandatory on the initial turn — **only until the read-only cutover, see §2.1.** |
+| Title                     | Description / Content                                                                                                                 | Loading Behavior               |
+| :------------------------ | :------------------------------------------------------------------------------------------------------------------------------------ | :----------------------------- |
+| **`Profile of Yasmin`**   | Yasmin's own identity, personality, preferences and interests, written in first person.                                               | Mandatory on the initial turn. |
+| **`Family notes`**        | Family-wide notes: traditions, inside jokes, shared rules.                                                                            | Mandatory on the initial turn. |
+| **`Profile of [Sender]`** | Everything known about the person Yasmin is currently talking to: facts, preferences, relationship, communication style, open topics. | Mandatory on the initial turn. |
 
-### 2.1 `Session with [Sender]` is being phased out
+### 2.1 `Session with [Sender]` has been retired
 
-`Session with [Sender]` is only eagerly loaded today because the live conversation agent is still allowed
-to write to `context_entries` directly (via the `update_context_entry` tool). A separate, already-built
-"read-only cutover" commit on the `feature/nightly-memory-processing` branch removes it from the eager set
-once the nightly memory job (§4) has been verified in production over several nights. After that cutover:
+An earlier iteration of this system also eagerly loaded a `Session with [Sender]` entry (topics to bring up,
+questions to ask next), populated by the live conversation agent writing to it directly via an
+`update_context_entry` tool. That whole mechanism is gone:
 
-- `context_entries` is eagerly loaded as just `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
-- Proactive topics/questions live inside `Profile of [Sender]` instead of a separate entry (folded in by the
-  nightly pipeline's compaction step).
-- Stale `Session with X` and `Journal with X` rows (see §3) are left in `context_entries` harmlessly — empty
-  content, no longer read or written by anything — pending a manual cleanup pass.
+- **Code:** `chat_agent.ts` has no `update_context_entry` handler (a stray call is answered with an error
+  result), `ContextService`'s eager set does not include `Session with [Sender]`, and the system prompt
+  describes a read-only agent. Proactive topics/questions live inside `Profile of [Sender]` itself (an "Open
+  Topics" section), folded in nightly by the memory pipeline's compaction step — see §4. Continuity across a
+  conversation restart is handled by the handoff block (summary + last turns of the old conversation, see
+  `AGENTS.md`), not by a stored entry.
+- **Data:** `db_proxy.ts` and `database/schema.sql` do not seed any `Session with X` or `Journal with X`
+  rows — they are gone from the model entirely, not left behind empty.
+- **Sequencing when deploying — code before data cleanup, not the other way around:** while the old code is
+  live, the live agent's system prompt and `update_context_entry` tool still assume a `Session with [Sender]`
+  entry exists. Applying the new `schema.sql` to a production database before the new `chat_agent.ts` is
+  deployed would make every attempt to write to it silently fail (`UPDATE ... WHERE title = ?` matches zero
+  rows). See `docs/deployment_checklist.md` and `docs/nightly_memory_processing_implementation.md` §13.
+- **Existing production rows:** if a production database already has old `Session with X` / `Journal with X`
+  rows, applying the updated `schema.sql` will **not** remove them (its `INSERT ... ON DUPLICATE KEY UPDATE`
+  only adds/updates rows, it never deletes). Run
+  `DELETE FROM context_entries WHERE title LIKE 'Session with %' OR title LIKE 'Journal with %';` once, by
+  hand, if you want to purge them (after `scripts/bootstrap-memory.ts` has been run) — harmless to leave them
+  either way, since nothing reads or writes them anymore.
 
 ---
 
@@ -90,13 +104,6 @@ Calling (`read_context_entry`). In practice this is exactly one pattern:
 
 Since Yasmin understands German, if a German user asks _"Was macht Zara gerade?"_, Yasmin can decide to
 call `read_context_entry` with `title="Profile of Zara"` without any language-specific matching logic.
-
-> **Legacy rows:** `context_entries` also still contains `Session with X` (for non-sender family members)
-> and `Journal with X` rows, seeded with empty content from the start. Nothing in this feature populates
-> `Journal with X` — real journaling now happens inside the nightly pipeline's own per-conversation journal
-> files (`journals/<name>/<conversation-id>.md` in `memory_archive`, not exposed to `context_entries` or the
-> Mistral library). These rows show up in the lazy-load manifest but never resolve to anything useful; treat
-> them as cruft rather than part of the active naming scheme.
 
 ### Tool Definition: `read_context_entry`
 
@@ -138,33 +145,31 @@ that this cache is regenerated from every night:
 | **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                                                                      | `Family notes`                                      |
 
 (`journals/<name>/<conversation-id>.md` also lives in `memory_archive` as an intermediate artifact of the
-nightly pipeline, but has no mapping to a `context_entries` title or the Mistral library — see the legacy-row
-note in §3.)
+nightly pipeline, but has no mapping to a `context_entries` title or the Mistral library.)
 
 ### How it's populated and read
 
 - **Written by:** the nightly job only — every run re-reads that day's conversations, updates the relevant
   verbose files, versions each change in `memory_archive` (MariaDB; the durable source of truth and backup),
   and uploads changed files to the Mistral library.
-- **Read by:** the live conversation agent, via the Mistral library's built-in RAG (semantic search) — no
-  tool call needed, unlike the eager/lazy `context_entries` groups above.
-- **Current status:** as of today (pre-cutover), the library is being populated nightly, but the live
-  agent's system prompt has not yet been wired up to mention or rely on it — RAG consumption begins at the
-  same read-only cutover described in §2.1, when `mistral_config/conversation/system_prompt.txt` is updated
-  to tell the agent that deeper facts and past conversations surface automatically from this library.
-- **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. Such
-  content is always stripped before it's compacted into the `context_entries` eager cache, but remains in
-  the Mistral library itself, gated only by prompt-level enforcement (the library is shared across the whole
-  family).
+- **Read by:** the live conversation agent, via the `document_library` tool attached to it in Mistral Studio
+  (semantic search). The model decides when to search; there is no application code for it, unlike the
+  eager/lazy `context_entries` groups above.
+- **Current status:** the library is populated nightly, and the live agent's system prompt (§2.1) tells it
+  to search this library for deeper facts and past conversations from earlier days. Conversations from the
+  current day are not in it yet.
+- **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. That
+  content is stripped before it's compacted into the `context_entries` eager cache, and also stripped before it's ever uploaded to the Mistral library in the first place —
+  it never leaves local storage (`memory_archive` keeps the unstripped version for versioning/audit only).
 
 ---
 
 ## 5. Summary: Which Store Answers Which Question
 
-| Yasmin needs to know...                                       | Source                                                                |
-| :------------------------------------------------------------ | :-------------------------------------------------------------------- |
-| Who am I, what do I like? / Who is this family?               | `Profile of Yasmin`, `Family notes` (eager)                           |
-| Basic facts about the person I'm talking to right now         | `Profile of [Sender]` (eager)                                         |
-| Basic facts about someone else who comes up in conversation   | `Profile of [Person]` (lazy, `read_context_entry`)                    |
-| A deep, specific memory or something from a past conversation | Mistral library RAG over `people/<name>.md` / journals (post-cutover) |
-| The full verbose history / audit trail behind a profile       | `memory_archive` (MariaDB, versioned; nightly job only)               |
+| Yasmin needs to know...                                       | Source                                                  |
+| :------------------------------------------------------------ | :------------------------------------------------------ |
+| Who am I, what do I like? / Who is this family?               | `Profile of Yasmin`, `Family notes` (eager)             |
+| Basic facts about the person I'm talking to right now         | `Profile of [Sender]` (eager)                           |
+| Basic facts about someone else who comes up in conversation   | `Profile of [Person]` (lazy, `read_context_entry`)      |
+| A deep, specific memory or something from a past conversation | Mistral library RAG over `people/<name>.md` / journals  |
+| The full verbose history / audit trail behind a profile       | `memory_archive` (MariaDB, versioned; nightly job only) |
