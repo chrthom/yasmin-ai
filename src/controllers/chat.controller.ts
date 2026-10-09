@@ -141,7 +141,8 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
     token: config.synology.tokens.slash,
     responseStatus: 200,
     stripPrefix: '/yasmin',
-    sendToSynology: false
+    sendToSynology: false,
+    includeChannelHistory: true
   });
 }
 
