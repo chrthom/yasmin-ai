@@ -12,7 +12,7 @@ export const config = {
     // Turn-based compaction: once a live conversation reaches this many turns it gets closed
     // (not deleted -- the nightly job still journals it) and the next turn starts a fresh one.
     // The Mistral conversation API exposes no cumulative token count, so turns are the proxy.
-    maxTurnsPerSession: parseInt(process.env['MAX_TURNS_PER_SESSION'] || '80', 10),
+    maxTurnsPerSession: parseInt(process.env['MAX_TURNS_PER_SESSION'] || '50', 10),
     apiRoot: 'https://api.mistral.ai/v1',
     // Required for every process: the nightly scheduler runs in-process inside app.ts (same Node process
     // as the API server), so MISTRAL_LIBRARY_ID and AGENT_ID_NIGHTLY are always required. validateEnv()
