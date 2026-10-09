@@ -1,46 +1,45 @@
-# Nightly Memory Processing — Deployment Checklist (Part B)
+# Nightly Memory Processing — Read-Only Cutover Checklist
 
-**Status**: developer-actionable, manual ops steps only (no code changes required)
+**Status**: developer-actionable, manual ops steps for deploying the read-only live agent
 **Full design**: `nightly_memory_processing_implementation.md` (§2 one-time setup, §11 runbook, §13 rollout)
-**Branch**: `feature/nightly-memory-part-b`
-**Prerequisite**: the Part A PR (`feature/nightly-memory-part-a`) is merged and its nightly job has run
-cleanly in production for a while — see that PR's own `docs/deployment_checklist.md` for the A1-A10 steps.
-Do not merge/deploy this PR before that.
+**Prerequisite**: the nightly job (pipeline, `memory_archive`, Mistral library upload) is deployed and has run
+cleanly in production for a while. Do not deploy the read-only agent before that: until then the live
+agent's writes are what keeps `context_entries` fresh.
 
-This PR makes the live conversation agent **read-only for memory**: the nightly job (already running from
-Part A) becomes the sole writer of `context_entries`, and the old `Session with X` / `Journal with X`
-entries are retired for good.
+After this cutover the live conversation agent is **read-only for memory**: the nightly job is the sole
+writer of `context_entries`, the old `Session with X` / `Journal with X` entries are retired for good, and a
+restarted conversation is seeded with a summary and the last turns of the previous one (see `AGENTS.md`,
+"Conversation restarts and the handoff").
 
 ---
 
-## B1. Merge/deploy this PR
+## 1. Deploy order matters: code first, data cleanup after
 
-This PR is one merge to `main`, so its four commits (the cutover itself, a restored regression test, the
-`Session`/`Journal` data-cleanup, and a couple of review follow-ups) always land together:
+Deploy the code (it stops the live agent from writing) before you apply the `schema.sql`/data cleanup to a
+running database, not the other way around. A stale `update_context_entry` write attempt against an
+already-removed `Session with X` row would silently no-op, which only becomes correct behavior once the code
+no longer tries (see `CONTEXT_CONVENTIONS.md` §2.1).
 
-- **The cutover** (`chat_agent.ts`, `context.service.ts`, `mistral_config/conversation/system_prompt.txt`, deletes
-  `mistral_config/conversation/functions/update_context_entry.json`) — makes the live agent read-only for memory.
-- **A restored regression test** (`src/__tests__/chat_agent.test.ts`) asserting the read-only agent
-  silently ignores a stray `update_context_entry` tool call.
-- **The `Session`/`Journal` data-cleanup** (`db_proxy.ts`, `database/schema.sql`, `CONTEXT_CONVENTIONS.md`,
-  deletes 5 superseded design docs) — retires the old data model entirely, not just leaves it empty.
-- **Review follow-ups** (`db_proxy.ts`'s now-dead `updateEntry()` method, and the now-unreachable
-  `[PRIVACY:SENSITIVE]` handling block in `mistral_config/conversation/system_prompt.txt`).
+## 2. Mistral Console
 
-The commit-level ordering doesn't matter for the `main` merge itself, but it matters for **how you deploy
-to production**: deploy the cutover code (which stops the live agent from writing) before you apply the
-`schema.sql`/data cleanup to a running database, not the other way around — see `CONTEXT_CONVENTIONS.md`
-§2.1 for exactly why (a stale `update_context_entry` write attempt against an already-removed
-`Session with X` row would silently no-op, which only becomes correct behavior once the code no longer
-tries).
+1. **Live conversation agent** (not the nightly one): remove its `update_context_entry` function registration
+   and update its system prompt to the current `mistral_config/conversation/system_prompt.txt`. Attach the
+   `memory` library if it is not attached yet. A stray `update_context_entry` call from a stale definition is
+   answered with an error result by the code, so a missed step here is harmless but wasteful.
+2. **Summarizer agent** (new): create an agent with a small model (`mistral-small-latest` is plenty), no tools,
+   no library, and the system prompt from `mistral_config/summarizer/system_prompt.txt`. Set its id as
+   `AGENT_ID_SUMMARIZER` in the server's environment. It is optional: without it a conversation restart only
+   replays the last 3 turns instead of a summary plus the last 3 turns. The agent is called one-shot with
+   `store: false`; no conversations accumulate for it.
 
-## B2. Mistral Console
+## 3. Deploy the code
 
-On the **live conversation agent** (not the nightly one), remove its `update_context_entry` function
-registration and update its system prompt to the new `mistral_config/conversation/system_prompt.txt` content. If you
-didn't already do it during Part A, attach the `memory` library now.
+Have a real conversation afterward and confirm: profile/family-notes context loads correctly on turn 1, and
+the agent no longer attempts (or is able) to write memory. To exercise the handoff, lower
+`MAX_TURNS_PER_SESSION` temporarily (for example to `3`), chat past it, and check that the next answer
+continues the thread and that the summarizer agent left no conversations behind in Studio.
 
-## B3. (Optional) Purge stale rows from the already-running production database
+## 4. (Optional) Purge stale rows from the already-running production database
 
 The updated `schema.sql` only affects _fresh_ installs, it won't retroactively delete existing rows:
 
@@ -48,26 +47,22 @@ The updated `schema.sql` only affects _fresh_ installs, it won't retroactively d
 DELETE FROM context_entries WHERE title LIKE 'Session with %' OR title LIKE 'Journal with %';
 ```
 
-Harmless to skip — those rows just sit there empty and unused either way.
+Run this only after `scripts/bootstrap-memory.ts` has been run (it reads the old `Session with X` rows once as
+input), and only after the code is deployed. Harmless to skip: those rows just sit there unused.
 
-## B4. Deploy the code
+## 5. Keep monitoring
 
-Have a real conversation afterward and confirm: profile/family-notes context still loads correctly on turn
-1, and the agent no longer attempts (or is able) to write memory.
-
-## B5. Keep monitoring
-
-The nightly job (the pipeline from Part A) is the sole writer of `context_entries` from this point on —
-`nightly_job_log` is only that job's run log and never writes context itself.
+The nightly job is the sole writer of `context_entries` from this point on; `nightly_job_log` is only that
+job's run log and never writes context itself.
 
 ---
 
 ## Rollback
 
-See `nightly_memory_processing_implementation.md` §11 for the full runbook (stale lock recovery, restoring
-a prior `memory_archive` version, re-running a partial/failed job, etc.). Reverting this PR alone
-(redeploying the pre-cutover `chat_agent.ts` / `context.service.ts` / `system_prompt.txt`) restores live
-write access without touching the nightly job from Part A.
+See `nightly_memory_processing_implementation.md` §11 for the full runbook (stale lock recovery, restoring a
+prior `memory_archive` version, re-running a partial/failed job, etc.). Redeploying the previous
+`chat_agent.ts` / `context.service.ts` / `system_prompt.txt` restores live write access without touching the
+nightly job.
 
 ## Further reading
 

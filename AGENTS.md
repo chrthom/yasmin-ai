@@ -22,6 +22,8 @@ mistral_config/
 │   ├── system_prompt.txt
 │   └── functions/
 │       └── read_context_entry.json     # Lazy-load a context entry (its only tool -- read-only)
+├── summarizer/                         # Restart-handoff summarizer agent (Studio)
+│   └── system_prompt.txt
 └── nightly/                            # Nightly memory-consolidation agent
     ├── nightly_system_prompt.txt
     └── functions/
@@ -36,6 +38,7 @@ scripts/
 src/
 ├── app.ts              # Express server entry point with route handlers
 ├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
+├── handoff.ts          # Summary + last turns handed to a fresh conversation after a restart
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
@@ -65,6 +68,7 @@ src/
     ├── synology_client.test.ts
     ├── database.test.ts
     ├── context.test.ts
+    ├── handoff.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
                             #   pipeline.integration, context.model, bootstrap-memory
@@ -82,31 +86,49 @@ src/
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
 
-#### Memory writes: read-only cutover (this PR)
+#### Memory writes: the live agent is read-only
 
-This PR makes the live agent **read-only for memory** — the nightly job (already running from the Part A
-PR) is now the **sole writer** of `context_entries`:
+The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ever _reads_ them:
 
-- The `update_context_entry` tool handler is removed from `chat_agent.ts` entirely, and its function
-  definition (`mistral_config/conversation/functions/update_context_entry.json`) is deleted. `ChatAgent`
-  only ever _reads_ `context_entries` now, via `read_context_entry`.
-- `ContextService`'s eager-loaded set drops the `Session with [sender]` entry, leaving just
-  `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
-- `mistral_config/conversation/system_prompt.txt` tells the agent that deeper facts and past conversation
-  history surface automatically via the Mistral library's RAG (no tool call needed).
-- `Session with X` / `Journal with X` are retired from the data model entirely (`db_proxy.ts`,
-  `database/schema.sql`) — not just left empty.
+- There is no `update_context_entry` tool in the live agent. A stray call to it (for example from a stale
+  agent definition in Mistral Studio) is answered with an error result instead of being executed.
+  `read_context_entry` lazy-loads other `Profile of X` entries; titles already injected into the current
+  conversation are not returned a second time.
+- `ContextService`'s eager-loaded set is just `Profile of [sender]` + `Profile of Yasmin` + `Family notes`.
+  There are no `Session with X` / `Journal with X` entries in the data model.
+- `mistral_config/conversation/system_prompt.txt` tells the agent that deeper facts and conversation history
+  from earlier days surface automatically via the Mistral library's RAG (no tool call needed). Conversations
+  from the current day are not in the library yet.
 
-Before this PR (on the Part A branch/PR, or on `main`), `ChatAgent` still both read and wrote
-`context_entries` directly, exactly as it did before the nightly memory pipeline existed — see the Part A
-PR's own `AGENTS.md` for that (pre-cutover) description.
+#### Conversation restarts and the handoff
+
+A live conversation is replaced by a fresh one when it reaches `MAX_TURNS_PER_SESSION` user turns (Mistral
+reprocesses the full history every turn, so latency grows) and when a conversation turns out to be gone or
+broken (HTTP 404/400, or a failed tool request). The old conversation is left for the nightly job to journal
+and delete. So the new one does not start blind, its first prompt carries a `<previous_conversation>` block
+(`src/handoff.ts`):
+
+- `<summary>`: a short summary of the older turns, written by a dedicated Mistral Studio agent
+  (`AGENT_ID_SUMMARIZER`, prompt in `mistral_config/summarizer/system_prompt.txt`) called with
+  `store: false`; the throwaway conversation it creates is deleted right after. The previous summary is fed
+  into the next one, so chained restarts keep the thread.
+- `<recent_messages>`: the last 3 turns, verbatim (user text without the injected context entries, capped
+  per message).
+- The summary is built in the background right after the turn that exhausts the budget. The next turn waits
+  up to 5 seconds for it and otherwise goes with the recent messages only. Without `AGENT_ID_SUMMARIZER`, or
+  when the summarizer fails, the handoff degrades to recent messages (and the previous summary, if any); it
+  never blocks or fails the user's message.
+- Context entries are _not_ part of the handoff: the fresh conversation gets the sender's profile, family
+  notes and Yasmin's profile again as on any first turn.
+- The nightly journal strips the block (`stripHandoffBlock` in `src/nightly/reflection.ts`), because the old
+  conversation is journaled on its own.
 
 ### Key Classes & Services
 
-- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory as of this PR — see Data Flow above.
+- **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory (see above); on a restart it prepends the handoff block built by `src/handoff.ts`.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
-- **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used exclusively by the nightly pipeline — separate from `ChatAgent`'s own inline `fetch` calls.
+- **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
 - **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the prompts/agent calls for journaling, integrating, reviewing, and compacting; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back; `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
@@ -190,11 +212,12 @@ Required for runtime:
 
 Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 
-- `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the (post-cutover) live agent's RAG reads from
+- `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the live agent's RAG reads from
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the dedicated nightly memory-consolidation agent
 - `MEMORY_TZ` - IANA timezone the nightly job's schedule/watermark are computed in (default `Europe/Berlin`)
+- `AGENT_ID_SUMMARIZER` - Optional: Mistral agent that summarizes a conversation for the restart handoff (see above). Without it the handoff carries only the last turns
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
-- `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The compacted `Session with [sender]` context entry carries the thread across the cutover, same as overnight.
+- `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The fresh conversation is seeded with a summary and the last 3 turns of the old one (see Conversation restarts and the handoff).
 
 ## API Endpoints
 

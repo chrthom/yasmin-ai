@@ -68,30 +68,27 @@ batch, via `ContextService`/`ChatAgent`.
 
 An earlier iteration of this system also eagerly loaded a `Session with [Sender]` entry (topics to bring up,
 questions to ask next), populated by the live conversation agent writing to it directly via an
-`update_context_entry` tool. This PR (`feature/nightly-memory-part-b`, the "read-only cutover") retires
-that whole mechanism:
+`update_context_entry` tool. That whole mechanism is gone:
 
-- **Code:** removes `update_context_entry` from `chat_agent.ts`, drops `Session with [Sender]` from
-  `ContextService`'s eager set, and rewrites the system prompt accordingly. Proactive topics/questions now
-  live inside `Profile of [Sender]` itself (an "Open Topics" section), folded in nightly by the memory
-  pipeline's compaction step — see §4.
-- **Data:** `db_proxy.ts` and `database/schema.sql` no longer seed any `Session with X` or `Journal with X`
-  rows at all — they're gone from the model entirely, not left behind empty.
-- **Sequencing when deploying this PR — code before data cleanup, not the other way around:** on the
-  prerequisite Part A branch/PR (`feature/nightly-memory-part-a`) — i.e. before this PR's cutover code is
-  live — the live agent's system prompt and `update_context_entry` tool still assume a
-  `Session with [Sender]` entry exists. Applying this PR's `schema.sql` change to a production database
-  before its `chat_agent.ts` code is actually deployed would make every attempt to write to it silently
-  fail (`UPDATE ... WHERE title = ?` matches zero rows). Both changes are commits within this one PR and
-  merge/deploy as a single unit, only after the nightly memory job (§4, from the Part A PR) has been
-  verified in production for a while — see `docs/nightly_memory_processing_implementation.md` §13 and this
-  PR's own `docs/deployment_checklist.md`.
+- **Code:** `chat_agent.ts` has no `update_context_entry` handler (a stray call is answered with an error
+  result), `ContextService`'s eager set does not include `Session with [Sender]`, and the system prompt
+  describes a read-only agent. Proactive topics/questions live inside `Profile of [Sender]` itself (an "Open
+  Topics" section), folded in nightly by the memory pipeline's compaction step — see §4. Continuity across a
+  conversation restart is handled by the handoff block (summary + last turns of the old conversation, see
+  `AGENTS.md`), not by a stored entry.
+- **Data:** `db_proxy.ts` and `database/schema.sql` do not seed any `Session with X` or `Journal with X`
+  rows — they are gone from the model entirely, not left behind empty.
+- **Sequencing when deploying — code before data cleanup, not the other way around:** while the old code is
+  live, the live agent's system prompt and `update_context_entry` tool still assume a `Session with [Sender]`
+  entry exists. Applying the new `schema.sql` to a production database before the new `chat_agent.ts` is
+  deployed would make every attempt to write to it silently fail (`UPDATE ... WHERE title = ?` matches zero
+  rows). See `docs/deployment_checklist.md` and `docs/nightly_memory_processing_implementation.md` §13.
 - **Existing production rows:** if a production database already has old `Session with X` / `Journal with X`
-  rows from before this cleanup, applying the updated `schema.sql` will **not** remove them (its
-  `INSERT ... ON DUPLICATE KEY UPDATE` only adds/updates rows, it never deletes). Run
+  rows, applying the updated `schema.sql` will **not** remove them (its `INSERT ... ON DUPLICATE KEY UPDATE`
+  only adds/updates rows, it never deletes). Run
   `DELETE FROM context_entries WHERE title LIKE 'Session with %' OR title LIKE 'Journal with %';` once, by
-  hand, if you want to purge them — harmless to leave them either way, since nothing reads or writes them
-  again after cutover.
+  hand, if you want to purge them (after `scripts/bootstrap-memory.ts` has been run) — harmless to leave them
+  either way, since nothing reads or writes them anymore.
 
 ---
 
@@ -157,22 +154,21 @@ nightly pipeline, but has no mapping to a `context_entries` title or the Mistral
   and uploads changed files to the Mistral library.
 - **Read by:** the live conversation agent, via the Mistral library's built-in RAG (semantic search) — no
   tool call needed, unlike the eager/lazy `context_entries` groups above.
-- **Current status:** the library has been populated nightly since the Part A PR, and the live agent's
-  system prompt (as of this PR's cutover, §2.1) now tells it that deeper facts and past conversations
-  surface automatically from this library — RAG consumption is live.
+- **Current status:** the library is populated nightly, and the live agent's system prompt (§2.1) tells it
+  that deeper facts and past conversations from earlier days surface automatically from this library — RAG
+  consumption is live. Conversations from the current day are not in it yet.
 - **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. That
-  content is stripped before it's compacted into the `context_entries` eager cache, and (since a Part A
-  review follow-up) also stripped before it's ever uploaded to the Mistral library in the first place —
+  content is stripped before it's compacted into the `context_entries` eager cache, and also stripped before it's ever uploaded to the Mistral library in the first place —
   it never leaves local storage (`memory_archive` keeps the unstripped version for versioning/audit only).
 
 ---
 
 ## 5. Summary: Which Store Answers Which Question
 
-| Yasmin needs to know...                                       | Source                                                                |
-| :------------------------------------------------------------ | :-------------------------------------------------------------------- |
-| Who am I, what do I like? / Who is this family?               | `Profile of Yasmin`, `Family notes` (eager)                           |
-| Basic facts about the person I'm talking to right now         | `Profile of [Sender]` (eager)                                         |
-| Basic facts about someone else who comes up in conversation   | `Profile of [Person]` (lazy, `read_context_entry`)                    |
-| A deep, specific memory or something from a past conversation | Mistral library RAG over `people/<name>.md` / journals (post-cutover) |
-| The full verbose history / audit trail behind a profile       | `memory_archive` (MariaDB, versioned; nightly job only)               |
+| Yasmin needs to know...                                       | Source                                                  |
+| :------------------------------------------------------------ | :------------------------------------------------------ |
+| Who am I, what do I like? / Who is this family?               | `Profile of Yasmin`, `Family notes` (eager)             |
+| Basic facts about the person I'm talking to right now         | `Profile of [Sender]` (eager)                           |
+| Basic facts about someone else who comes up in conversation   | `Profile of [Person]` (lazy, `read_context_entry`)      |
+| A deep, specific memory or something from a past conversation | Mistral library RAG over `people/<name>.md` / journals  |
+| The full verbose history / audit trail behind a profile       | `memory_archive` (MariaDB, versioned; nightly job only) |
