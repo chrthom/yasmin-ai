@@ -354,6 +354,34 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
     .join('\n\n');
 }
 
+export interface ExistingTopic {
+  path: string;
+  content: string;
+}
+
+/** Per-topic excerpt cap for the duplicate barrier: the Aliases line plus the leading content is
+ * plenty to judge semantic duplication; without a cap the review prompt grows unboundedly with the
+ * number and size of topic files. */
+const TOPIC_EXCERPT_MAX_CHARS = 600;
+
+/** Truncates a topic's content for the review prompt, always keeping the leading Aliases line intact */
+function topicExcerpt(content: string): string {
+  if (content.length <= TOPIC_EXCERPT_MAX_CHARS) {
+    return content;
+  }
+  const aliased = content.replace(/\r/g, '');
+  const firstLineBreak = aliased.indexOf('\n');
+  const head =
+    firstLineBreak !== -1 && firstLineBreak < TOPIC_EXCERPT_MAX_CHARS
+      ? aliased.slice(0, firstLineBreak + 1)
+      : '';
+  return (
+    head +
+    aliased.slice(head.length, TOPIC_EXCERPT_MAX_CHARS).trim() +
+    '\n...[truncated for review; read the full file via get_long_term_file]'
+  );
+}
+
 /**
  * Builds the Phase-4 review prompt for a single staged update, given the evidence base. The attempt
  * number (0 for the initial review, 1+ for re-reviews after a revision) relaxes the grounding bar: the
@@ -361,11 +389,6 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
  * proposal stuck on interpretive disagreement, because a revision cannot create evidence that the
  * journals never contained.
  */
-export interface ExistingTopic {
-  path: string;
-  content: string;
-}
-
 export function reviewPrompt(
   update: StagedUpdate,
   currentContent: string | null,
@@ -404,8 +427,10 @@ export function reviewPrompt(
     (update.path.toLowerCase().startsWith('topics/') && existingTopics.length > 0
       ? '\n\nExisting topics (EXCLUDING ' +
         update.path +
-        '), each with its full current content:\n' +
-        existingTopics.map(topic => '--- ' + topic.path + ' ---\n' + topic.content).join('\n\n') +
+        '), each with its current content (long topics truncated):\n' +
+        existingTopics
+          .map(topic => '--- ' + topic.path + ' ---\n' + topicExcerpt(topic.content))
+          .join('\n\n') +
         '\n\nTopic DUPLICATE rule, applied in EVERY attempt: if any existing topic above covers the same ' +
         'subject as the proposed topic -- by title, by its Aliases line, or by content -- the proposal is ' +
         'a DUPLICATE. Reject it with a reason that names the existing topic and proposes merging the ' +

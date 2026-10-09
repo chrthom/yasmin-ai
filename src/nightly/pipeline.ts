@@ -278,9 +278,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let anyReviewFailed = false;
 
     // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every OTHER
-    // existing topic (title, Aliases line, content) so it can reject a semantic duplicate before it
-    // ever reaches the archive. Loaded once per run -- all archived topics at this point are
-    // pre-existing, since this run's own proposals are not archived yet.
+    // topic (title, Aliases line, content) so it can reject a semantic duplicate before it ever
+    // reaches the archive. Seeded from the archive and then EXTENDED as this run approves topic
+    // files -- otherwise two new topics staged in one night would both pass the barrier.
     let existingTopics: ExistingTopic[];
     try {
       const allCurrent = await listCurrentVersions();
@@ -291,8 +291,18 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       console.error('ERROR Failed to load existing topics for the review duplicate barrier: ' + error);
       existingTopics = [];
     }
+    const archivedTopicPaths = new Set(existingTopics.map(topic => topic.path.toLowerCase()));
 
-    for (const update of stagedUpdates) {
+    // The topic index is reviewed LAST and validated against the topics that actually made it into
+    // the archive: it references other files by path, so a rejected topics/*.md proposal must not
+    // leave a dangling registry entry behind.
+    const TOPIC_INDEX_PATH = 'general/topic-index.md';
+    const orderedUpdates = [
+      ...stagedUpdates.filter(update => update.path !== TOPIC_INDEX_PATH),
+      ...stagedUpdates.filter(update => update.path === TOPIC_INDEX_PATH)
+    ];
+
+    for (const update of orderedUpdates) {
       try {
         const currentVersion = await getCurrentVersion(update.path);
         const currentContent = currentVersion ? currentVersion.content : null;
@@ -341,14 +351,47 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           await deleteConversation(revisionConversationId);
         }
 
+        let contentToArchive = proposal;
+        if (verdict.approved && update.path === TOPIC_INDEX_PATH) {
+          // Registry validation: keep only the index lines whose topic file actually exists in the
+          // archive (pre-existing or approved earlier in this same run). A rejected or never-staged
+          // topic would otherwise leave a dangling registry entry.
+          const keptLines: string[] = [];
+          const droppedLines: string[] = [];
+          for (const line of proposal.split('\n')) {
+            const match = /topics\/[a-z0-9-]+\.md/i.exec(line);
+            if (match && !archivedTopicPaths.has(match[0].toLowerCase())) {
+              droppedLines.push(line);
+              continue;
+            }
+            keptLines.push(line);
+          }
+          if (droppedLines.length > 0) {
+            console.warn(
+              'WARN Dropping ' +
+                droppedLines.length +
+                ' topic-index line(s) whose topic file was not archived: ' +
+                droppedLines.join(' | ')
+            );
+            contentToArchive = keptLines.join('\n');
+          }
+        }
+
         if (verdict.approved) {
-          const { created } = await insertNextVersion(update.path, proposal, collectedAt);
+          const { created } = await insertNextVersion(update.path, contentToArchive, collectedAt);
           // Classify create-vs-update from whether an archived version already existed, not from
           // the AI-supplied isNew flag, which is never cross-checked against real archive state.
           if (created && currentContent === null) {
             filesCreatedFromReview++;
           } else if (created) {
             filesUpdatedFromReview++;
+          }
+          // Extend the same-run duplicate barrier and the index-validation set with the newly
+          // archived topic, so a second semantically-equal proposal staged this same night is
+          // still caught by the reviewer, and the index can reference it.
+          if (update.path.toLowerCase().startsWith('topics/')) {
+            existingTopics.push({ path: update.path, content: contentToArchive });
+            archivedTopicPaths.add(update.path.toLowerCase());
           }
         } else {
           // A reviewer rejection -- even after the revision cap -- is a normal, handled outcome: the
@@ -358,6 +401,18 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           console.warn(
             'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
           );
+          // A rejected topics/*.md duplicate means its material is NOT lost silently: the reviewer
+          // names the existing topic to merge into, and the next run's integrate pass re-reads the
+          // journals for this evidence window only if the watermark did not advance -- so make the
+          // lost material loud and auditable here.
+          if (update.path.toLowerCase().startsWith('topics/')) {
+            console.warn(
+              'WARN Topic proposal ' +
+                update.path +
+                ' was rejected as a duplicate; its material was NOT merged automatically. Merge targets among archived topics: ' +
+                [...archivedTopicPaths].join(', ')
+            );
+          }
         }
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);

@@ -209,6 +209,7 @@ Required for runtime:
 - `AGENT_ID_CONVERSATION` - Mistral agent identifier for the live conversation agent
 - `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the live agent RAGs against
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the nightly memory-consolidation agent
+- `NIGHTLY_MAX_ITERATIONS` - Optional: max tool-loop iterations for the nightly integrate agent (default 25; malformed values fall back to the default)
 - `DB_PASSWORD` - Database password (host/user/name are hardcoded in `src/config.ts`)
 
 Required once the nightly job is deployed (see Nightly Memory Pipeline above):

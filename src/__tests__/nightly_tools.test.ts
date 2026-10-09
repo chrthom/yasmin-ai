@@ -80,6 +80,7 @@ describe('nightly/tools', () => {
       expect(asUndefined.success).toBe(false);
       expect(getStagedUpdates()).toHaveLength(0);
     });
+
     it('stages general/topic-index.md', () => {
       const result = stage_update(
         'general/topic-index.md',
@@ -101,6 +102,14 @@ describe('nightly/tools', () => {
       const traversal = stage_update('topics/../secrets/x.md', 'evil', true);
       expect(traversal).toEqual({ success: true, path: 'topics/secrets-x.md' });
     });
+
+    it('transliterates German umlauts in topics/ slugs (Ausflüge -> ausfluege, not ausfl-ge)', () => {
+      const result = stage_update('topics/Ausflüge.md', 'Aliases: Ausflüge', true);
+      expect(result).toEqual({ success: true, path: 'topics/ausfluege.md' });
+      const sz = stage_update('topics/Schwarzwälder Straße.md', 'content', true);
+      expect(sz).toEqual({ success: true, path: 'topics/schwarzwaelder-strasse.md' });
+    });
+
     it('rejects a topics/ path with an empty slug', () => {
       const result = stage_update('topics/.md', 'content', true);
       expect(result.success).toBe(false);
@@ -109,6 +118,27 @@ describe('nightly/tools', () => {
   });
 
   describe('get_long_term_file', () => {
+    it('normalizes topics/ paths like stage_update, so a differently-written path still finds the file', async () => {
+      mockGetCurrentVersion.mockImplementation(async (path: string) =>
+        path === 'topics/urlaub-planung.md'
+          ? {
+              id: 7,
+              filePath: path,
+              content: 'topic content',
+              contentHash: 'hash',
+              version: 1,
+              mistralDocId: null,
+              syncedAt: null,
+              createdAt: new Date()
+            }
+          : null
+      );
+      const result = await get_long_term_file('topics/Urlaub Planung.md');
+      expect(result).toEqual({ path: 'topics/urlaub-planung.md', content: 'topic content', found: true });
+      const missing = await get_long_term_file('topics/.md');
+      expect(missing.found).toBe(false);
+    });
+
     it('reads through to the mocked model and returns the content when found', async () => {
       mockGetCurrentVersion.mockResolvedValueOnce({
         id: 1,

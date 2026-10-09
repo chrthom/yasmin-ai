@@ -838,6 +838,119 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 9b. Topics layer wiring
+  // -------------------------------------------------------------------------
+
+  it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'topics/urlaub-planung.md',
+      'Aliases: Urlaub Planung, Sommerreise\nFamilie will ans Meer.'
+    );
+    await archive.seed('people/bob.md', 'Bob profile'); // non-topic seed must not reach the barrier
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Aliases: Ausflüge\nWas die Familie am Urlaubsort tun will.',
+        isNew: true
+      });
+      return { finalText: 'staged a topic', iterations: 1 };
+    });
+    const seenTopics: any[][] = [];
+    mockRunReview.mockImplementation(
+      async (_update: any, _current: any, _journals: any, _attempt: any, existingTopics: any) => {
+        seenTopics.push(existingTopics);
+        return { approved: true, reason: 'ok' };
+      }
+    );
+    await runNightlyPipeline();
+    // Every review attempt saw exactly the archived topics -- the people/ seed excluded, the
+    // proposal's own path excluded, the other archived topic present with its content.
+    expect(seenTopics.length).toBeGreaterThan(0);
+    for (const topics of seenTopics) {
+      expect(topics.map((t: any) => t.path)).toEqual(['topics/urlaub-planung.md']);
+    }
+    expect(seenTopics[0][0].content).toContain('Sommerreise');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('same-run duplicate barrier: a topic approved earlier in the run is part of the next review barrier', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Aliases: Urlaub Aktivitäten',
+        isNew: true
+      });
+      return { finalText: 'staged two topics', iterations: 1 };
+    });
+    const seenTopics: any[][] = [];
+    mockRunReview.mockImplementation(
+      async (update: any, _current: any, _journals: any, _attempt: any, existingTopics: any) => {
+        seenTopics.push(existingTopics);
+        return { approved: true, reason: 'ok' };
+      }
+    );
+    await runNightlyPipeline();
+    // First topic review starts from the (empty) archive; the second must already see the first.
+    expect(seenTopics[0]).toEqual([]);
+    expect(seenTopics[1].map((t: any) => t.path)).toEqual(['topics/urlaub-planung.md']);
+    // Both were archived (the reviewer approved both) -- the barrier's job is visibility, not rejection.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'topics/urlaub-planung.md',
+      'Aliases: Sommerreise',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'topics/urlaub-aktivitaeten.md',
+      'Aliases: Urlaub Aktivitäten',
+      expect.any(Date)
+    );
+  });
+
+  it('topic index is archived last with lines dropped for topics that were not archived', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'general/topic-index.md',
+        content:
+          'Index:\n' +
+          'topics/urlaub-planung.md - Familienurlaub - Alice, Bob\n' +
+          'topics/abgelehntes-thema.md - nie archiviert - Alice',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      return { finalText: 'staged index and topic', iterations: 1 };
+    });
+    // Reject the 'abgelehntes-thema' topic (not staged at all), approve the rest -- the index line
+    // for the never-archived topic must be dropped, the line for the approved topic must survive.
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+    const result = await runNightlyPipeline();
+    const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
+    expect(indexCall).toBeDefined();
+    expect(indexCall![1]).toContain('topics/urlaub-planung.md - Familienurlaub - Alice, Bob');
+    expect(indexCall![1]).not.toContain('abgelehntes-thema');
+    // The approved topic WAS archived and the index was archived AFTER it (index call comes last).
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(true);
+    const paths = mockInsertNextVersion.mock.calls
+      .map(call => call[0])
+      .filter(p => p !== 'journals/alice/conv-1.md');
+    expect(paths.indexOf('general/topic-index.md')).toBeGreaterThan(
+      paths.indexOf('topics/urlaub-planung.md')
+    );
+    expect(result.status).toBe('completed');
+  });
+
+  // -------------------------------------------------------------------------
   // 10. Phase 6 privacy wiring
   // -------------------------------------------------------------------------
   it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
