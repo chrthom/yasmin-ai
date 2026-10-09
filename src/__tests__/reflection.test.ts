@@ -20,6 +20,7 @@ import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';
 import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
+  integratePrompt,
   journalPrompt,
   reviewPrompt,
   runJournal,
@@ -174,6 +175,19 @@ describe('reflection', () => {
     });
   });
 
+  describe('integratePrompt', () => {
+    it('carries the decay instruction: age uncorroborated facts, but never stage mechanical decay edits', () => {
+      const prompt = integratePrompt();
+      expect(prompt).toContain('last_touched_at');
+      expect(prompt).toContain('FRESH');
+      expect(prompt).toContain('AGING');
+      expect(prompt).toContain('DECAYED');
+      expect(prompt).toContain('confidence marker');
+      expect(prompt).toContain('never stage a file JUST to add decay annotations');
+      expect(prompt).toContain('A file whose content is merely old stays untouched');
+    });
+  });
+
   describe('runIntegrate', () => {
     it('passes agentId/maxIterations through to runAgentToolLoop and returns its result', async () => {
       mockRunAgentToolLoop.mockResolvedValueOnce({
@@ -266,6 +280,18 @@ describe('reflection', () => {
         1
       );
       expect(later).toContain('personality traits, emotional patterns, and self-image');
+    });
+
+    it('judges decay-related rewordings by their dating and rejects wrong ones', () => {
+      const prompt = reviewPrompt(update, 'old content', [], 0);
+      expect(prompt).toContain('Judge decay-related rewordings by their dating');
+      expect(prompt).toContain(
+        'reject a decay annotation on a fact that the evidence actually re-corroborates'
+      );
+      expect(prompt).toContain(
+        'a correctly dated decay annotation (confidence marker, archive section) is a valid, acceptable change'
+      );
+      expect(prompt).toContain('mechanical decay rewording without a substantive reason');
     });
   });
 

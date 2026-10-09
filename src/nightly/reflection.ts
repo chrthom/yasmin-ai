@@ -244,6 +244,18 @@ export function integratePrompt(): string {
     'people -- a shared interest, a common plan, a topic several family members returned to, a change ' +
     'that affects the whole family -- consolidate that pattern into general/family.md instead of ' +
     'duplicating it across the individual profiles.\n' +
+    'Also apply the decay instruction: every file path from list_long_term_files carries a last_touched_at ' +
+    'date -- when its content was last changed by new evidence. A fact that has not been corroborated for a ' +
+    'long time should age instead of being asserted as fresh forever. Three states: FRESH (recently ' +
+    'corroborated -- leave as is), AGING (no new corroboration for a long time -- annotate the fact with a ' +
+    'confidence marker such as "(veraltet? unsicher geworden?)" or "(möglicherweise veraltet)"), DECAYED (no ' +
+    'corroboration for a very long time -- move the fact into an "## Archiv" section at the end of the file ' +
+    'or remove it entirely). When you rewrite a file you have read, judge its facts by last_touched_at and ' +
+    "today's date, not by how confidently they are written. But never stage a file JUST to add decay " +
+    'annotations: decay only ever rides along with a substantive update that has a real reason (new facts, ' +
+    'corrections, consolidation). A file whose content is merely old stays untouched -- do not mechanically ' +
+    "reword aging files without a substantive reason, and never reword a fact that today's journals actually " +
+    'corroborate again.\n\n' +
     'Budget your tool calls: read only the files you actually intend to update, and stage only files that ' +
     'genuinely need a change. You do not have unlimited iterations.\n\n' +
     'Remember the file path conventions: ' +
@@ -386,6 +398,12 @@ export function reviewPrompt(
     SELF_PROFILE_VOICE_RULE +
     '\n' +
     groundingRule +
+    'Judge decay-related rewordings by their dating: a fact annotated as aging or moved to an archive ' +
+    "section must genuinely lack recent corroboration, given the file's last_touched_at and the dates in the " +
+    'current content -- reject a decay annotation on a fact that the evidence actually re-corroborates, and ' +
+    'also reject a proposal that rewords well-dated facts with an incorrect or invented dating. Conversely, ' +
+    'a correctly dated decay annotation (confidence marker, archive section) is a valid, acceptable change. ' +
+    'Reject a proposal whose ONLY change is mechanical decay rewording without a substantive reason.\n' +
     'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
     'German), broken file structure (the 7-section person template must stay intact and complete ' +
     'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
