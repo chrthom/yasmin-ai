@@ -40,6 +40,7 @@ src/
 ├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
 ├── handoff.ts          # Summary + last turns handed to a fresh conversation after a restart
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
+├── channel_history.ts   # <channel_history> block: build/escape/strip for group channel context
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
 │   ├── db_proxy.ts     # Database proxy loaded with mock background entries

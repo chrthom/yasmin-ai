@@ -14,6 +14,12 @@ jest.mock('../config', () => ({
         bot: 'test-bot-token',
         slash: 'test-slash-token',
         group: 'test-group-token'
+      },
+      history: {
+        prevCount: 10,
+        botUserId: 99,
+        slashPrefix: '/yasmin',
+        fetchTimeoutMs: 5000
       }
     },
     rateLimit: { windowMs: 60 * 1000, max: 15 },

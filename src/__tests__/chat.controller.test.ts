@@ -369,7 +369,9 @@ describe('Chat Controller', () => {
       expect(prompt).toContain('<channel_history>');
       expect(prompt).toContain('alice: hello');
       expect(prompt).toContain('</channel_history>');
-      expect(prompt).toContain('Answer the following message from testuser:\nHello');
+      expect(prompt).toContain(
+        '</channel_history>\n\nHello\n\nYour answer must be shorter than 1500 characters.'
+      );
       expect(prompt).not.toContain('yasmin');
     });
 

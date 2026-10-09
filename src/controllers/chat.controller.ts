@@ -25,10 +25,7 @@ async function processRequest(
   try {
     let prompt = userText;
     if (channelContext) {
-      prompt =
-        `${channelContext}\n\n` +
-        'The transcript above shows the recent channel conversation. ' +
-        `Answer the following message from ${username}:\n${userText}`;
+      prompt = `${channelContext}\n\n${userText}`;
     }
     const outputs = await chatAgent.processRequest(prompt, username, shortAnswer);
     const text = chatAgent.convertMultiPart(outputs);
@@ -143,7 +140,7 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.slash,
     responseStatus: 200,
-    stripPrefix: '/yasmin',
+    stripPrefix: config.synology.history.slashPrefix,
     sendToSynology: false,
     includeChannelHistory: true
   });

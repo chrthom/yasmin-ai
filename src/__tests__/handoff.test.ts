@@ -172,6 +172,13 @@ describe('handoff', () => {
       ] as never);
       expect(transcript).toBe('user: Hi\nassistant: Hello');
     });
+    it('buildTranscript handles the real prompt shape (block + text, no wrapper sentence)', () => {
+      const transcript = buildTranscript([
+        msg('user', '<channel_history>\nalice: hi\n</channel_history>\n\nWhat did alice mean?'),
+        msg('assistant', 'She meant well.')
+      ] as never);
+      expect(transcript).toBe('user: What did alice mean?\nassistant: She meant well.');
+    });
     it('buildTranscript drops the block from replayed first messages', () => {
       const transcript = buildTranscript([
         msg('user', '<previous_conversation>\nSECRET SUMMARY\n</previous_conversation>\n\nHi'),

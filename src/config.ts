@@ -32,7 +32,7 @@ export const config = {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
     history: {
       prevCount: 10,
-      botUserId: parseInt(process.env['CHAT_BOT_USER_ID'] || '0', 10),
+      botUserId: Number(process.env['CHAT_BOT_USER_ID'] || 0) || 0,
       slashPrefix: '/yasmin',
       fetchTimeoutMs: 5000
     },
@@ -91,7 +91,7 @@ export function validateEnv(): void {
     }
   });
 
-  if (!process.env['CHAT_BOT_USER_ID']) {
+  if (!Number(process.env['CHAT_BOT_USER_ID'])) {
     console.warn(
       "WARNING: CHAT_BOT_USER_ID is not set; the bot's own replies cannot be excluded from group channel history."
     );
