@@ -38,8 +38,7 @@ describe('SynologyClient', () => {
 
   describe('chunkText', () => {
     it('should chunk text by newlines when possible', () => {
-      const longText =
-        'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10';
+      const longText = 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10';
       const chunks = synologyClient.chunkText(longText, 20);
       expect(chunks.length).toBeGreaterThan(1);
       expect(chunks[0]).toBe('line1\nline2\nline3');
@@ -79,13 +78,13 @@ describe('SynologyClient', () => {
       global.fetch = originalFetch;
     });
 
-    const makePost = (
-      postId: number,
-      userId: number,
-      username: string,
-      text: string,
-      timestamp: number
-    ) => ({ post_id: postId, user_id: userId, username, text, timestamp });
+    const makePost = (postId: number, userId: number, username: string, text: string, timestamp: number) => ({
+      post_id: postId,
+      user_id: userId,
+      username,
+      text,
+      timestamp
+    });
 
     it('should parse a list response', async () => {
       global.fetch = jest.fn().mockResolvedValue({
