@@ -5,6 +5,7 @@ jest.mock('../config', () => ({
       nightlyAgentId: 'nightly-agent-1'
     },
     nightly: {
+      tz: 'Europe/Berlin',
       maxIterations: 15,
       eagerMaxChars: 10000
     }
@@ -21,6 +22,7 @@ import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
   compactPrompt,
+  formatRunDate,
   integratePrompt,
   journalPrompt,
   reviewPrompt,
@@ -212,6 +214,18 @@ describe('reflection', () => {
         expect.objectContaining({ agentId: 'nightly-agent-1', maxIterations: 15, executeTool })
       );
     });
+    it('injects the run date (MEMORY_TZ) into the integrate prompt sent to the agent loop', async () => {
+      mockRunAgentToolLoop.mockResolvedValueOnce({
+        conversationId: 'conv-1',
+        finalText: 'no changes needed',
+        iterations: 1
+      });
+      await runIntegrate(jest.fn());
+      expect(mockRunAgentToolLoop).toHaveBeenCalledTimes(1);
+      const initialInputs = mockRunAgentToolLoop.mock.calls[0][0].initialInputs;
+      expect(initialInputs).toHaveLength(1);
+      expect(initialInputs[0].content).toMatch(/Today is \d{4}-\d{2}-\d{2}\./);
+    });
   });
 
   describe('runReview', () => {
@@ -296,7 +310,8 @@ describe('reflection', () => {
       const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
       expect(prompt).toContain('Judge decay-related rewordings by their dating');
       expect(prompt).toContain('The file was last touched');
-      expect(prompt).toContain('2026-01-01T00:00:00.000Z');
+      expect(prompt).toContain('on 2026-01-01.');
+      expect(prompt).not.toContain('T00:00:00.000Z');
       expect(prompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
       expect(prompt).toContain(
         'reject a decay annotation on a fact that the evidence actually re-corroborates'
@@ -322,7 +337,7 @@ describe('reflection', () => {
       const sentPrompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(sentPrompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
       expect(sentPrompt).toContain('The file was last touched');
-      expect(sentPrompt).toContain('2026-01-01T00:00:00.000Z');
+      expect(sentPrompt).toContain('on 2026-01-01.');
     });
   });
 
@@ -413,6 +428,15 @@ describe('reflection', () => {
       );
       expect(prompt).toContain('do not carry it over');
       expect(prompt).toContain('do not let archived facts leak into the seven live sections');
+    });
+  });
+
+  describe('formatRunDate', () => {
+    it('formats a Date as YYYY-MM-DD in the configured memory timezone', () => {
+      expect(formatRunDate(new Date('2026-10-09T23:30:00Z'))).toBe('2026-10-10');
+    });
+    it('uses UTC faithfully for a UTC instant near midnight in the other direction', () => {
+      expect(formatRunDate(new Date('2026-01-01T00:00:00Z'))).toBe('2026-01-01');
     });
   });
 

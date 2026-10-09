@@ -55,6 +55,12 @@ input), and only after the code is deployed. Harmless to skip: those rows just s
 The nightly job is the sole writer of `context_entries` from this point on; `nightly_job_log` is only that
 job's run log and never writes context itself.
 
+Note on decay: every file seeded by `scripts/bootstrap-memory.ts` shares the bootstrap run's
+`created_at` as its `last_touched_at`, so the first nightly runs see all seeded files as equally
+fresh. The decay instruction therefore tells the agent to judge fact age primarily by the absolute
+dates written inside the file content, not by `last_touched_at` alone; the shared bootstrap timestamp
+evens out as files gain per-file history over time.
+
 ---
 
 ## Rollback

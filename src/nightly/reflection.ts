@@ -421,7 +421,9 @@ export function reviewPrompt(
     'Judge decay-related rewordings by their dating. Today is ' +
     formatRunDate(new Date()) +
     '. The file was last touched (its content last changed by new evidence) on ' +
-    (lastTouchedAt ?? 'never -- this would be its first version') +
+    (lastTouchedAt === null
+      ? 'never -- this would be its first version'
+      : formatRunDate(new Date(lastTouchedAt))) +
     '. A fact annotated as aging or moved to an archive section must genuinely lack recent corroboration, ' +
     'given that last_touched_at date and the absolute dates in the current content -- reject a decay ' +
     'annotation on a fact that the evidence actually re-corroborates, and also reject a proposal that ' +

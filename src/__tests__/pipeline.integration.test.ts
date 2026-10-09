@@ -859,6 +859,21 @@ describe('nightly pipeline integration', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
+  it('Phase 6 strips a trailing ## Archiv section before compaction -- decayed facts never reach the eager cache', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'people/bob.md',
+      'Public fact about Bob.\n\n## Archiv\nBob used to play piano in 2010.'
+    );
+    await runNightlyPipeline();
+    expect(mockRunCompact).toHaveBeenCalledTimes(1);
+    const [, , strippedContentPassedToCompact] = mockRunCompact.mock.calls[0];
+    expect(strippedContentPassedToCompact).toContain('Public fact about Bob.');
+    expect(strippedContentPassedToCompact).not.toContain('## Archiv');
+    expect(strippedContentPassedToCompact).not.toContain('piano');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
   // -------------------------------------------------------------------------
   // 11. Phase 6 empty-compaction guard
   // -------------------------------------------------------------------------
