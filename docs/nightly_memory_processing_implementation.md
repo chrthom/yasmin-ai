@@ -221,7 +221,7 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 
 **Phase 3 — Integrate.** One `askAgent(nightly, integrationPrompt, tools)` tool loop (`maxIterations` 15). Tools (§7): reads come from `memory_archive`; the AI **stages** proposed verbose updates via `stage_update`. Returns the staged list. No real store is written yet.
 
-**Phase 4 — Review + Archive.** For each staged update: `askAgent(nightly, reviewPrompt(update, currentContent, todaysJournals))` → per-file verdict (structured JSON). Rejected files → quarantined (kept at current version, logged), **not** batch-aborted. Accepted files: in one transaction, insert new `memory_archive` versions (skip if `content_hash` unchanged → no churn). Commit **before** any Mistral write.
+**Phase 4 — Review + Archive.** For each staged update: `askAgent(nightly, reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals))` → per-file verdict (structured JSON). Rejected files → quarantined (kept at current version, logged), **not** batch-aborted. Accepted files: in one transaction, insert new `memory_archive` versions (skip if `content_hash` unchanged → no churn). Commit **before** any Mistral write.
 
 **Phase 5 — Upload.** For each current version with `synced_at IS NULL`: `replaceDocument(path, content)` (delete old `mistral_doc_id`, upload, store new id), set `synced_at`. On failure: retry; still failing → leave `synced_at` NULL (retried next run) and mark job `partial`. **Orphan reconcile:** `listDocuments()`; delete any Mistral doc whose path is not the current archive row (handles renames / failed prior deletes).
 

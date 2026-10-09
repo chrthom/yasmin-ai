@@ -20,6 +20,7 @@ import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';
 import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
+  compactPrompt,
   integratePrompt,
   journalPrompt,
   reviewPrompt,
@@ -189,6 +190,9 @@ describe('reflection', () => {
       expect(prompt).toContain('last_touched_at is a file-level signal');
       expect(prompt).toContain('lean primarily on the absolute dates written inside the content itself');
       expect(prompt).toContain('optional "## Archiv" section');
+      expect(prompt).toContain(
+        'optionally followed by an "## Archiv" section at the very end for fully decayed facts'
+      );
     });
   });
 
@@ -311,6 +315,15 @@ describe('reflection', () => {
       expect(prompt).toContain('optionally followed by an "## Archiv" section at the very end');
       expect(prompt).toContain('an Archiv section placed before the seventh section');
     });
+    it('injects the date and lastTouchedAt into the prompt actually sent to askAgent', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
+      await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(mockAskAgent).toHaveBeenCalledTimes(1);
+      const sentPrompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(sentPrompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
+      expect(sentPrompt).toContain('The file was last touched');
+      expect(sentPrompt).toContain('2026-01-01T00:00:00.000Z');
+    });
   });
 
   describe('reviseProposal', () => {
@@ -388,6 +401,18 @@ describe('reflection', () => {
 
       const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(prompt).toContain('first person');
+    });
+  });
+
+  describe('compactPrompt (person)', () => {
+    it('tells the compactor to omit an Archiv section instead of leaking decayed facts', () => {
+      const prompt = compactPrompt('person', 'Alice', 'Alice content');
+      expect(prompt).toContain('EXACTLY this markdown template');
+      expect(prompt).toContain(
+        'If the content contains an "## Archiv" section with decayed facts, OMIT that section'
+      );
+      expect(prompt).toContain('do not carry it over');
+      expect(prompt).toContain('do not let archived facts leak into the seven live sections');
     });
   });
 
