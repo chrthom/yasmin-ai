@@ -54,7 +54,7 @@ export const config = {
     lockStaleMs: 2 * 60 * 60 * 1000,
     maxIterations: 15,
     archiveKeepVersions: 10,
-    eagerMaxChars: 2000,
+    eagerMaxChars: 10000,
     watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000
   }
 } as const;

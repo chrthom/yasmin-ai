@@ -6,7 +6,7 @@ jest.mock('../config', () => ({
     },
     nightly: {
       maxIterations: 15,
-      eagerMaxChars: 2000
+      eagerMaxChars: 10000
     }
   }
 }));
@@ -359,7 +359,7 @@ describe('reflection', () => {
     });
 
     it('retries once and then truncates deterministically if still over cap', async () => {
-      const tooLong = 'b'.repeat(2500);
+      const tooLong = 'b'.repeat(10500);
       mockAskAgent
         .mockResolvedValueOnce({ outputText: tooLong })
         .mockResolvedValueOnce({ outputText: tooLong });
@@ -367,7 +367,7 @@ describe('reflection', () => {
       const result = await runCompact('person', 'Alice', 'stripped content');
 
       expect(mockAskAgent).toHaveBeenCalledTimes(2);
-      expect(result).toBe(truncateToCap(tooLong, 2000));
+      expect(result).toBe(truncateToCap(tooLong, 10000));
       expect(result.endsWith('…[truncated]')).toBe(true);
     });
   });
