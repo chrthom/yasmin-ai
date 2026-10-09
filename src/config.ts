@@ -59,7 +59,7 @@ export const config = {
     maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
     maxRevisions: 3,
     lockStaleMs: 2 * 60 * 60 * 1000,
-    maxIterations: 15,
+    maxIterations: parseInt(process.env['NIGHTLY_MAX_ITERATIONS'] || '25', 10),
     archiveKeepVersions: 10,
     eagerMaxChars: 10000,
     watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000

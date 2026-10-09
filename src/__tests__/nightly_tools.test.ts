@@ -80,6 +80,32 @@ describe('nightly/tools', () => {
       expect(asUndefined.success).toBe(false);
       expect(getStagedUpdates()).toHaveLength(0);
     });
+    it('stages general/topic-index.md', () => {
+      const result = stage_update(
+        'general/topic-index.md',
+        'topics/urlaub-planung.md - Urlaubsplanung - Christopher, Samira',
+        true
+      );
+      expect(result).toEqual({ success: true, path: 'general/topic-index.md' });
+      expect(getStagedUpdates()).toEqual([
+        {
+          path: 'general/topic-index.md',
+          content: 'topics/urlaub-planung.md - Urlaubsplanung - Christopher, Samira',
+          isNew: true
+        }
+      ]);
+    });
+    it('sanitizes a topics/ slug: casing, spaces, and a traversal fragment are normalized', () => {
+      const result = stage_update('topics/Urlaub Planung.md', 'Aliases: Urlaub', true);
+      expect(result).toEqual({ success: true, path: 'topics/urlaub-planung.md' });
+      const traversal = stage_update('topics/../secrets/x.md', 'evil', true);
+      expect(traversal).toEqual({ success: true, path: 'topics/secrets-x.md' });
+    });
+    it('rejects a topics/ path with an empty slug', () => {
+      const result = stage_update('topics/.md', 'content', true);
+      expect(result.success).toBe(false);
+      expect(getStagedUpdates()).toHaveLength(0);
+    });
   });
 
   describe('get_long_term_file', () => {

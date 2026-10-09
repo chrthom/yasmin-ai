@@ -39,7 +39,8 @@ import {
   runJournal,
   runReview,
   reviseProposal,
-  CompactKind
+  CompactKind,
+  ExistingTopic
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
@@ -276,6 +277,21 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let filesCreatedFromReview = 0;
     let anyReviewFailed = false;
 
+    // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every OTHER
+    // existing topic (title, Aliases line, content) so it can reject a semantic duplicate before it
+    // ever reaches the archive. Loaded once per run -- all archived topics at this point are
+    // pre-existing, since this run's own proposals are not archived yet.
+    let existingTopics: ExistingTopic[];
+    try {
+      const allCurrent = await listCurrentVersions();
+      existingTopics = allCurrent
+        .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
+        .map(row => ({ path: row.filePath, content: row.content }));
+    } catch (error) {
+      console.error('ERROR Failed to load existing topics for the review duplicate barrier: ' + error);
+      existingTopics = [];
+    }
+
     for (const update of stagedUpdates) {
       try {
         const currentVersion = await getCurrentVersion(update.path);
@@ -286,7 +302,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           { path: update.path, content: proposal, isNew: update.isNew },
           currentContent,
           todaysJournals,
-          0
+          0,
+          existingTopics.filter(topic => topic.path !== update.path)
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -312,7 +329,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
             todaysJournals,
-            revisions + 1
+            revisions + 1,
+            existingTopics.filter(topic => topic.path !== update.path)
           );
           revisions++;
         }

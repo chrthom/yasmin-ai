@@ -27,7 +27,8 @@ import {
   runIntegrate,
   runReview,
   reviseProposal,
-  runCompact
+  runCompact,
+  StagedUpdate
 } from '../nightly/reflection';
 
 const mockAskAgent = askAgent as jest.Mock;
@@ -258,6 +259,40 @@ describe('reflection', () => {
       expect(later).toContain('Review attempt 2');
     });
 
+    it('instructs the reviewer to reject a duplicate topics/ proposal and propose a merge', () => {
+      const update: StagedUpdate = {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Ausflüge',
+        isNew: true
+      };
+      const existing = [
+        { path: 'topics/urlaub-planung.md', content: 'Aliases: Urlaub Planung, Sommerreise' }
+      ];
+      const prompt = reviewPrompt(update, null, [], 0, existing);
+      expect(prompt).toContain('urlaub-planung.md');
+      expect(prompt).toContain('DUPLICATE');
+      expect(prompt).toContain('merging');
+    });
+    it('embeds every existing topic with its full content for the duplicate check', () => {
+      const update: StagedUpdate = {
+        path: 'topics/school-stress.md',
+        content: 'Aliases: Schulstress',
+        isNew: true
+      };
+      const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];
+      const prompt = reviewPrompt(update, null, [], 0, existing);
+      expect(prompt).toContain('--- topics/urlaub-planung.md ---');
+      expect(prompt).toContain('Aliases: Sommerreise');
+      expect(prompt).toContain('EXCLUDING topics/school-stress.md');
+      expect(prompt).not.toContain('--- topics/school-stress.md ---');
+    });
+    it('adds no topics context for a non-topic update even when topics exist', () => {
+      const update: StagedUpdate = { path: 'people/christopher.md', content: 'x', isNew: false };
+      const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];
+      const prompt = reviewPrompt(update, 'old', [], 0, existing);
+      expect(prompt).not.toContain('urlaub-planung.md');
+      expect(prompt).not.toContain('DUPLICATE');
+    });
     it('names self-profile personality synthesis specifically on later attempts for the self profile', () => {
       const later = reviewPrompt(
         { path: 'self-reflection/profile.md', content: 'new content', isNew: false },
