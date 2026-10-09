@@ -42,6 +42,10 @@ describe('handoff', () => {
   });
 
   describe('cleanStoredText', () => {
+    it('removes a channel history block', () => {
+      const raw = `<channel_history>\nalice: hi\n</channel_history>\n\n${userWithContext('Hello there')}`;
+      expect(cleanStoredText(raw)).toBe('Hello there');
+    });
     it('removes injected context, manifest, addressing line, length hint and nested handoff', () => {
       const raw = `<previous_conversation>\nold\n</previous_conversation>\n\n${userWithContext('Hello there')}`;
       expect(cleanStoredText(raw)).toBe('Hello there');
@@ -161,6 +165,13 @@ describe('handoff', () => {
       expect(stripHandoffBlock('<previous_conversation>\nx\n</previous_conversation>\n\nHi')).toBe('Hi');
     });
 
+    it('buildTranscript drops the channel history block from group messages', () => {
+      const transcript = buildTranscript([
+        msg('user', '<channel_history>\nalice: OTHER PERSON SAID THIS\n</channel_history>\n\nHi'),
+        msg('assistant', 'Hello')
+      ] as never);
+      expect(transcript).toBe('user: Hi\nassistant: Hello');
+    });
     it('buildTranscript drops the block from replayed first messages', () => {
       const transcript = buildTranscript([
         msg('user', '<previous_conversation>\nSECRET SUMMARY\n</previous_conversation>\n\nHi'),

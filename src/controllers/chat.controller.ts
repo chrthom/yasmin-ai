@@ -4,6 +4,7 @@ import { config } from '../config';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
 import { createRequestLogger } from '../middleware/requestTracing';
+import { buildChannelHistoryBlock } from '../channel_history';
 
 interface ChatControllerOptions {
   token: string;
@@ -43,7 +44,8 @@ async function fetchChannelHistory(
   logger: ReturnType<typeof createRequestLogger>,
   channelId: number,
   postId: number,
-  botUserId: number
+  botUserId: number,
+  stripPrefix?: string
 ): Promise<string | undefined> {
   try {
     const posts = await synologyClient.fetchPreviousMessages(
@@ -51,9 +53,9 @@ async function fetchChannelHistory(
       postId,
       config.synology.history.prevCount
     );
-    const transcript = synologyClient.formatChannelHistory(posts, botUserId);
+    const transcript = synologyClient.formatChannelHistory(posts, botUserId, stripPrefix);
     if (!transcript) return undefined;
-    return `<channel_history>\n${transcript}\n</channel_history>`;
+    return buildChannelHistoryBlock(transcript);
   } catch (error) {
     logger.warn('Failed to fetch channel history; continuing without it', { error });
     return undefined;
@@ -98,7 +100,8 @@ export function createChatController(
           logger,
           reqBody.channel_id,
           reqBody.post_id,
-          config.synology.history.botUserId
+          config.synology.history.botUserId,
+          options.stripPrefix
         );
       }
       const answer = await processRequest(

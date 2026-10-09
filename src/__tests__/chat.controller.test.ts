@@ -14,6 +14,12 @@ jest.mock('../config', () => ({
         bot: 'test-bot-token',
         slash: 'test-slash-token',
         group: 'test-group-token'
+      },
+      history: {
+        prevCount: 10,
+        botUserId: 99,
+        slashPrefix: '/yasmin',
+        fetchTimeoutMs: 5000
       }
     },
     rateLimit: { windowMs: 60 * 1000, max: 15 },
@@ -305,6 +311,126 @@ describe('Chat Controller', () => {
 
       expect(status).toHaveBeenCalledWith(500);
       expect(send).toHaveBeenCalledWith({ error: 'Internal server error' });
+    });
+  });
+
+  describe('Channel History', () => {
+    const historyResponse = {
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          data: {
+            posts: [
+              { post_id: 1, user_id: 10, username: 'alice', text: 'hello', timestamp: 100 },
+              { post_id: 2, user_id: 99, username: 'yasmin', text: 'bot reply', timestamp: 200 }
+            ]
+          }
+        })
+    };
+    const emptyConversationList = {
+      ok: true,
+      json: () => Promise.resolve([])
+    };
+    const conversationPost = (body: { inputs: { content: string }[] }) => ({
+      ok: true,
+      json: () => Promise.resolve({ outputs: [{ content: 'Test response', type: 'message.output' }] }),
+      body: JSON.stringify(body)
+    });
+
+    it('prepends the channel history block for group requests with channel_id and post_id', async () => {
+      mockFetch.mockResolvedValueOnce(historyResponse);
+      mockFetch.mockImplementationOnce(() => Promise.resolve(emptyConversationList));
+      mockFetch.mockImplementationOnce((url: string, init: { body: string }) =>
+        Promise.resolve(conversationPost(JSON.parse(init.body)))
+      );
+      const controller = createChatController(chatAgent, synologyClient, {
+        token: 'test-group-token',
+        responseStatus: 200,
+        sendToSynology: false,
+        includeChannelHistory: true
+      });
+      const req = createMockRequest(
+        {
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
+          username: 'testuser',
+          channel_id: 5,
+          post_id: 3
+        },
+        'application/json'
+      );
+      const { res, status } = createMockResponse();
+      await controller(req, res);
+      expect(status).toHaveBeenCalledWith(200);
+      const prompt = JSON.parse([...mockFetch.mock.calls].reverse().find(c => c[1] && c[1].body)![1].body)
+        .inputs[0].content;
+      expect(prompt).toContain('<channel_history>');
+      expect(prompt).toContain('alice: hello');
+      expect(prompt).toContain('</channel_history>');
+      expect(prompt).toContain('Answer the following message from testuser:\nHello');
+      expect(prompt).not.toContain('yasmin');
+    });
+
+    it('does not fetch history for bot (direct chat) requests', async () => {
+      mockFetch.mockImplementationOnce(() => Promise.resolve(emptyConversationList));
+      mockFetch.mockImplementationOnce((url: string, init: { body: string }) =>
+        Promise.resolve(conversationPost(JSON.parse(init.body)))
+      );
+      const controller = createChatController(chatAgent, synologyClient, {
+        token: 'test-bot-token',
+        responseStatus: 202,
+        sendToSynology: false
+      });
+      const req = createMockRequest(
+        {
+          text: 'Hello',
+          token: 'test-bot-token',
+          user_id: 1,
+          username: 'testuser',
+          channel_id: 5,
+          post_id: 3
+        },
+        'application/json'
+      );
+      const { res, sendStatus } = createMockResponse();
+      await controller(req, res);
+      expect(sendStatus).toHaveBeenCalledWith(202);
+      const prompt = JSON.parse([...mockFetch.mock.calls].reverse().find(c => c[1] && c[1].body)![1].body)
+        .inputs[0].content;
+      expect(prompt.endsWith('\n\nHello')).toBe(true);
+    });
+
+    it('falls back to the plain prompt when the history fetch fails', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('HTTP 500'));
+      mockFetch.mockImplementationOnce(() => Promise.resolve(emptyConversationList));
+      mockFetch.mockImplementationOnce((url: string, init: { body: string }) =>
+        Promise.resolve(conversationPost(JSON.parse(init.body)))
+      );
+      const controller = createChatController(chatAgent, synologyClient, {
+        token: 'test-group-token',
+        responseStatus: 200,
+        sendToSynology: false,
+        includeChannelHistory: true
+      });
+      const req = createMockRequest(
+        {
+          text: 'Hello',
+          token: 'test-group-token',
+          user_id: 1,
+          username: 'testuser',
+          channel_id: 5,
+          post_id: 3
+        },
+        'application/json'
+      );
+      const { res, status } = createMockResponse();
+      await controller(req, res);
+      expect(status).toHaveBeenCalledWith(200);
+      const prompt = JSON.parse([...mockFetch.mock.calls].reverse().find(c => c[1] && c[1].body)![1].body)
+        .inputs[0].content;
+      expect(prompt).toContain('\n\nHello\n\nYour answer must be shorter than 1500 characters.');
     });
   });
 });

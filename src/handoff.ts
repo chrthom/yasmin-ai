@@ -6,6 +6,7 @@ import {
   ConversationMessage
 } from './mistral/mistral_api';
 import { extractMessageText, isDialogueMessage } from './nightly/reflection';
+import { stripChannelHistoryBlock } from './channel_history';
 
 // When a live conversation is restarted (turn limit or poisoned-conversation respawn) the new one has no
 // history. The handoff replays a summary of the old conversation plus its last few turns inside a
@@ -26,7 +27,7 @@ interface Turn {
 // User messages are stored with the injected context (entries, manifest, "You are talking to", answer-length
 // hint) in front of what the user actually wrote; only the latter is dialogue.
 export const cleanStoredText = (text: string): string =>
-  text
+  stripChannelHistoryBlock(text)
     .replace(/<previous_conversation>[\s\S]*?<\/previous_conversation>/g, '')
     .replace(/<available_context_entries>[\s\S]*?<\/available_context_entries>/g, '')
     .replace(/<context_entry\b[^>]*>[\s\S]*?<\/context_entry>/g, '')

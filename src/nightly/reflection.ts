@@ -2,6 +2,7 @@ import { config } from '../config';
 import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
 import { isOverCap, truncateToCap } from './privacy';
 import { StagedUpdate, JournalEntry } from './tools';
+import { stripChannelHistoryBlock } from '../channel_history';
 
 // ---------------------------------------------------------------------------
 // Shared transcript helpers
@@ -65,7 +66,7 @@ export function buildTranscript(messages: ConversationMessage[]): string {
     if (!isDialogueMessage(message)) {
       continue;
     }
-    const text = stripHandoffBlock(extractMessageText(message.content));
+    const text = stripHandoffBlock(stripChannelHistoryBlock(extractMessageText(message.content)));
     if (text.length === 0) {
       continue;
     }

@@ -44,7 +44,8 @@ export class SynologyClient {
           })
         ]
       ]),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: AbortSignal.timeout(config.synology.history.fetchTimeoutMs)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data: any = await response.json();
@@ -64,9 +65,10 @@ export class SynologyClient {
     }));
   }
 
-  formatChannelHistory(posts: SynologyPost[], botUserId: number, slashPrefix = '/yasmin'): string {
+  formatChannelHistory(posts: SynologyPost[], botUserId: number, slashPrefix?: string): string {
+    const prefix = slashPrefix ?? config.synology.history.slashPrefix;
     return posts
-      .filter(post => post.userId !== botUserId && !post.text.startsWith(slashPrefix))
+      .filter(post => post.userId !== botUserId && !post.text.startsWith(prefix))
       .sort((a, b) => a.timestamp - b.timestamp)
       .map(post => `${post.username}: ${post.text}`)
       .join('\n');

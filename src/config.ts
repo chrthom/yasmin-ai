@@ -32,7 +32,9 @@ export const config = {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
     history: {
       prevCount: 10,
-      botUserId: parseInt(process.env['CHAT_BOT_USER_ID'] || '0', 10)
+      botUserId: parseInt(process.env['CHAT_BOT_USER_ID'] || '0', 10),
+      slashPrefix: '/yasmin',
+      fetchTimeoutMs: 5000
     },
     tokens: {
       bot: process.env['CHAT_TOKEN_BOT']!,
@@ -89,6 +91,11 @@ export function validateEnv(): void {
     }
   });
 
+  if (!process.env['CHAT_BOT_USER_ID']) {
+    console.warn(
+      "WARNING: CHAT_BOT_USER_ID is not set; the bot's own replies cannot be excluded from group channel history."
+    );
+  }
   // Database environment variables are only required if running the CLI context manager or if real DB is explicitly enabled
   const isCli = process.argv[1] && process.argv[1].includes('manage-context');
   const isRealDbEnabled = process.env['USE_REAL_DB'] === 'true';
