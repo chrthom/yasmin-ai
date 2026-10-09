@@ -281,6 +281,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // topic (title, Aliases line, content) so it can reject a semantic duplicate before it ever
     // reaches the archive. Seeded from the archive and then EXTENDED as this run approves topic
     // files -- otherwise two new topics staged in one night would both pass the barrier.
+    let topicsLoadFailed = false;
     let existingTopics: ExistingTopic[];
     try {
       const allCurrent = await listCurrentVersions();
@@ -288,8 +289,17 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
         .map(row => ({ path: row.filePath, content: row.content }));
     } catch (error) {
-      console.error('ERROR Failed to load existing topics for the review duplicate barrier: ' + error);
+      // The barrier set drives TWO safety mechanisms (duplicate detection and index validation).
+      // On a load failure we must not silently degrade to an empty set: an approved index would
+      // then have every topics/ line stripped, wiping the registry. Instead, skip BOTH mechanisms
+      // for this run and mark it 'partial' so the next invocation retries with a working load.
+      console.error(
+        'ERROR Failed to load existing topics; skipping the topics duplicate barrier and index validation: ' +
+          error
+      );
       existingTopics = [];
+      topicsLoadFailed = true;
+      anyReviewFailed = true;
     }
     const archivedTopicPaths = new Set(existingTopics.map(topic => topic.path.toLowerCase()));
 
@@ -313,7 +323,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           currentContent,
           todaysJournals,
           0,
-          existingTopics.filter(topic => topic.path !== update.path)
+          topicsLoadFailed ? [] : existingTopics.filter(topic => topic.path !== update.path)
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -340,7 +350,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             currentContent,
             todaysJournals,
             revisions + 1,
-            existingTopics.filter(topic => topic.path !== update.path)
+            topicsLoadFailed ? [] : existingTopics.filter(topic => topic.path !== update.path)
           );
           revisions++;
         }
@@ -351,8 +361,21 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           await deleteConversation(revisionConversationId);
         }
 
+        // Without barrier data this run cannot judge topic duplicates -- do not archive a possibly
+        // duplicate topic on a broken load; leave it for the next (healthy) run. The index, by
+        // contrast, IS archived: on a broken load its validation is skipped (a stripped index
+        // would wipe the registry), so its entries survive untouched for the next run to reconcile.
+        const skipTopicArchive = topicsLoadFailed && update.path.toLowerCase().startsWith('topics/');
+        if (skipTopicArchive) {
+          console.warn(
+            'WARN Skipping archive of topic proposal ' +
+              update.path +
+              ' because the existing-topics load failed; the next run re-reviews it'
+          );
+        }
+
         let contentToArchive = proposal;
-        if (verdict.approved && update.path === TOPIC_INDEX_PATH) {
+        if (verdict.approved && !topicsLoadFailed && update.path === TOPIC_INDEX_PATH) {
           // Registry validation: keep only the index lines whose topic file actually exists in the
           // archive (pre-existing or approved earlier in this same run). A rejected or never-staged
           // topic would otherwise leave a dangling registry entry.
@@ -377,7 +400,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           }
         }
 
-        if (verdict.approved) {
+        if (verdict.approved && !skipTopicArchive) {
           const { created } = await insertNextVersion(update.path, contentToArchive, collectedAt);
           // Classify create-vs-update from whether an archived version already existed, not from
           // the AI-supplied isNew flag, which is never cross-checked against real archive state.
@@ -393,7 +416,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             existingTopics.push({ path: update.path, content: contentToArchive });
             archivedTopicPaths.add(update.path.toLowerCase());
           }
-        } else {
+        } else if (!verdict.approved) {
           // A reviewer rejection -- even after the revision cap -- is a normal, handled outcome: the
           // proposal is simply not written. It must not degrade a healthy run to 'partial' (which would
           // block the watermark and reprocess the same conversations forever). Log it so it stays
@@ -401,16 +424,20 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           console.warn(
             'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
           );
-          // A rejected topics/*.md duplicate means its material is NOT lost silently: the reviewer
-          // names the existing topic to merge into, and the next run's integrate pass re-reads the
-          // journals for this evidence window only if the watermark did not advance -- so make the
-          // lost material loud and auditable here.
-          if (update.path.toLowerCase().startsWith('topics/')) {
+          // Rejected duplicates are DROPPED BY DESIGN: the reviewer is instructed to name the
+          // existing topic to merge into, but this pipeline cannot rewrite that other file here
+          // (reviseProposal only ever revises the same path). Because a rejection deliberately
+          // does not degrade the run, the watermark still advances and the day's journal evidence
+          // is NOT reprocessed -- so the proposal's material is gone from the topic layer and this
+          // WARN is the only trace. It exists so the loss stays auditable and a human can merge
+          // manually if the material mattered.
+          if (!verdict.approved && update.path.toLowerCase().startsWith('topics/')) {
             console.warn(
               'WARN Topic proposal ' +
                 update.path +
-                ' was rejected as a duplicate; its material was NOT merged automatically. Merge targets among archived topics: ' +
-                [...archivedTopicPaths].join(', ')
+                ' was rejected (likely a duplicate) and is DROPPED BY DESIGN; its material is not merged automatically. ' +
+                'Archived topics it may belong to: ' +
+                (topicsLoadFailed ? '(unknown: topics load failed)' : [...archivedTopicPaths].join(', '))
             );
           }
         }

@@ -155,7 +155,10 @@ At a high level, each run:
    library (`MISTRAL_LIBRARY_ID`) that the live conversation agent can search via RAG for deeper facts and
    history, and deletes any orphaned library documents. Sensitive passages never leave local storage —
    `memory_archive` keeps the full content for versioning/audit, but nothing marked sensitive is ever sent
-   to the third-party Mistral API.
+   to the third-party Mistral API for RAG. (Exception: the nightly agent's own review/revision calls do
+   see the unstripped archive content — privacy stripping applies to the library upload, not to the
+   pipeline-internal LLM calls; those run with `store: false` and their scratch conversations are
+   deleted.)
 6. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
    so the small, fast, sensitive-free eager set always reflects the latest long-term memory.

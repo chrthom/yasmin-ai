@@ -375,11 +375,7 @@ function topicExcerpt(content: string): string {
     firstLineBreak !== -1 && firstLineBreak < TOPIC_EXCERPT_MAX_CHARS
       ? aliased.slice(0, firstLineBreak + 1)
       : '';
-  return (
-    head +
-    aliased.slice(head.length, TOPIC_EXCERPT_MAX_CHARS).trim() +
-    '\n...[truncated for review; read the full file via get_long_term_file]'
-  );
+  return head + aliased.slice(head.length, TOPIC_EXCERPT_MAX_CHARS).trim() + '\n...[truncated for review]';
 }
 
 /**

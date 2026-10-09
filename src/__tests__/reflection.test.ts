@@ -286,6 +286,25 @@ describe('reflection', () => {
       expect(prompt).toContain('EXCLUDING topics/school-stress.md');
       expect(prompt).not.toContain('--- topics/school-stress.md ---');
     });
+    it('topic excerpt: short content is embedded verbatim', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const existing = [{ path: 'topics/kurz.md', content: 'Aliases: Kurz\nThema A.' }];
+      const prompt = reviewPrompt(update, null, [], 0, existing);
+      expect(prompt).toContain('Aliases: Kurz\nThema A.');
+      expect(prompt).not.toContain('truncated for review');
+    });
+    it('topic excerpt: long content is truncated but the Aliases line survives intact', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const longContent = 'Aliases: Sommerreise, Urlaub Planung\n' + 'x'.repeat(1000);
+      const existing = [{ path: 'topics/alt.md', content: longContent }];
+      const prompt = reviewPrompt(update, null, [], 0, existing);
+      expect(prompt).toContain('Aliases: Sommerreise, Urlaub Planung');
+      expect(prompt).toContain('truncated for review');
+      expect(prompt).not.toContain('get_long_term_file');
+      // The truncation marker appears exactly once -- the Aliases line was not cut mid-way.
+      expect(prompt.split('truncated for review').length - 1).toBe(1);
+    });
+
     it('adds no topics context for a non-topic update even when topics exist', () => {
       const update: StagedUpdate = { path: 'people/christopher.md', content: 'x', isNew: false };
       const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];

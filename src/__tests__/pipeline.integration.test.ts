@@ -950,6 +950,39 @@ describe('nightly pipeline integration', () => {
     expect(result.status).toBe('completed');
   });
 
+  it('topics load failure: run is partial, no topic is archived, and the topic index is archived UNSTRIPPED', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
+    mockListCurrentVersions
+      .mockRejectedValueOnce(new Error('db boom listing current versions'))
+      .mockImplementation(archive.listCurrentVersions);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'general/topic-index.md',
+        content: 'topics/urlaub-planung.md - Familienurlaub - Alice, Bob',
+        isNew: true
+      });
+      return { finalText: 'staged topic and index', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+    const result = await runNightlyPipeline();
+    // The load failure marks the run partial so the next invocation retries with healthy data.
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+    // Without barrier data no topic may be archived (it could be a duplicate)...
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(false);
+    // ...but the index must NOT be stripped of its entries -- validation is skipped on a broken load.
+    const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
+    expect(indexCall).toBeDefined();
+    expect(indexCall![1]).toContain('topics/urlaub-planung.md - Familienurlaub - Alice, Bob');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
   // -------------------------------------------------------------------------
   // 10. Phase 6 privacy wiring
   // -------------------------------------------------------------------------
