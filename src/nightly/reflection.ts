@@ -216,9 +216,22 @@ const SELF_PROFILE_VOICE_RULE =
   'If a correction or revision is for self-reflection/profile.md, its content MUST be first person.';
 
 /**
+ * Formats a Date as YYYY-MM-DD in the configured memory timezone (MEMORY_TZ) -- the run date the
+ * decay instruction tells the agent to judge file ages against.
+ */
+export function formatRunDate(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.nightly.tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+}
+
+/**
  * Builds the Phase-3 instruction that drives the tool-calling integrate loop
  */
-export function integratePrompt(): string {
+export function integratePrompt(runDate: string): string {
   return (
     "You are consolidating today's long-term memory for a family assistant.\n\n" +
     'First, call list_long_term_files and read_todays_journals to see what long-term files already exist ' +
@@ -245,12 +258,17 @@ export function integratePrompt(): string {
     'that affects the whole family -- consolidate that pattern into general/family.md instead of ' +
     'duplicating it across the individual profiles.\n' +
     'Also apply the decay instruction: every file path from list_long_term_files carries a last_touched_at ' +
-    'date -- when its content was last changed by new evidence. A fact that has not been corroborated for a ' +
-    'long time should age instead of being asserted as fresh forever. Three states: FRESH (recently ' +
-    'corroborated -- leave as is), AGING (no new corroboration for a long time -- annotate the fact with a ' +
-    'confidence marker such as "(veraltet? unsicher geworden?)" or "(möglicherweise veraltet)"), DECAYED (no ' +
-    'corroboration for a very long time -- move the fact into an "## Archiv" section at the end of the file ' +
-    'or remove it entirely). When you rewrite a file you have read, judge its facts by last_touched_at and ' +
+    'date -- when its content was last changed by new evidence. Today is ' +
+    runDate +
+    '. A fact that has not been corroborated for a long time should age instead of being asserted as fresh ' +
+    'forever. Three states: FRESH (recently corroborated -- leave as is), AGING (no new corroboration for a ' +
+    'long time -- annotate the fact with a confidence marker such as "(veraltet? unsicher geworden?)" or ' +
+    '"(möglicherweise veraltet)"), DECAYED (no corroboration for a very long time -- move the fact into an ' +
+    'optional "## Archiv" section at the end of the file or remove it entirely). Note that last_touched_at ' +
+    'is a file-level signal: any content change bumps it, so a file touched today may still hold stale ' +
+    'facts -- therefore lean primarily on the absolute dates written inside the content itself (e.g. Recent ' +
+    'Happenings lines), not on last_touched_at alone, when judging how old a specific fact is. When you ' +
+    'rewrite a file you have read, judge its facts by those inner dates and ' +
     "today's date, not by how confidently they are written. But never stage a file JUST to add decay " +
     'annotations: decay only ever rides along with a substantive update that has a real reason (new facts, ' +
     'corrections, consolidation). A file whose content is merely old stays untouched -- do not mechanically ' +
@@ -302,7 +320,7 @@ export async function runIntegrate(
 ): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
-    initialInputs: [{ role: 'user', content: integratePrompt() }],
+    initialInputs: [{ role: 'user', content: integratePrompt(formatRunDate(new Date())) }],
     maxIterations: config.nightly.maxIterations,
     executeTool
   });
@@ -351,6 +369,7 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
 export function reviewPrompt(
   update: StagedUpdate,
   currentContent: string | null,
+  lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number
 ): string {
@@ -398,15 +417,21 @@ export function reviewPrompt(
     SELF_PROFILE_VOICE_RULE +
     '\n' +
     groundingRule +
-    'Judge decay-related rewordings by their dating: a fact annotated as aging or moved to an archive ' +
-    "section must genuinely lack recent corroboration, given the file's last_touched_at and the dates in the " +
-    'current content -- reject a decay annotation on a fact that the evidence actually re-corroborates, and ' +
-    'also reject a proposal that rewords well-dated facts with an incorrect or invented dating. Conversely, ' +
-    'a correctly dated decay annotation (confidence marker, archive section) is a valid, acceptable change. ' +
-    'Reject a proposal whose ONLY change is mechanical decay rewording without a substantive reason.\n' +
+    'Judge decay-related rewordings by their dating. Today is ' +
+    formatRunDate(new Date()) +
+    '. The file was last touched (its content last changed by new evidence) on ' +
+    (lastTouchedAt ?? 'never -- this would be its first version') +
+    '. A fact annotated as aging or moved to an archive section must genuinely lack recent corroboration, ' +
+    'given that last_touched_at date and the absolute dates in the current content -- reject a decay ' +
+    'annotation on a fact that the evidence actually re-corroborates, and also reject a proposal that ' +
+    'rewords well-dated facts with an incorrect or invented dating. Conversely, a correctly dated decay ' +
+    'annotation (confidence marker, archive section) is a valid, acceptable change. Reject a proposal ' +
+    'whose ONLY change is mechanical decay rewording without a substantive reason.\n' +
     'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
     'German), broken file structure (the 7-section person template must stay intact and complete ' +
-    'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
+    'for people/<name>.md, optionally followed by an "## Archiv" section at the very end -- an Archiv ' +
+    'section placed before the seventh section, or sections reordered, is broken), markdown code fences ' +
+    'around the content, non-first-person voice in ' +
     'self-reflection/profile.md, or malformed/incomplete output.\n\n' +
     'Reply with STRICTLY a single JSON object of this exact shape and nothing else -- no markdown code ' +
     'fence, no extra prose:\n' +
@@ -420,12 +445,18 @@ export function reviewPrompt(
 export async function runReview(
   update: StagedUpdate,
   currentContent: string | null,
+  lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals, attempt) }],
+    inputs: [
+      {
+        role: 'user',
+        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt)
+      }
+    ],
     store: false
   });
 

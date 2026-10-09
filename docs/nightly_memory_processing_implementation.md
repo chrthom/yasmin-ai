@@ -247,7 +247,8 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 ## 7. Integration tools (`src/nightly/tools.ts`)
 
 ```ts
-list_long_term_files(); // current versions from memory_archive: [{path, content_hash}]
+list_long_term_files(); // current versions from memory_archive: [{path, contentHash, lastTouchedAt}]
+//   (lastTouchedAt = created_at of the current version -- the decay/aging signal)
 get_long_term_file(path); // memory_archive current content (local, exact — no Mistral call)
 read_todays_journals(); // this run's Phase-2 journals (the evidence base)
 stage_update(path, content, isNew); // append to in-run staged list  ← the ONLY writer

@@ -280,11 +280,13 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       try {
         const currentVersion = await getCurrentVersion(update.path);
         const currentContent = currentVersion ? currentVersion.content : null;
+        const lastTouchedAt = currentVersion ? currentVersion.createdAt.toISOString() : null;
 
         let proposal = update.content;
         let verdict = await runReview(
           { path: update.path, content: proposal, isNew: update.isNew },
           currentContent,
+          lastTouchedAt,
           todaysJournals,
           0
         );
@@ -311,6 +313,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           verdict = await runReview(
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
+            lastTouchedAt,
             todaysJournals,
             revisions + 1
           );
