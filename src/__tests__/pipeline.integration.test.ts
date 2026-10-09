@@ -701,6 +701,40 @@ describe('nightly pipeline integration', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
+  it('orphan reconcile: deduplicates multiple docs sharing a valid path, keeping only the archived one', async () => {
+    const seeded = await archive.seed('people/zara.md', 'zara content');
+    await archive.markSynced(seeded.id, 'doc-current'); // authoritative archive reference
+
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockListDocuments.mockResolvedValueOnce([
+      { id: 'doc-stale-1', path: 'people/zara.md' },
+      { id: 'doc-current', path: 'people/zara.md' },
+      { id: 'doc-stale-2', path: 'people/zara.md' }
+    ]);
+
+    await runNightlyPipeline();
+
+    expect(mockDeleteDocument).toHaveBeenCalledWith('doc-stale-1');
+    expect(mockDeleteDocument).toHaveBeenCalledWith('doc-stale-2');
+    expect(mockDeleteDocument).not.toHaveBeenCalledWith('doc-current');
+  });
+
+  it('orphan reconcile: leaves all copies untouched when no library doc matches the archived reference', async () => {
+    const seeded = await archive.seed('people/ellena.md', 'ellena content');
+    await archive.markSynced(seeded.id, 'doc-disappeared'); // archive ref points at a deleted doc
+
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockListDocuments.mockResolvedValueOnce([
+      { id: 'doc-copy-a', path: 'people/ellena.md' },
+      { id: 'doc-copy-b', path: 'people/ellena.md' }
+    ]);
+
+    await runNightlyPipeline();
+
+    // Cannot tell which copy is live -- delete nothing rather than risk the wrong one.
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+  });
+
   // -------------------------------------------------------------------------
   // 7. Concurrency (lock held)
   // -------------------------------------------------------------------------
