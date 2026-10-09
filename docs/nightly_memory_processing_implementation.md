@@ -395,7 +395,7 @@ Run once against a scratch library before go-live:
 
 ## 13. Rollout sequence
 
-1. Land code + `schema_memory.sql` + tests (green) as the Part A PR; review and merge.
+1. Land code + `schema_memory.sql` + tests (green) as the first (additive) change; review and merge.
 2. Apply schema to MariaDB (§2.1).
 3. Mistral console: get prod library id, attach to conversation agent, create `yasmin-nightly`, update prompts, issue prod key (§2.3). Run the manual spike (§12.3).
 4. Set env vars; `npm run build`.
