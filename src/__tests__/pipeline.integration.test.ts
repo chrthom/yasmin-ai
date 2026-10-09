@@ -55,6 +55,7 @@ jest.mock('../database/models/context.model', () => ({
   upsertContextEntry: jest.fn()
 }));
 jest.mock('../database/models/pending_notes.model', () => ({
+  getPendingNotesMaxId: jest.fn(),
   getUnconsolidatedNotes: jest.fn(),
   clearPendingNotes: jest.fn()
 }));
@@ -102,7 +103,11 @@ import {
   pruneOldVersions
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
-import { clearPendingNotes, getUnconsolidatedNotes } from '../database/models/pending_notes.model';
+import {
+  clearPendingNotes,
+  getPendingNotesMaxId,
+  getUnconsolidatedNotes
+} from '../database/models/pending_notes.model';
 import {
   buildTranscript,
   runCompact,
@@ -139,6 +144,7 @@ const mockMarkSynced = markSynced as jest.Mock;
 const mockPruneOldVersions = pruneOldVersions as jest.Mock;
 
 const mockUpsertContextEntry = upsertContextEntry as jest.Mock;
+const mockGetPendingNotesMaxId = getPendingNotesMaxId as jest.Mock;
 const mockGetUnconsolidatedNotes = getUnconsolidatedNotes as jest.Mock;
 const mockClearPendingNotes = clearPendingNotes as jest.Mock;
 
@@ -276,6 +282,7 @@ describe('nightly pipeline integration', () => {
     mockSetWatermark.mockResolvedValue(undefined);
 
     mockUpsertContextEntry.mockResolvedValue('updated');
+    mockGetPendingNotesMaxId.mockResolvedValue(0);
     mockGetUnconsolidatedNotes.mockResolvedValue([]);
     mockClearPendingNotes.mockResolvedValue(undefined);
 
@@ -921,6 +928,7 @@ describe('nightly pipeline integration', () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(5);
     mockGetUnconsolidatedNotes.mockResolvedValueOnce([
       {
         id: 5,
@@ -932,6 +940,7 @@ describe('nightly pipeline integration', () => {
     ]);
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
+    expect(mockGetUnconsolidatedNotes).toHaveBeenCalledWith(5);
     expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), [
       {
         id: 5,
@@ -948,12 +957,14 @@ describe('nightly pipeline integration', () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(9);
     mockListUnsynced.mockImplementationOnce(() => {
       throw new Error('db read failed');
     });
     const result = await runNightlyPipeline();
     expect(result.status).toBe('partial');
     expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingNotes).toHaveBeenCalledWith(9);
   });
 
   it('outbox: is NOT emptied when the review/archive phase failed (notes stay for tomorrow)', async () => {
@@ -1001,21 +1012,27 @@ describe('nightly pipeline integration', () => {
     expect(mockClearPendingNotes).not.toHaveBeenCalled();
   });
 
-  it('outbox: clearing deletes only up to the snapshot max id, never younger concurrently inserted notes', async () => {
+  it('outbox: clearing deletes up to the MAX(id) over ALL notes, so a delivered-only outbox still empties', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
-    mockGetUnconsolidatedNotes.mockResolvedValueOnce([
-      {
-        id: 5,
-        fromUsername: 'christopher',
-        toUsername: 'zara',
-        content: 'Please be home by 6 pm',
-        createdAt: new Date('2026-07-05T15:00:00Z')
-      }
-    ]);
+    // All notes already delivered individually: undelivered set is empty, but the table still
+    // holds rows -- the watermark must come from MAX(id), not from the undelivered subset.
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(23);
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([]);
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
-    expect(mockClearPendingNotes).toHaveBeenCalledWith(5);
+    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingNotes).toHaveBeenCalledWith(23);
+  });
+
+  it('outbox: skips the DELETE entirely when the table is empty (no pointless clear)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(0);
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
   insertPendingNote,
+  releaseNoteDelivery,
   PendingNoteForDelivery
 } from './database/models/pending_notes.model';
 import { buildHandoff, waitFor } from './handoff';
@@ -83,11 +84,14 @@ export class ChatAgent {
    * Delivers undelivered pending notes to the given user, claiming each note's delivery
    * atomically right before it is used, so a concurrent duplicate input can never deliver
    * the same note to the same person twice (the lost UPDATE race returns false and the note
-   * is skipped). Returns the formatted <nachrichten_fuer_dich> block, or undefined if there
-   * is nothing to deliver. A failed outbox read must not break the chat -- the notes simply
-   * stay pending and are delivered with the next input.
+   * is skipped). Returns the formatted <nachrichten_fuer_dich> block plus the ids of the
+   * notes it contains, or undefined if there is nothing to deliver. A failed outbox read
+   * must not break the chat -- the notes simply stay pending and are delivered with the
+   * next input.
    */
-  private async deliverPendingNotes(username: string): Promise<string | undefined> {
+  private async deliverPendingNotes(
+    username: string
+  ): Promise<{ block: string; claimedIds: number[] } | undefined> {
     let notes: PendingNoteForDelivery[];
     try {
       notes = await getUndeliveredNotesForUser(username);
@@ -118,7 +122,32 @@ export class ChatAgent {
     const lines = claimed.map(
       note => `${this.capitalize(note.fromUsername)} wants me to tell you: ${note.content}`
     );
-    return `<nachrichten_fuer_dich>\n${lines.join('\n')}\n</nachrichten_fuer_dich>`;
+    return {
+      block: `<nachrichten_fuer_dich>\n${lines.join('\n')}\n</nachrichten_fuer_dich>`,
+      claimedIds: claimed.map(note => note.id)
+    };
+  }
+
+  /**
+   * Rolls back the delivery claims of the notes that were injected into a request which then
+   * failed for a non-stale reason (HTTP 5xx, network error, or the tool request failing): the
+   * notes were never actually shown to the user, so they become deliverable again with their
+   * next input instead of being lost. A respawn (stale 404/400) reuses the claimed block and
+   * must NOT release anything. Best-effort: a failed release is logged, not thrown.
+   */
+  private async releaseClaimedNotes(username: string, claimedIds: number[]): Promise<void> {
+    for (const id of claimedIds) {
+      try {
+        await releaseNoteDelivery(id, username);
+      } catch (error) {
+        console.error(`ERROR Failed to release delivery claim of note ${id} for ${username}: ${error}`);
+      }
+    }
+    if (claimedIds.length > 0) {
+      console.log(
+        `INFO Released ${claimedIds.length} undelivered pending note claim(s) for ${username}; they will be delivered with the next input`
+      );
+    }
   }
 
   /**
@@ -238,9 +267,12 @@ export class ChatAgent {
     isRespawn: boolean = false,
     handoffFrom?: string,
     // Notes already claimed (and therefore marked delivered) for this input. The respawn path
-    // passes them through: a respawn re-builds the prompt for the SAME input, so the notes must
-    // ride along again -- getUndeliveredNotesForUser no longer returns them once claimed.
-    claimedNotesBlock?: string
+    // passes the block through: a respawn re-builds the prompt for the SAME input, so the notes
+    // must ride along again -- getUndeliveredNotesForUser no longer returns them once claimed.
+    claimedNotesBlock?: string,
+    // Ids of the notes whose delivery was claimed for this input; released again when the
+    // request fails for a non-stale reason (the notes were never shown to the user).
+    claimedNoteIds: number[] = []
   ): Promise<MistralConversationResponseOutput[]> {
     try {
       let conversationId = await this.getActiveConversationId(username);
@@ -295,7 +327,14 @@ export class ChatAgent {
       // their next input, so a session that is already 20 turns old still receives them. On a
       // respawn the notes were already claimed for this input and are passed through instead
       // (claiming again would silently drop them -- see processRequestInternal's respawn paths).
-      const notesBlock = isRespawn ? claimedNotesBlock : await this.deliverPendingNotes(username);
+      let notesBlock = claimedNotesBlock;
+      if (!isRespawn) {
+        const delivery = await this.deliverPendingNotes(username);
+        if (delivery) {
+          notesBlock = delivery.block;
+          claimedNoteIds = delivery.claimedIds;
+        }
+      }
       // Prepend dynamic XML context (and handoff) to user text if present
       let promptContent = userText;
       if (handoffBlock) {
@@ -363,7 +402,8 @@ export class ChatAgent {
             shortAnswer,
             true,
             conversationId,
-            notesBlock
+            notesBlock,
+            claimedNoteIds
           );
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
@@ -527,7 +567,8 @@ export class ChatAgent {
                   shortAnswer,
                   true,
                   currentConversationId,
-                  notesBlock
+                  notesBlock,
+                  claimedNoteIds
                 );
               }
               throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
@@ -548,6 +589,13 @@ export class ChatAgent {
       this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {
+      // A non-stale failure (HTTP 5xx, network error, failed tool request without respawn)
+      // means the notes injected above were never shown to the user. Release their delivery
+      // claims so they are delivered with the next input instead of being lost. On the respawn
+      // paths the recursive call owns the claims from here on -- releasing would race it.
+      if (!isRespawn && claimedNoteIds.length > 0) {
+        await this.releaseClaimedNotes(username, claimedNoteIds);
+      }
       console.error(`ERROR Failed to process request for ${username}: ${error}`);
       throw error;
     }

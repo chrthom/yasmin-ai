@@ -23,6 +23,7 @@ import {
 import { upsertContextEntry } from '../database/models/context.model';
 import {
   clearPendingNotes,
+  getPendingNotesMaxId,
   getUnconsolidatedNotes,
   PendingNote
 } from '../database/models/pending_notes.model';
@@ -260,11 +261,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let undeliveredNotes: PendingNote[] = [];
     // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
     // never a note the live agent staged after the snapshot while the review loop was running.
+    // The watermark is MAX(id) over ALL notes (delivered ones included), not over the
+    // undelivered subset: with only delivered notes the undelivered max would be 0 and the
+    // bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
     let notesSnapshotMaxId = 0;
     let notesConsolidated = true;
     try {
-      undeliveredNotes = await getUnconsolidatedNotes();
-      notesSnapshotMaxId = undeliveredNotes.reduce((max, note) => Math.max(max, note.id), 0);
+      notesSnapshotMaxId = await getPendingNotesMaxId();
+      undeliveredNotes = await getUnconsolidatedNotes(notesSnapshotMaxId);
       if (undeliveredNotes.length > 0) {
         console.log(
           'INFO Feeding ' + undeliveredNotes.length + ' undelivered pending note(s) to the integrate agent'
@@ -570,7 +574,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // DELETE, no TRUNCATE (DROP privileges / implicit commit). Only the failure of the
     // consolidation phases themselves keeps the notes for another day; a merely 'partial' run
     // (e.g. a failed upload) may still empty the outbox.
-    if (notesConsolidated) {
+    if (notesConsolidated && notesSnapshotMaxId > 0) {
       try {
         await clearPendingNotes(notesSnapshotMaxId);
         console.log(

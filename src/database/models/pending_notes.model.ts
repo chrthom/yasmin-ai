@@ -100,16 +100,52 @@ export async function claimNoteDelivery(noteId: number, username: string): Promi
 }
 
 /**
- * Lists all notes still pending for at least one recipient, for the nightly catch phase.
+ * Returns the highest pending_notes id currently in the table (0 when empty). The nightly
+ * consolidation snapshot is bounded by this id: notes staged after it are not yet part of the
+ * snapshot and must survive the phase-6.5 reset.
+ */
+export async function getPendingNotesMaxId(): Promise<number> {
+  const [rows]: any = await executeQuery('SELECT COALESCE(MAX(id), 0) AS max_id FROM pending_notes');
+  return rows[0].max_id;
+}
+
+/**
+ * Lists all notes still pending for at least one recipient, up to the given snapshot max id,
+ * for the nightly catch phase.
  * Notes already delivered to their target individual (delivered_at set) are excluded -- their
  * purpose was fulfilled in the live conversation and their content lives on in the journals.
  * An "everyone"-note never sets delivered_at (recipients are claimed one by one in
  * delivered_to, and partial delivery stays pending for the remaining family members), so it
  * is consolidated until the nightly reset empties it.
  */
-export async function getUnconsolidatedNotes(): Promise<PendingNote[]> {
-  const [rows]: any = await executeQuery('SELECT * FROM pending_notes WHERE delivered_at IS NULL');
+export async function getUnconsolidatedNotes(maxId: number): Promise<PendingNote[]> {
+  const [rows]: any = await executeQuery(
+    'SELECT * FROM pending_notes WHERE delivered_at IS NULL AND id <= ?',
+    [maxId]
+  );
   return (rows as PendingNoteRow[]).map(mapRow);
+}
+
+/**
+ * Rolls back a delivery claim after the conversation request it was claimed for failed
+ * (e.g. HTTP 5xx or a network error): the note becomes deliverable again with the user's
+ * next input instead of being lost. Best-effort and idempotent.
+ */
+export async function releaseNoteDelivery(noteId: number, username: string): Promise<void> {
+  const [individual]: any = await executeQuery(
+    'UPDATE pending_notes SET delivered_at = NULL WHERE id = ? AND to_username = ?',
+    [noteId, username]
+  );
+  if (individual.affectedRows > 0) {
+    return;
+  }
+  await executeQuery(
+    `UPDATE pending_notes
+     SET delivered_to = JSON_REMOVE(delivered_to, JSON_UNQUOTE(JSON_SEARCH(delivered_to, 'one', ?)))
+     WHERE id = ? AND to_username IS NULL AND delivered_at IS NULL
+       AND JSON_SEARCH(delivered_to, 'one', ?) IS NOT NULL`,
+    [username, noteId, username]
+  );
 }
 
 /**

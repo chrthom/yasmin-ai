@@ -6,9 +6,11 @@ import { executeQuery } from '../database/connection';
 import {
   claimNoteDelivery,
   clearPendingNotes,
+  getPendingNotesMaxId,
   getUnconsolidatedNotes,
   getUndeliveredNotesForUser,
-  insertPendingNote
+  insertPendingNote,
+  releaseNoteDelivery
 } from '../database/models/pending_notes.model';
 
 const mockExecuteQuery = executeQuery as jest.Mock;
@@ -106,8 +108,18 @@ describe('pending_notes.model', () => {
     });
   });
 
+  describe('getPendingNotesMaxId', () => {
+    it('returns the highest note id over all notes (0 when the table is empty)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([[{ max_id: 17 }]]);
+      const maxId = await getPendingNotesMaxId();
+      expect(maxId).toBe(17);
+      const [sql] = mockExecuteQuery.mock.calls[0];
+      expect(sql).toContain('COALESCE(MAX(id), 0)');
+    });
+  });
+
   describe('getUnconsolidatedNotes', () => {
-    it('lists only notes with delivered_at still NULL and maps snake_case rows', async () => {
+    it('lists only notes with delivered_at still NULL up to the snapshot id, and maps snake_case rows', async () => {
       mockExecuteQuery.mockResolvedValueOnce([
         [
           {
@@ -119,7 +131,7 @@ describe('pending_notes.model', () => {
           }
         ]
       ]);
-      const notes = await getUnconsolidatedNotes();
+      const notes = await getUnconsolidatedNotes(17);
       expect(notes).toEqual([
         {
           id: 3,
@@ -129,8 +141,40 @@ describe('pending_notes.model', () => {
           createdAt: new Date('2025-01-01T10:00:00Z')
         }
       ]);
-      const [sql] = mockExecuteQuery.mock.calls[0];
+      const [sql, params] = mockExecuteQuery.mock.calls[0];
       expect(sql).toContain('delivered_at IS NULL');
+      expect(sql).toContain('id <= ?');
+      expect(params).toEqual([17]);
+    });
+  });
+
+  describe('releaseNoteDelivery', () => {
+    it('un-claims an individually delivered note (delivered_at back to NULL)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 1 }]);
+      await releaseNoteDelivery(5, 'zara');
+      expect(mockExecuteQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockExecuteQuery.mock.calls[0];
+      expect(sql).toContain('SET delivered_at = NULL');
+      expect(sql).toContain('to_username = ?');
+      expect(params).toEqual([5, 'zara']);
+    });
+
+    it('removes the recipient from an everyone-note delivered_to array', async () => {
+      mockExecuteQuery
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([{ affectedRows: 1 }]);
+      await releaseNoteDelivery(9, 'samira');
+      const [sql, params] = mockExecuteQuery.mock.calls[1];
+      expect(sql).toContain('JSON_REMOVE');
+      expect(sql).toContain("JSON_SEARCH(delivered_to, 'one', ?)");
+      expect(params).toEqual(['samira', 9, 'samira']);
+    });
+
+    it('is idempotent when there is nothing to release', async () => {
+      mockExecuteQuery
+        .mockResolvedValueOnce([{ affectedRows: 0 }])
+        .mockResolvedValueOnce([{ affectedRows: 0 }]);
+      await expect(releaseNoteDelivery(9, 'samira')).resolves.toBeUndefined();
     });
   });
 

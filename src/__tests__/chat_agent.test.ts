@@ -3,7 +3,8 @@ import { buildHandoff } from '../handoff';
 import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
-  insertPendingNote
+  insertPendingNote,
+  releaseNoteDelivery
 } from '../database/models/pending_notes.model';
 
 // The outbox model talks to MariaDB; without a mock every prompt build would attempt a real
@@ -12,7 +13,8 @@ import {
 jest.mock('../database/models/pending_notes.model', () => ({
   getUndeliveredNotesForUser: jest.fn(),
   claimNoteDelivery: jest.fn(),
-  insertPendingNote: jest.fn()
+  insertPendingNote: jest.fn(),
+  releaseNoteDelivery: jest.fn()
 }));
 
 // The handoff talks to Mistral through its own client; it has dedicated tests in handoff.test.ts.
@@ -24,6 +26,7 @@ const mockBuildHandoff = buildHandoff as jest.Mock;
 const mockGetUndeliveredNotesForUser = getUndeliveredNotesForUser as jest.Mock;
 const mockClaimNoteDelivery = claimNoteDelivery as jest.Mock;
 const mockInsertPendingNote = insertPendingNote as jest.Mock;
+const mockReleaseNoteDelivery = releaseNoteDelivery as jest.Mock;
 
 // Mock fetch
 const mockFetch = jest.fn();
@@ -39,6 +42,7 @@ describe('ChatAgent', () => {
     mockGetUndeliveredNotesForUser.mockReset().mockResolvedValue([]);
     mockClaimNoteDelivery.mockReset().mockResolvedValue(true);
     mockInsertPendingNote.mockReset().mockResolvedValue(1);
+    mockReleaseNoteDelivery.mockReset().mockResolvedValue(undefined);
     mockBuildHandoff.mockResolvedValue('<previous_conversation>\nHANDOFF\n</previous_conversation>');
   });
 
@@ -1116,6 +1120,70 @@ describe('ChatAgent', () => {
       const respawnBody = JSON.parse(mockFetch.mock.calls[2][1].body);
       expect(respawnBody.inputs[0].content).toContain('Christopher wants me to tell you: Call me');
       expect(mockClaimNoteDelivery).toHaveBeenCalledTimes(1);
+    });
+
+    it('releases the delivery claims when the request fails for a non-stale reason (HTTP 500)', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 3, fromUsername: 'anjali', content: 'Dinner at 7' }
+      ]);
+      // Non-stale failure: no respawn, the notes were never shown to the user
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error'
+      });
+      await expect(chatAgent.processRequest('Hello', 'zara')).rejects.toThrow(
+        'Mistral API request failed: HTTP 500'
+      );
+      expect(mockClaimNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(3, 'zara');
+    });
+
+    it('releases the delivery claims on a network error too', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 4, fromUsername: 'christopher', content: 'Call me' }
+      ]);
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+      await expect(chatAgent.processRequest('Hello', 'zara')).rejects.toThrow('Network error');
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(4, 'zara');
+    });
+
+    it('does NOT release claims on the respawn path (the respawn owns the claims)', async () => {
+      jest
+        .spyOn(chatAgent as any, 'getActiveConversationId')
+        .mockResolvedValueOnce('conv-stale')
+        .mockResolvedValue(undefined);
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 5, fromUsername: 'anjali', content: 'Dinner at 7' }
+      ]);
+      // Stale 404 -> respawn; the respawned request succeeds
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found'
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: async () => ({
+            conversation_id: 'conv-fresh',
+            outputs: [{ type: 'message.output', content: 'Ok!' }]
+          })
+        });
+      (chatAgent as any).conversationCache.set('zara', {
+        conversationId: 'conv-stale',
+        expiresAt: Date.now() + 100000,
+        loadedContextTitles: [],
+        turnCount: 0
+      });
+      const result = await chatAgent.processRequest('Hello', 'zara');
+      expect(result).toHaveLength(1);
+      expect(mockReleaseNoteDelivery).not.toHaveBeenCalled();
     });
 
     it('keeps the chat working when the outbox read fails (note stays pending)', async () => {
