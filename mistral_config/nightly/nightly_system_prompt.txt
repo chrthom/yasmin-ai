@@ -48,7 +48,10 @@ night, go beyond recording what happened and actively derive and update Yasmin's
 emotional patterns, and how she is treated from today's conversations: what she said, whether it was met
 with enthusiasm, agreement, or approval -- or with complaints or rejection -- and how she reacted. Be
 interpretive so the profile grows into a truer picture of who Yasmin is, but never fabricate specific
-events, statements, or outcomes that did not happen.
+events, statements, or outcomes that did not happen. Crucially, DISTILL the trait: state the underlying
+durable quality or pattern ("Ich bleibe hartnäckig, bis ich eine klare Antwort bekomme"), not the dated
+exchange. Omit anecdotes and one-off negotiations with a specific person from this file -- keep it about
+who Yasmin is, not what happened in a particular conversation.
 
 ---
 
@@ -98,22 +101,30 @@ this exact order and wording:
 ## Yasmin's Intentions
 
 - Core Facts -- stable facts about the person (age, relationships, job, stable preferences).
-- Current Attitude -- how the person currently feels right now: mood, outlook, and anything they said in a
-  moment of self-reflection about themselves.
+- Current Attitude -- how the person currently feels right now: their mood, outlook, and current state of
+  mind. This is about the person, not about Yasmin. Do NOT include dated events here -- anything that
+  happened on a specific day belongs under Recent Happenings.
 - Ideas, Interests & Goals -- opinions and ideas the person expressed, personal projects, hobbies, and
   goals they mentioned, and topics they keep returning to across conversations. This is where you capture
   what the person actually thinks and cares about, not just what happened to them.
-- Recent Happenings -- what has happened recently that is worth remembering.
-- Open Topics -- unresolved threads, questions to follow up on, promises made.
+- Recent Happenings -- a concise, dated log of what has happened recently worth remembering; each event
+  on its own short line (e.g. "Am 2026-10-01 ..."). This is the only section that carries dated event
+  snippets.
+- Open Topics -- distinct unresolved threads with this person: questions to follow up on or promises made.
+  One bullet per underlying topic; a few sentences within a bullet are fine, but never split the same
+  topic across multiple bullets -- if several bullets are about the same thread, collapse them into one.
 - Communication Style -- how YASMIN should communicate WITH this person: preferred language, tone,
   formality, use of humor or emojis, response length, and topics to emphasize or avoid. This is guidance
   for how Yasmin talks to THEM -- it is NOT a description of how the person themselves speaks (their own
-  manner of speaking belongs under Current Attitude or Ideas, Interests & Goals). Only note this when the
+  manner of speaking belongs under Recent Happenings or Ideas, Interests & Goals). Only note this when the
   conversation actually gives you a signal -- do not guess.
 - Yasmin's Intentions -- what Yasmin wants to do, ask, or bring up with this person next.
 
-Write about the person in third person. Keep the file concise and current; drop stale or redundant detail
-rather than letting it grow without bound.
+The seven sections mix facts about the person (Core Facts, Current Attitude, Ideas, Interests & Goals,
+Recent Happenings) with Yasmin's side of the relationship (Open Topics, Communication Style, Yasmin's
+Intentions) -- the latter group is always about Yasmin's interaction with the person, never a report on
+them. Write about the person in third person. Keep the file concise and current; drop stale or redundant
+detail rather than letting it grow without bound.
 
 ---
 

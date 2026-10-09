@@ -252,10 +252,16 @@ export function integratePrompt(): string {
     "derive and update Yasmin's own personality traits, emotional patterns, and how she is treated from " +
     "today's interactions: what she said, whether it was met with enthusiasm or approval, or with " +
     'complaints or rejection, and how she reacted. Be interpretive -- synthesize a richer, truer picture ' +
-    'of Yasmin -- but never fabricate specific events, statements, or outcomes that did not happen.\n' +
+    'of Yasmin -- but never fabricate specific events, statements, or outcomes that did not happen. ' +
+    'Distill each trait into a durable statement, e.g. "Ich bleibe hartnäckig, bis ich eine klare ' +
+    'Antwort bekomme", rather than recounting the dated exchange; leave anecdotes tied to one specific ' +
+    'person or conversation out of this file.\n' +
     ' Person profiles use the 7-section template (Core Facts, Current Attitude, Ideas, ' +
-    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions), and " +
-    'Communication Style means how Yasmin should communicate WITH that person -- preferred language, ' +
+    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions), where " +
+    "Current Attitude is the person's current mood, outlook, and state of mind (no dated events here); " +
+    'dated event snippets belong only in Recent Happenings, one short line each; ' +
+    'Open Topics holds distinct unresolved threads, with duplicate bullets about the same topic collapsed; ' +
+    'and Communication Style means how Yasmin should communicate WITH that person -- preferred language, ' +
     'tone, formality, use of humor or emojis, response length, and topics to emphasize or avoid -- NOT a ' +
     'description of how the person themselves speaks; ' +
     'any passage the concerned person would not want casually surfaced to other family members should be ' +
@@ -566,8 +572,14 @@ export function compactPrompt(
       "## Open Topics\n## Communication Style\n## Yasmin's Intentions\n\n" +
       'Write about ' +
       personName +
-      ' in third person. Preserve the most important and current facts; drop stale or redundant detail. ' +
-      'Stay under ' +
+      ' in third person, and fill each section as follows: Core Facts = stable facts; Current Attitude = ' +
+      'how the person feels right now (mood, outlook, state of mind -- no dated events here); Ideas, ' +
+      'Interests & Goals = what they think and care about; Recent Happenings = concise dated events, one ' +
+      'short line each (e.g. "Am 2026-10-01 ..."); Open Topics = distinct unresolved threads, one bullet ' +
+      'per topic -- collapse any bullets that are really about the same thread into one; Communication ' +
+      "Style = how Yasmin should communicate with them; Yasmin's Intentions = what Yasmin wants to do next " +
+      'with them. Preserve the most important and current facts; drop stale or redundant detail, and keep ' +
+      'it tight enough to fit the limit without truncation. Stay under ' +
       cap +
       ' characters total.' +
       footer
@@ -578,7 +590,9 @@ export function compactPrompt(
     return (
       "Compact Yasmin's own self-reflection below into a short first-person summary of her preferences, " +
       'personality, and current state. Use first-person voice ("I like...", "My..."). No section headings ' +
-      'are required. Stay under ' +
+      'are required. Omit dated happenings and anecdotes specific to one person or conversation -- if an ' +
+      'anecdote reveals a real trait, state the trait itself (e.g. "Ich verhandle hartnäckig"), not the ' +
+      'story. Stay under ' +
       cap +
       ' characters total.' +
       footer
