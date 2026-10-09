@@ -30,6 +30,10 @@ export const config = {
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
+    history: {
+      prevCount: 10,
+      botUserId: parseInt(process.env['CHAT_BOT_USER_ID'] || '0', 10)
+    },
     tokens: {
       bot: process.env['CHAT_TOKEN_BOT']!,
       slash: process.env['CHAT_TOKEN_SLASH']!,
