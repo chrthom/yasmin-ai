@@ -25,7 +25,8 @@ jest.mock('../config', () => ({
       maxRevisions: 3,
       maxIterations: 15,
       archiveKeepVersions: 10,
-      eagerMaxChars: 2000
+      eagerMaxChars: 10000,
+      watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000
     }
   }
 }));
@@ -639,7 +640,60 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 6. Orphan reconcile
+  // 6. Watermark staleness cutoff (poison-pill valve)
+  // -------------------------------------------------------------------------
+  const STALE_WATERMARK = new Date(Date.now() - 11 * 24 * 60 * 60 * 1000);
+  const FRESH_WATERMARK = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+
+  async function runWithSkippedConversation() {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-poison', 'Alice')]);
+    mockGetConversationMessages.mockRejectedValueOnce(new Error('boom'));
+    return runNightlyPipeline();
+  }
+
+  it('staleness cutoff: a stalled watermark plus skipped conversations advances the watermark to now - threshold', async () => {
+    mockGetWatermark.mockResolvedValue(STALE_WATERMARK);
+    const before = Date.now();
+    const result = await runWithSkippedConversation();
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    const advancedTo = mockSetWatermark.mock.calls[0][0] as Date;
+    expect(advancedTo.getTime()).toBeGreaterThanOrEqual(before - 10 * 24 * 60 * 60 * 1000);
+    expect(advancedTo.getTime()).toBeLessThanOrEqual(Date.now() - 10 * 24 * 60 * 60 * 1000 + 5000);
+    const errorUpdate = mockUpdateJobLog.mock.calls.find(
+      call => call[1] && call[1].errorMessage !== undefined
+    );
+    expect(errorUpdate).toBeDefined();
+    expect(errorUpdate![1].errorMessage).toContain('conv-poison');
+  });
+
+  it('staleness cutoff: a stalled watermark without skipped conversations does NOT advance the watermark', async () => {
+    mockGetWatermark.mockResolvedValue(STALE_WATERMARK);
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockListDocuments.mockRejectedValueOnce(new Error('listing down'));
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+  });
+
+  it('staleness cutoff: skipped conversations with a fresh watermark do NOT advance the watermark', async () => {
+    mockGetWatermark.mockResolvedValue(FRESH_WATERMARK);
+    const result = await runWithSkippedConversation();
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+  });
+
+  it('staleness cutoff: a partial run caused only by an upload failure does NOT advance the watermark', async () => {
+    mockGetWatermark.mockResolvedValue(STALE_WATERMARK);
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockListUnsynced.mockRejectedValueOnce(new Error('db down'));
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. Orphan reconcile
   // -------------------------------------------------------------------------
   it('orphan reconcile: deletes a mistral document whose path has no matching current archive row', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
@@ -751,7 +805,10 @@ describe('nightly pipeline integration', () => {
   // 9b. Phase 2b session compacts
   // -------------------------------------------------------------------------
   it('Phase 2b: writes a timestamped Session compact for each user that had a new conversation', async () => {
-    mockListConversations.mockResolvedValueOnce([conversation('conv-9a', 'Alice'), conversation('conv-9b', 'Bob')]);
+    mockListConversations.mockResolvedValueOnce([
+      conversation('conv-9a', 'Alice'),
+      conversation('conv-9b', 'Bob')
+    ]);
     mockCompactSession.mockImplementation(async (userName: string) => `compact for ${userName}`);
 
     const result = await runNightlyPipeline();
@@ -763,9 +820,7 @@ describe('nightly pipeline integration', () => {
     expect(mockUpsertContextEntry).toHaveBeenCalledWith('Session with Bob', 'compact for Bob');
 
     // A user with no new conversation is never touched (old compact is kept).
-    expect(mockUpsertContextEntry.mock.calls.map((call: any) => call[0])).not.toContain(
-      'Session with Carol'
-    );
+    expect(mockUpsertContextEntry.mock.calls.map((call: any) => call[0])).not.toContain('Session with Carol');
 
     expect(result.status).toBe('completed');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);

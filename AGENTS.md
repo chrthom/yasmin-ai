@@ -204,6 +204,7 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the dedicated nightly memory-consolidation agent
 - `MEMORY_TZ` - IANA timezone the nightly job's schedule/watermark are computed in (default `Europe/Berlin`)
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
+- `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The compacted `Session with [sender]` context entry carries the thread across the cutover, same as overnight.
 
 ## API Endpoints
 
