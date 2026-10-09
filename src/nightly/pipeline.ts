@@ -428,14 +428,59 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       );
       anyDeleteFailed = true;
     }
-    const validPaths = new Set(currentVersionsForReconcile.map(v => v.filePath));
+    const currentByPath = new Map(currentVersionsForReconcile.map(v => [v.filePath, v]));
 
+    // Group library docs by path so we can also catch same-path duplicates, which the sole
+    // invalid-path orphan check below never sees: a failed replaceDocument delete (the delete
+    // error is caught and logged, not rethrown) leaves a superseded copy of a still-valid path
+    // behind, forever. For each duplicated path we keep only the doc the archive currently
+    // references (its mistral_doc_id) and delete the rest.
+    const docsByPath = new Map<string, LibraryDocument[]>();
     for (const doc of mistralDocs) {
-      if (!validPaths.has(doc.path)) {
+      const list = docsByPath.get(doc.path) ?? [];
+      list.push(doc);
+      docsByPath.set(doc.path, list);
+    }
+
+    for (const [path, docs] of docsByPath) {
+      if (docs.length === 1) {
+        // Single copy: fall through to the orphan check below.
+        if (!currentByPath.has(path)) {
+          try {
+            await deleteDocument(docs[0].id);
+          } catch (error) {
+            console.error('ERROR Failed to delete orphaned Mistral document "' + path + '": ' + error);
+            anyDeleteFailed = true;
+          }
+        }
+        continue;
+      }
+
+      // Multiple copies of the same path. Keep the one the archive references; drop the rest.
+      // If the archive has no reference here (mistral_doc_id null or no longer matching any
+      // copy), we cannot tell which copy is live, so leave them all rather than guess.
+      const current = currentByPath.get(path);
+      const keeper = current ? docs.find(d => d.id === current.mistralDocId) : undefined;
+      if (!keeper) {
+        console.warn(
+          'WARN ' +
+            path +
+            ' has ' +
+            docs.length +
+            ' copies in the library but none matches the archived document id; leaving all copies'
+        );
+        continue;
+      }
+      for (const doc of docs) {
+        if (doc.id === keeper.id) {
+          continue;
+        }
         try {
           await deleteDocument(doc.id);
         } catch (error) {
-          console.error('ERROR Failed to delete orphaned Mistral document "' + doc.path + '": ' + error);
+          console.error(
+            'ERROR Failed to delete duplicate Mistral document "' + path + '" (' + doc.id + '): ' + error
+          );
           anyDeleteFailed = true;
         }
       }
