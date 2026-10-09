@@ -135,7 +135,9 @@ describe('reflection', () => {
 
       expect(result).toBe('short journal entry');
       expect(mockAskAgent).toHaveBeenCalledTimes(1);
-      expect(mockAskAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'nightly-agent-1' }));
+      expect(mockAskAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: 'nightly-agent-1', store: false })
+      );
     });
 
     it('retries once and then truncates deterministically if still over cap', async () => {
@@ -183,7 +185,7 @@ describe('reflection', () => {
       const executeTool = jest.fn();
       const result = await runIntegrate(executeTool);
 
-      expect(result).toEqual({ finalText: 'staged 2 files', iterations: 3 });
+      expect(result).toEqual({ finalText: 'staged 2 files', iterations: 3, conversationId: 'conv-1' });
       expect(mockRunAgentToolLoop).toHaveBeenCalledWith(
         expect.objectContaining({ agentId: 'nightly-agent-1', maxIterations: 15, executeTool })
       );
