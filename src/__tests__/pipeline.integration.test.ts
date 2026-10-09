@@ -950,7 +950,7 @@ describe('nightly pipeline integration', () => {
     expect(result.status).toBe('completed');
   });
 
-  it('topics load failure: run is partial, no topic is archived, and the topic index is archived UNSTRIPPED', async () => {
+  it('topics load failure: run is partial, topic dropped (not re-reviewed), index archived without the skipped topic line', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
     mockListCurrentVersions
@@ -976,10 +976,12 @@ describe('nightly pipeline integration', () => {
     expect(mockSetWatermark).not.toHaveBeenCalled();
     // Without barrier data no topic may be archived (it could be a duplicate)...
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(false);
-    // ...but the index must NOT be stripped of its entries -- validation is skipped on a broken load.
+    // ...and the index is archived, but WITHOUT the line for the skipped topic (known locally,
+    // never archived) -- so no dangling registry entry. Entries for PRE-EXISTING archived topics
+    // survive, because the archive-set validation is skipped on a broken load.
     const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
     expect(indexCall).toBeDefined();
-    expect(indexCall![1]).toContain('topics/urlaub-planung.md - Familienurlaub - Alice, Bob');
+    expect(indexCall![1]).not.toContain('urlaub-planung');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 

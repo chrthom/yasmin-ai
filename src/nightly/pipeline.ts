@@ -302,6 +302,10 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       anyReviewFailed = true;
     }
     const archivedTopicPaths = new Set(existingTopics.map(topic => topic.path.toLowerCase()));
+    // Topics skipped this run because the barrier load failed; collected across iterations so the
+    // index (processed last) can drop their lines -- those files are known locally and were never
+    // archived, so leaving their entries would create dangling registry references.
+    const skippedTopicPaths = new Set<string>();
 
     // The topic index is reviewed LAST and validated against the topics that actually made it into
     // the archive: it references other files by path, so a rejected topics/*.md proposal must not
@@ -362,28 +366,37 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         }
 
         // Without barrier data this run cannot judge topic duplicates -- do not archive a possibly
-        // duplicate topic on a broken load; leave it for the next (healthy) run. The index, by
-        // contrast, IS archived: on a broken load its validation is skipped (a stripped index
-        // would wipe the registry), so its entries survive untouched for the next run to reconcile.
+        // duplicate topic on a broken load. The proposal is DROPPED: Phase 7 still deletes the
+        // conversations and the next run rebuilds its journals only from ITS fresh conversations,
+        // so nothing re-stages this material (same outcome as a rejected duplicate). The index, by
+        // contrast, IS archived so the registry survives -- but with lines for this run's skipped
+        // topics removed (see below), since those files are known locally and never got archived.
         const skipTopicArchive = topicsLoadFailed && update.path.toLowerCase().startsWith('topics/');
         if (skipTopicArchive) {
+          skippedTopicPaths.add(update.path.toLowerCase());
           console.warn(
             'WARN Skipping archive of topic proposal ' +
               update.path +
-              ' because the existing-topics load failed; the next run re-reviews it'
+              ' because the existing-topics load failed; it is DROPPED (not re-reviewed next run)'
           );
         }
 
         let contentToArchive = proposal;
-        if (verdict.approved && !topicsLoadFailed && update.path === TOPIC_INDEX_PATH) {
+        if (verdict.approved && update.path === TOPIC_INDEX_PATH) {
           // Registry validation: keep only the index lines whose topic file actually exists in the
-          // archive (pre-existing or approved earlier in this same run). A rejected or never-staged
-          // topic would otherwise leave a dangling registry entry.
+          // archive (pre-existing or approved earlier in this same run), or -- on a broken topics
+          // load, where the archive set is unknown -- at least drop the lines for topics THIS run
+          // skipped. A rejected, never-staged, or skipped topic would otherwise leave a dangling
+          // registry entry.
           const keptLines: string[] = [];
           const droppedLines: string[] = [];
           for (const line of proposal.split('\n')) {
             const match = /topics\/[a-z0-9-]+\.md/i.exec(line);
-            if (match && !archivedTopicPaths.has(match[0].toLowerCase())) {
+            if (match && skippedTopicPaths.has(match[0].toLowerCase())) {
+              droppedLines.push(line);
+              continue;
+            }
+            if (match && !topicsLoadFailed && !archivedTopicPaths.has(match[0].toLowerCase())) {
               droppedLines.push(line);
               continue;
             }
