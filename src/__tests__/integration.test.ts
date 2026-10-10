@@ -1,9 +1,15 @@
+// ChatAgent builds its conversation URLs from the shared Mistral client helper; pin it to a
+// fixed value so fetch assertions stay deterministic regardless of config.
+jest.mock('../mistral/mistral_api', () => ({
+  ...jest.requireActual('../mistral/mistral_api'),
+  conversationsUrl: () => 'https://test.url'
+}));
+
 // Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
     server: { port: 5000 },
     mistral: {
-      baseUrl: 'https://api.mistral.ai/v1/conversations',
       apiKey: 'test-api-key',
       agentId: 'test-agent-id',
       conversationTtlMs: 12 * 60 * 60 * 1000
@@ -40,7 +46,7 @@ describe('Integration Tests', () => {
   let synologyClient: SynologyClient;
 
   beforeEach(() => {
-    chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
+    chatAgent = new ChatAgent('test-api-key', 'test-agent-id');
     synologyClient = new SynologyClient('https://test.url', 'test-token');
     mockFetch.mockClear();
     jest.clearAllMocks();

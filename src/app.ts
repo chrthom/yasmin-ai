@@ -23,7 +23,7 @@ getDatabasePool();
 
 const chatIncomingBaseURL = config.synology.chatIncomingUrl;
 
-export const chatAgent = new ChatAgent(config.mistral.baseUrl, config.mistral.apiKey, config.mistral.agentId);
+export const chatAgent = new ChatAgent(config.mistral.apiKey, config.mistral.agentId);
 export const synologyClient = new SynologyClient(chatIncomingBaseURL, config.synology.tokens.bot);
 
 const limiter = rateLimit({
