@@ -206,7 +206,7 @@ regenerates the eager cache. See `docs/nightly_memory_processing_implementation.
 | `npm run format`                           | Format all files with Prettier                                                                        |
 | `npm run check`                            | Run both format and lint                                                                              |
 | `npm run manage-context <command>`         | Run context administration commands (list, create...)                                                 |
-| `npm run nightly`                          | Run the nightly memory-consolidation job once (requires `npm run build` first)                        |
+| `npm run nightly`                          | Run the nightly memory-consolidation job once (via ts-node, no build needed)                          |
 | `npm run nightly:dry-run`                  | Preflight the nightly job: checks DB + Mistral connectivity and logs what it would do, writes nothing |
 | `npm run bootstrap-memory`                 | One-time migration: seed `memory_archive` + the Mistral library from existing `context_entries`       |
 
