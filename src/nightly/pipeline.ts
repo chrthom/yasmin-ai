@@ -22,6 +22,12 @@ import {
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
 import {
+  clearPendingNotes,
+  getPendingNotesMaxId,
+  getUnconsolidatedNotes,
+  PendingNote
+} from '../database/models/pending_notes.model';
+import {
   JournalEntry,
   StagedUpdate,
   get_long_term_file,
@@ -249,7 +255,32 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
     // -----------------------------------------------------------------------
-    const integrateResult = await runIntegrate(executeIntegrateTool);
+    // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
+    // evidence so a message that never reached its recipient still survives in long-term
+    // memory. A failed read must not fail the run -- consolidation continues on journals alone.
+    let undeliveredNotes: PendingNote[] = [];
+    // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
+    // never a note the live agent staged after the snapshot while the review loop was running.
+    // The watermark is MAX(id) over ALL notes (delivered ones included), not over the
+    // undelivered subset: with only delivered notes the undelivered max would be 0 and the
+    // bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
+    let notesSnapshotMaxId = 0;
+    let notesConsolidated = true;
+    try {
+      notesSnapshotMaxId = await getPendingNotesMaxId();
+      undeliveredNotes = await getUnconsolidatedNotes(notesSnapshotMaxId);
+      if (undeliveredNotes.length > 0) {
+        console.log(
+          'INFO Feeding ' + undeliveredNotes.length + ' undelivered pending note(s) to the integrate agent'
+        );
+      }
+    } catch (error) {
+      // The notes themselves were never consolidated here, so phase 6.5 must NOT delete them;
+      // they stay in the outbox and are included again tomorrow.
+      console.error('ERROR Failed to load undelivered pending notes; continuing without them: ' + error);
+      notesConsolidated = false;
+    }
+    const integrateResult = await runIntegrate(executeIntegrateTool, undeliveredNotes);
     // Scratch conversation of the nightly agent; journal/review/compact calls use store:false instead.
     if (integrateResult.conversationId) {
       await deleteConversation(integrateResult.conversationId).catch(error =>
@@ -265,6 +296,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           config.nightly.maxIterations +
           '); staged updates for this run may be incomplete'
       );
+      // A truncated integrate may never have processed the pending-note evidence, so the notes
+      // must survive for the next nightly run rather than be deleted unconsolidated.
+      notesConsolidated = false;
     }
     const stagedUpdates: StagedUpdate[] = getStagedUpdates();
     await updateJobLog(jobId, { lastCompletedPhase: '3-integrate' });
@@ -347,6 +381,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
         anyReviewFailed = true;
+        notesConsolidated = false;
       }
     }
 
@@ -533,6 +568,31 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
 
     await updateJobLog(jobId, { lastCompletedPhase: '6-eager' });
+    // -----------------------------------------------------------------------
+    // Phase 6.5 -- Pending-notes reset (outbox)
+    // -----------------------------------------------------------------------
+    // The outbox holds at most one day: after integrate (3) and review/archive (4) succeeded,
+    // every note -- delivered or not -- has served its purpose (delivered notes live on in the
+    // journals, undelivered ones were just consolidated as evidence). Deliberately a plain
+    // DELETE, no TRUNCATE (DROP privileges / implicit commit). Only the failure of the
+    // consolidation phases themselves keeps the notes for another day; a merely 'partial' run
+    // (e.g. a failed upload) may still empty the outbox.
+    if (notesConsolidated && notesSnapshotMaxId > 0) {
+      try {
+        await clearPendingNotes(notesSnapshotMaxId);
+        console.log(
+          'INFO Cleared the pending_notes outbox (notes up to #' +
+            notesSnapshotMaxId +
+            ') after successful consolidation'
+        );
+      } catch (error) {
+        console.error('ERROR Failed to clear the pending_notes outbox: ' + error);
+      }
+    } else {
+      console.warn(
+        'WARN Consolidation phases did not complete; keeping pending_notes for the next nightly run'
+      );
+    }
 
     // -----------------------------------------------------------------------
     // Phase 7 -- Cleanup

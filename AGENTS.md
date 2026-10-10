@@ -17,11 +17,13 @@ database/
 ├── schema.sql             # Database schema for the 2-column context model (context_entries)
 └── schema_memory.sql      # Additive schema for the nightly memory job: memory_archive,
                             #   nightly_job_log, processing_lock (does not touch context_entries)
+                            #   pending_notes (cross-person note outbox) lives in schema.sql
 mistral_config/
 ├── conversation/                       # Live conversation agent
 │   ├── system_prompt.txt
 │   └── functions/
-│       └── read_context_entry.json     # Lazy-load a context entry (its only tool -- read-only)
+│       ├── read_context_entry.json     # Lazy-load a context entry (read-only)
+│       └── share_note.json              # Stage a note for another person (cross-person outbox)
 ├── summarizer/                         # Restart-handoff summarizer agent (Studio)
 │   └── system_prompt.txt
 └── nightly/                            # Nightly memory-consolidation agent
@@ -86,7 +88,7 @@ src/
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
 
-#### Memory writes: the live agent is read-only
+#### Memory writes: the live agent is read-only (memory)
 
 The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ever _reads_ them:
 
@@ -100,6 +102,18 @@ The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ev
   from earlier days can be searched via the agent's attached Mistral library (`document_library` tool; the
   model decides when to search, no application code involved). Conversations from the current day are not in
   the library yet.
+
+#### Cross-person notes: the pending_notes outbox
+
+Besides reading memory, the live agent can stage a **note for another person** via `share_note`
+(`mistral_config/conversation/functions/share_note.json`; the tool must also be registered on the
+Studio conversation agent). Notes are rows in `pending_notes` (part of `database/schema.sql` --
+apply it before deploying), never `context_entries`, and are delivered **exactly once per
+recipient** with the recipient's next user input, injected as a `<nachrichten_fuer_dich>` block
+into the prompt. The privacy barrier lives only in the live agent's prompt: never relay anything
+confidential or `[PRIVACY:SENSITIVE]`-related. The nightly job feeds still-undelivered notes to
+the integrate agent as evidence and then empties the outbox (only after phases 3+4 succeeded, and
+only up to the snapshot's max id, so concurrently inserted notes survive for the next run).
 
 #### Conversation restarts and the handoff
 
