@@ -88,10 +88,8 @@ process.on('unhandledRejection', (reason, promise) => {
 const NIGHTLY_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 /**
- * Graceful shutdown: stop scheduling new nightly runs and give an in-flight pipeline up to a bounded
- * timeout to finish, so a SIGTERM mid-run doesn't hard-kill it and leave a stale processing_lock
- * behind. The pipeline logs its own progress/state; we only decide the exit code from whether it
- * drained in time.
+ * Stop scheduling new nightly runs and let an in-flight pipeline drain within a bounded timeout,
+ * so a SIGTERM mid-run doesn't leave a stale processing_lock behind.
  */
 const shutdown = async (signal: string): Promise<void> => {
   console.log(`INFO: ${signal} received, shutting down`);
