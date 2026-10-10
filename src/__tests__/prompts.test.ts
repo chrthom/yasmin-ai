@@ -11,12 +11,15 @@ describe('nightly prompt templates', () => {
     const prompts = [
       renderPrompt('journal_prompt.txt', { userName: 'Alice', transcript: 'transcript text' }),
       renderPrompt('integrate_prompt.txt', {
+        runDate: '2026-10-05',
         undeliveredNotes: renderPrompt('integrate_notes_block.txt', {
           notesText: '--- Undelivered note #1 from a to b ---\nnote text'
         }),
         selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt')
       }),
       renderPrompt('review_prompt.txt', {
+        runDate: '2026-10-05',
+        lastTouched: '2026-01-01',
         attemptSuffix: ' (Review attempt 2 -- an earlier version was rejected.)',
         path: update.path,
         newFileSuffix: '',

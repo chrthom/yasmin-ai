@@ -113,11 +113,8 @@ export async function runJournal(userName: string, transcript: string): Promise<
     })
   ).outputText.trim();
 
-  // An empty entry is ALWAYS abnormal -- the journal prompt tells the agent to write at least a
-  // single short line ("If nothing meaningful happened ... write one short line") -- so an empty
-  // reply means a failed/incomplete generation, not "nothing to say". Give it one clarifying retry;
-  // if it stays empty, throw so the pipeline skips and reprocesses this conversation next night
-  // instead of silently persisting an empty journal file that poisons the whole downstream run.
+  // An empty reply is always a failed generation, not "nothing to say": retry once, then throw so the
+  // conversation is reprocessed next night instead of persisting an empty journal file.
   if (text.length === 0) {
     const retry = await askAgent({
       agentId: config.mistral.nightlyAgentId,
@@ -172,38 +169,46 @@ export async function runJournal(userName: string, transcript: string): Promise<
 /**
  * The file-path grounding rule that integrate, review, and revision all share: Yasmin's own profile
  * must stay in first person, and it is easy for the nightly agent to slip into third person when it is
- * only mentioned as a parenthetical. Kept as one template so the voice rule is stated consistently.
+ * only mentioned as a parenthetical. Kept as one constant so the voice rule is stated consistently.
  */
 const SELF_PROFILE_VOICE_RULE = 'self_profile_voice_rule.txt';
 
 /**
- * Builds the Phase-3 instruction that drives the tool-calling integrate loop, from the
- * mistral_config/nightly/prompts/integrate_prompt.txt template. Undelivered pending notes (the live
- * agent's cross-person outbox) are appended as extra evidence so a message that never reached its
- * recipient still survives in long-term memory.
+ * Formats a Date as YYYY-MM-DD in the configured memory timezone (MEMORY_TZ) -- the run date the
+ * decay instruction tells the agent to judge file ages against.
  */
-export function integratePrompt(undeliveredNotes: IntradayNote[] = []): string {
+export function formatRunDate(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.nightly.tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+}
+
+/**
+ * Builds the Phase-3 instruction that drives the tool-calling integrate loop. Undelivered
+ * pending notes (the live agent's cross-person outbox) are appended as extra evidence so a
+ * message that never reached its recipient still survives in long-term memory.
+ */
+export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[] = []): string {
   const notesText = formatIntradayNotesText(undeliveredNotes);
   const undeliveredNotesBlock =
     notesText.length > 0 ? renderPrompt('integrate_notes_block.txt', { notesText }) : '';
   return renderPrompt('integrate_prompt.txt', {
+    runDate,
     undeliveredNotes: undeliveredNotesBlock,
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE)
   });
 }
 
-/**
- * Runs the Phase-3 tool loop; the caller reads back what was staged via tools.ts's getStagedUpdates().
- * The conversation must stay stored (the loop continues it turn by turn), so the caller deletes the
- * returned conversationId once it is done.
- */
 export async function runIntegrate(
   executeTool: (name: string, args: Record<string, unknown>) => Promise<string>,
   undeliveredNotes: IntradayNote[] = []
 ): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
-    initialInputs: [{ role: 'user', content: integratePrompt(undeliveredNotes) }],
+    initialInputs: [{ role: 'user', content: integratePrompt(formatRunDate(new Date()), undeliveredNotes) }],
     maxIterations: config.nightly.maxIterations,
     executeTool
   });
@@ -269,6 +274,7 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
 export function reviewPrompt(
   update: StagedUpdate,
   currentContent: string | null,
+  lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number
 ): string {
@@ -291,22 +297,30 @@ export function reviewPrompt(
     currentContent: currentContent === null ? '(this is a brand-new file)' : currentContent,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE),
-    groundingRule
+    groundingRule,
+    runDate: formatRunDate(new Date()),
+    lastTouched:
+      lastTouchedAt === null
+        ? 'never -- this would be its first version'
+        : formatRunDate(new Date(lastTouchedAt))
   });
 }
 
-/**
- * Runs the Phase-4 review call for one staged update; malformed verdicts are rejected as a safe default
- */
 export async function runReview(
   update: StagedUpdate,
   currentContent: string | null,
+  lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals, attempt) }],
+    inputs: [
+      {
+        role: 'user',
+        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt)
+      }
+    ],
     store: false
   });
 
@@ -353,13 +367,6 @@ export function revisePrompt(
   });
 }
 
-/**
- * Builds the short follow-up prompt sent to an EXISTING revision conversation. The conversation already
- * holds the file context, the running proposal->feedback history, and the agent's own prior corrections,
- * so this turn points at the latest rejection -- keeping the whole history in scope for later revisions.
- * The day's journals are re-embedded here too (not just relied on from conversation memory), so every
- * revision re-grounds itself in the evidence even if later turns drift from the original seed.
- */
 export function reviseFollowUpPrompt(
   update: StagedUpdate,
   rejectedContent: string,
@@ -380,11 +387,6 @@ export function reviseFollowUpPrompt(
   });
 }
 
-/**
- * Runs the Phase-4 revision for one staged update, returning the corrected full replacement content and
- * the conversation id so callers can keep revising within the SAME conversation (full proposal->feedback
- * history stays in scope). Pass the conversationId from a prior call to continue that conversation.
- */
 export async function reviseProposal(
   update: StagedUpdate,
   currentContent: string | null,
@@ -439,9 +441,6 @@ export function compactPrompt(
   return header + renderPrompt('compact_footer.txt', { content: strippedContent });
 }
 
-/**
- * Runs the Phase-6 compaction call for one long-term file, with one tighter retry and a truncation safety net
- */
 export async function runCompact(
   kind: CompactKind,
   personName: string | undefined,

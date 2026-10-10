@@ -1,45 +1,64 @@
 import * as process from 'node:process';
 
+const optionalEnv = (key: string, fallback: string): string => process.env[key] || fallback;
+
+// Lazy getters throw on access instead of the compile-time-only `!`, so importing config without
+// validateEnv() can never silently yield undefined.
+const requiredEnv = (key: string): string => {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+};
+
 export const config = {
   server: {
     port: process.env['PORT'] || 5000
   },
   mistral: {
-    apiKey: process.env['MISTRAL_API_KEY']!,
-    agentId: process.env['AGENT_ID_CONVERSATION']!,
+    get apiKey(): string {
+      return requiredEnv('MISTRAL_API_KEY');
+    },
+    get agentId(): string {
+      return requiredEnv('AGENT_ID_CONVERSATION');
+    },
     conversationTtlMs: 12 * 60 * 60 * 1000,
-    // Turn-based compaction: once a live conversation reaches this many turns it gets closed
-    // (not deleted -- the nightly job still journals it) and the next turn starts a fresh one.
-    // The Mistral conversation API exposes no cumulative token count, so turns are the proxy.
+    // Turns are the compaction proxy because the Mistral conversation API exposes no token count.
     maxTurnsPerSession: parseInt(process.env['MAX_TURNS_PER_SESSION'] || '50', 10),
-    // How many of the previous conversation's last turns (user + assistant) are replayed verbatim into a
-    // fresh conversation, and how long the next turn waits for the background summary before going without.
     handoffRecentTurns: 3,
     handoffWaitMs: 5000,
     apiRoot: 'https://api.mistral.ai/v1',
-    // Required for every process: the nightly scheduler runs in-process inside app.ts (same Node process
-    // as the API server), so MISTRAL_LIBRARY_ID and AGENT_ID_NIGHTLY are always required. validateEnv()
-    // enforces them at startup for all processes, so the `!` is safe -- the server refuses to start
-    // without them.
-    libraryId: process.env['MISTRAL_LIBRARY_ID']!,
-    nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!,
-    // Optional: Mistral agent that summarizes a conversation for the turn-limit/respawn handoff. Without it
-    // the handoff degrades to replaying just the last turns.
-    summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || ''
+    // validateEnv() enforces these at startup; requiredEnv guards reads in non-entrypoint processes.
+    get libraryId(): string {
+      return requiredEnv('MISTRAL_LIBRARY_ID');
+    },
+    get nightlyAgentId(): string {
+      return requiredEnv('AGENT_ID_NIGHTLY');
+    },
+    // Without this optional agent the handoff degrades to replaying just the last turns.
+    summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', '')
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
     tokens: {
-      bot: process.env['CHAT_TOKEN_BOT']!,
-      slash: process.env['CHAT_TOKEN_SLASH']!,
-      group: process.env['CHAT_TOKEN_GROUP']!
+      get bot(): string {
+        return requiredEnv('CHAT_TOKEN_BOT');
+      },
+      get slash(): string {
+        return requiredEnv('CHAT_TOKEN_SLASH');
+      },
+      get group(): string {
+        return requiredEnv('CHAT_TOKEN_GROUP');
+      }
     }
   },
   database: {
     host: '192.168.0.2',
     port: 3307,
     user: 'yasmin',
-    password: process.env['DB_PASSWORD'] || '',
+    // Empty only when the DB is genuinely unused; validateEnv({ requireDb: true }) enforces it otherwise.
+    password: optionalEnv('DB_PASSWORD', ''),
     name: 'yasmin'
   },
   rateLimit: {
@@ -65,9 +84,15 @@ export const config = {
   }
 } as const;
 
-// Validate required environment variables
-export function validateEnv(): void {
-  const requiredEnv = [
+export interface ValidateEnvOptions {
+  // Set by entrypoints that talk to the database (nightly run, manage-context, bootstrap-memory).
+  requireDb?: boolean;
+}
+
+// Called explicitly by each entrypoint; never guesses the process role from argv.
+// USE_REAL_DB=true always implies the database variables as well.
+export function validateEnv(options: ValidateEnvOptions = {}): void {
+  const required = [
     'MISTRAL_API_KEY',
     'CHAT_TOKEN_BOT',
     'CHAT_TOKEN_SLASH',
@@ -75,29 +100,14 @@ export function validateEnv(): void {
     'AGENT_ID_CONVERSATION',
     'MISTRAL_LIBRARY_ID',
     'AGENT_ID_NIGHTLY'
-  ] as const;
+  ];
+  if (options.requireDb === true || process.env['USE_REAL_DB'] === 'true') {
+    required.push('DB_PASSWORD');
+  }
 
-  requiredEnv.forEach(key => {
-    if (!process.env[key]) {
-      console.error(`ERROR: Missing required environment variable: ${key}`);
-      process.exit(1);
-    }
-  });
-
-  // Database environment variables are only required if running the CLI context manager or if real DB is explicitly enabled
-  const isCli = process.argv[1] && process.argv[1].includes('manage-context');
-  const isRealDbEnabled = process.env['USE_REAL_DB'] === 'true';
-  const isNightly =
-    !!process.argv[1] &&
-    (process.argv[1].includes('/nightly/') || process.argv[1].includes('bootstrap-memory'));
-
-  if (isCli || isRealDbEnabled || isNightly) {
-    const requiredDbEnv = ['DB_PASSWORD'] as const;
-    requiredDbEnv.forEach(key => {
-      if (!process.env[key]) {
-        console.error(`ERROR: Missing required database environment variable: ${key}`);
-        process.exit(1);
-      }
-    });
+  const missing = required.filter(key => !process.env[key]);
+  if (missing.length > 0) {
+    missing.forEach(key => console.error(`ERROR: Missing required environment variable: ${key}`));
+    process.exit(1);
   }
 }
