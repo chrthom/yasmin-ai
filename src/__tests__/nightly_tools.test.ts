@@ -96,6 +96,7 @@ describe('nightly/tools', () => {
         }
       ]);
     });
+
     it('sanitizes a topics/ slug: casing, spaces, and a traversal fragment are normalized', () => {
       const result = stage_update('topics/Urlaub Planung.md', 'Aliases: Urlaub', true);
       expect(result).toEqual({ success: true, path: 'topics/urlaub-planung.md' });
