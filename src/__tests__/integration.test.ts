@@ -6,7 +6,31 @@ jest.mock('../config', () => ({
       baseUrl: 'https://api.mistral.ai/v1/conversations',
       apiKey: 'test-api-key',
       agentId: 'test-agent-id',
-      conversationTtlMs: 12 * 60 * 60 * 1000
+      conversationTtlMs: 12 * 60 * 60 * 1000,
+      requestTimeoutMs: 30_000,
+      maxToolCalls: 5
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    },
+    chat: {
+      noteContentMaxChars: 500,
+      noteToEveryone: 'everyone',
+      shortAnswerMaxChars: 1500
+    },
+    handoff: {
+      recentMessageMaxChars: 600,
+      summaryMaxChars: 2500,
+      summarizerInputMaxChars: 30000,
+      summarizerTurnMaxChars: 1500
+    },
+    nightly: {
+      hour: 23,
+      minute: 0,
+      transcriptMaxChars: 20000,
+      journalSoftCapChars: 4000,
+      shutdownTimeoutMs: 30_000
     },
     synology: {
       chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',

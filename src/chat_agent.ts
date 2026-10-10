@@ -613,6 +613,11 @@ export class ChatAgent {
         }
       }
 
+      if (toolCallDetected && loopCount >= maxToolCalls) {
+        console.warn(
+          `WARNING Tool call loop cap of ${maxToolCalls} hit for ${username}; dropping any further tool calls`
+        );
+      }
       this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {

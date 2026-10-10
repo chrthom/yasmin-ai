@@ -24,9 +24,32 @@ export const config = {
     // without them.
     libraryId: process.env['MISTRAL_LIBRARY_ID']!,
     nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!,
+    // Hard ceiling for any single Mistral HTTP call made through mistral_api.ts.
+    requestTimeoutMs: 30_000,
+    // Cap on the sequential tool-calling loop in the live agent. When it is hit, remaining
+    // tool calls are dropped (a warning is logged) and the final outputs are returned as-is.
+    maxToolCalls: 5,
     // Optional: Mistral agent that summarizes a conversation for the turn-limit/respawn handoff. Without it
     // the handoff degrades to replaying just the last turns.
     summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || ''
+  },
+  context: {
+    familyNotesTitle: 'Family notes',
+    profileOfYasminTitle: 'Profile of Yasmin'
+  },
+  chat: {
+    // Hard cap on the content of a share_note staged for another person.
+    noteContentMaxChars: 500,
+    noteToEveryone: 'everyone',
+    // Upper bound enforced by the shortAnswer request flag. The prompt string built from it and
+    // the matching cleanup regex live in src/protocol.ts, so they cannot drift apart.
+    shortAnswerMaxChars: 1500
+  },
+  handoff: {
+    recentMessageMaxChars: 600,
+    summaryMaxChars: 2500,
+    summarizerInputMaxChars: 30000,
+    summarizerTurnMaxChars: 1500
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
@@ -56,6 +79,12 @@ export const config = {
   },
   nightly: {
     tz: process.env['MEMORY_TZ'] || 'Europe/Berlin',
+    // Scheduled start time of the nightly run (local time in tz).
+    hour: parseInt(process.env['NIGHTLY_HOUR'] || '23', 10),
+    minute: parseInt(process.env['NIGHTLY_MINUTE'] || '0', 10),
+    transcriptMaxChars: 20000,
+    journalSoftCapChars: 4000,
+    shutdownTimeoutMs: 30_000,
     maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
     maxRevisions: 3,
     lockStaleMs: 2 * 60 * 60 * 1000,

@@ -9,9 +9,11 @@ interface FixedMapping {
   title: string;
 }
 
+import { config } from '../config';
+
 const FIXED_MAPPINGS: FixedMapping[] = [
-  { path: 'self-reflection/profile.md', title: 'Profile of Yasmin' },
-  { path: 'general/family.md', title: 'Family notes' }
+  { path: 'self-reflection/profile.md', title: config.context.profileOfYasminTitle },
+  { path: 'general/family.md', title: config.context.familyNotesTitle }
 ];
 
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;

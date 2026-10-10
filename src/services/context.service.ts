@@ -1,4 +1,6 @@
+import { config } from '../config';
 import { dbProxy } from '../database/db_proxy';
+import { contextEntryBlock, xmlBlock } from '../protocol';
 
 export interface ContextRetrievalResult {
   formattedContext: string;
@@ -28,8 +30,8 @@ export class ContextService {
     // 1. Mandatorily match eager-loaded entries for the first turn
     // Profile of the sender, Family notes, and Profile of Yasmin
     const profileOfSenderTitle = `Profile of ${username}`;
-    const familyNotesTitle = 'Family notes';
-    const profileOfYasminTitle = 'Profile of Yasmin';
+    const familyNotesTitle = config.context.familyNotesTitle;
+    const profileOfYasminTitle = config.context.profileOfYasminTitle;
 
     const matchedProfileSender = titles.find(t => t.toLowerCase() === profileOfSenderTitle.toLowerCase());
     const matchedFamilyNotes = titles.find(t => t.toLowerCase() === familyNotesTitle.toLowerCase());
@@ -54,7 +56,7 @@ export class ContextService {
     for (const title of candidateTitles) {
       const content = await dbProxy.getContentByTitle(title);
       if (content !== null && content !== undefined) {
-        xmlBlocks.push(`<context_entry title="${title}">\n${content.trim()}\n</context_entry>`);
+        xmlBlocks.push(contextEntryBlock(title, content.trim()));
         newlyLoadedTitles.push(title);
       }
     }
@@ -71,9 +73,10 @@ export class ContextService {
       const availableTitles = allTitles.filter(t => !eagerlyLoadedSet.has(t.toLowerCase()));
 
       if (availableTitles.length > 0) {
-        const titleListXml = `<available_context_entries>\n${availableTitles
-          .map(t => `- ${t}`)
-          .join('\n')}\n</available_context_entries>`;
+        const titleListXml = xmlBlock(
+          'available_context_entries',
+          availableTitles.map(t => `- ${t}`).join('\n')
+        );
         formattedContext = formattedContext ? `${titleListXml}\n\n${formattedContext}` : titleListXml;
       }
     }
