@@ -171,7 +171,7 @@ export async function runJournal(userName: string, transcript: string): Promise<
  * must stay in first person, and it is easy for the nightly agent to slip into third person when it is
  * only mentioned as a parenthetical. Kept as one constant so the voice rule is stated consistently.
  */
-const SELF_PROFILE_VOICE_RULE = 'self_profile_voice_rule.txt';
+const SELF_PROFILE_VOICE_RULE_TEMPLATE = 'self_profile_voice_rule.txt';
 
 /**
  * Formats a Date as YYYY-MM-DD in the configured memory timezone (MEMORY_TZ) -- the run date the
@@ -198,10 +198,15 @@ export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[
   return renderPrompt('integrate_prompt.txt', {
     runDate,
     undeliveredNotes: undeliveredNotesBlock,
-    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE)
+    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE)
   });
 }
 
+/**
+ * Runs the Phase-3 tool loop; the caller reads back what was staged via tools.ts's getStagedUpdates().
+ * The conversation must stay stored (the loop continues it turn by turn), so the caller deletes the
+ * returned conversationId once it is done.
+ */
 export async function runIntegrate(
   executeTool: (name: string, args: Record<string, unknown>) => Promise<string>,
   undeliveredNotes: IntradayNote[] = []
@@ -296,7 +301,7 @@ export function reviewPrompt(
     newContent: update.content,
     currentContent: currentContent === null ? '(this is a brand-new file)' : currentContent,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
-    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE),
+    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE),
     groundingRule,
     runDate: formatRunDate(new Date()),
     lastTouched:
@@ -306,6 +311,9 @@ export function reviewPrompt(
   });
 }
 
+/**
+ * Runs the Phase-4 review call for one staged update; malformed verdicts are rejected as a safe default
+ */
 export async function runReview(
   update: StagedUpdate,
   currentContent: string | null,
@@ -363,7 +371,7 @@ export function revisePrompt(
     rejectedContent,
     feedback,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
-    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE)
+    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE)
   });
 }
 
@@ -375,7 +383,7 @@ export function reviseFollowUpPrompt(
 ): string {
   const voiceRule =
     update.path === 'self-reflection/profile.md'
-      ? '\nRemember: ' + loadTemplate(SELF_PROFILE_VOICE_RULE) + '\n'
+      ? '\nRemember: ' + loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE) + '\n'
       : '';
   const journalsText = formatJournalsText(todaysJournals);
   return renderPrompt('revise_follow_up_prompt.txt', {
@@ -387,6 +395,11 @@ export function reviseFollowUpPrompt(
   });
 }
 
+/**
+ * Runs the Phase-4 revision for one staged update, returning the corrected full replacement content and
+ * the conversation id so callers can keep revising within the SAME conversation (full proposal->feedback
+ * history stays in scope). Pass the conversationId from a prior call to continue that conversation.
+ */
 export async function reviseProposal(
   update: StagedUpdate,
   currentContent: string | null,
@@ -441,6 +454,9 @@ export function compactPrompt(
   return header + renderPrompt('compact_footer.txt', { content: strippedContent });
 }
 
+/**
+ * Runs the Phase-6 compaction call for one long-term file, with one tighter retry and a truncation safety net
+ */
 export async function runCompact(
   kind: CompactKind,
   personName: string | undefined,
