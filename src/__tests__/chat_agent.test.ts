@@ -988,9 +988,7 @@ describe('ChatAgent', () => {
         statusText: 'Not Found'
       });
 
-      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow(
-        'no respawn possible'
-      );
+      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow('no respawn possible');
       // Only one request was made -- a fresh-conversation 404 must not trigger a respawn loop
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect((chatAgent as any).conversationCache.has('christopher')).toBe(false);

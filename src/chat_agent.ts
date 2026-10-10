@@ -9,11 +9,7 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
-import {
-  fetchWithTimeout,
-  MistralApiError,
-  withRetry
-} from './mistral/mistral_api';
+import { fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 
 // The live agent is the only filter between sender and recipient (no nightly reviewer sits in
 // between), so the share_note tool validates as strictly as stage_update does on the nightly side.
@@ -261,26 +257,24 @@ export class ChatAgent {
   ): Promise<MistralConversationResponse> {
     const url = conversationId ? `${this.url}/${conversationId}` : this.url;
     try {
-      return await withRetry(async () => {
-        const response = await fetchWithTimeout(url, {
-          method: 'post',
-          body: JSON.stringify(body),
-          headers: {
-            'Content-Type': 'application/json',
-            ...authorizationHeader(this.apiKey)
+      return await withRetry(
+        async () => {
+          const response = await fetchWithTimeout(url, {
+            method: 'post',
+            body: JSON.stringify(body),
+            headers: {
+              'Content-Type': 'application/json',
+              ...authorizationHeader(this.apiKey)
+            }
+          });
+          if (!response.ok) {
+            console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
+            throw new MistralApiError(`Mistral API request failed: HTTP ${response.status}`, response.status);
           }
-        });
-        if (!response.ok) {
-          console.error(
-            `ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`
-          );
-          throw new MistralApiError(
-            `Mistral API request failed: HTTP ${response.status}`,
-            response.status
-          );
-        }
-        return <MistralConversationResponse>await response.json();
-      }, { safeRetry: true });
+          return <MistralConversationResponse>await response.json();
+        },
+        { safeRetry: true }
+      );
     } catch (error) {
       // A stale conversation (deleted by the nightly job, or left broken by a pending function
       // call) rejects further turns with HTTP 400/404. Only these typed, non-retryable statuses
@@ -638,9 +632,7 @@ export class ChatAgent {
           this.markConversationPoisoned(username, failedConversationId);
         }
         this.conversationCache.delete(username);
-        console.log(
-          `INFO Cleared cached conversation for ${username} due to a stale Mistral conversation`
-        );
+        console.log(`INFO Cleared cached conversation for ${username} due to a stale Mistral conversation`);
         if (failedConversationId && !isRespawn) {
           console.log(`INFO Respawning a fresh conversation for ${username}`);
           return this.processRequestInternal(
