@@ -41,7 +41,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
  */
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
