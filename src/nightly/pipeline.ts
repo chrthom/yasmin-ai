@@ -48,7 +48,7 @@ import {
   CompactKind,
   ExistingTopic
 } from './reflection';
-import { isOverCap, stripArchiveSection, stripSensitive, truncateToCap } from './privacy';
+import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
 import {
   deleteConversation,
@@ -654,7 +654,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       }
 
       try {
-        const stripped = stripArchiveSection(stripSensitive(row.content));
+        const stripped = stripSensitive(row.content);
         let compacted = await runCompact(kind, personName, stripped);
 
         if (compacted.trim().length === 0) {

@@ -294,6 +294,13 @@ export function integratePrompt(runDate: string, undeliveredNotes: PendingNote[]
     "now says is false must be rewritten to match. Treat the file's current content as a possibly stale " +
     'claim, not ground truth. If two different files assert conflicting facts, fix the wrong one rather than ' +
     'leaving both standing.\n' +
+    "Confirmation refreshes dating: when today's journals re-confirm a fact the file already has, do NOT " +
+    'leave it untouched just because it is already recorded -- update that existing statement IN PLACE ' +
+    "(same line, no duplicate added): refresh its date to today's corroboration (a dated Recent " +
+    'Happenings line gets its date rewritten to today, an undated topic bullet gets reworded to fold in ' +
+    "today's confirmation). This is what keeps an actively re-confirmed fact visibly FRESH; an old date " +
+    'inside the file must therefore always mean "not corroborated since then". This in-place refresh is ' +
+    'a substantive update, not churn.\n' +
     "Apply the same restraint when integrating: skip facts that are now irrelevant to this person's profile, " +
     'and never keep a stale fact just because it was recorded before.\n' +
     "Look beyond single files as well: when today's journals show something that connects TWO OR MORE " +
@@ -306,8 +313,8 @@ export function integratePrompt(runDate: string, undeliveredNotes: PendingNote[]
     '. A fact that has not been corroborated for a long time should age instead of being asserted as fresh ' +
     'forever. Three states: FRESH (recently corroborated -- leave as is), AGING (no new corroboration for a ' +
     'long time -- annotate the fact with a confidence marker such as "(veraltet? unsicher geworden?)" or ' +
-    '"(möglicherweise veraltet)"), DECAYED (no corroboration for a very long time -- move the fact into an ' +
-    'optional "## Archiv" section at the end of the file or remove it entirely). Note that last_touched_at ' +
+    '"(möglicherweise veraltet)"), DECAYED (no corroboration for a very long time -- ' +
+    'remove the fact from the file entirely). Note that last_touched_at ' +
     'is a file-level signal: any content change bumps it, so a file touched today may still hold stale ' +
     'facts -- therefore lean primarily on the absolute dates written inside the content itself (e.g. Recent ' +
     'Happenings lines), not on last_touched_at alone, when judging how old a specific fact is. When you ' +
@@ -316,7 +323,8 @@ export function integratePrompt(runDate: string, undeliveredNotes: PendingNote[]
     'annotations: decay only ever rides along with a substantive update that has a real reason (new facts, ' +
     'corrections, consolidation). A file whose content is merely old stays untouched -- do not mechanically ' +
     "reword aging files without a substantive reason, and never reword a fact that today's journals actually " +
-    'corroborate again.\n\n' +
+    "corroborate again. (The confirmation refresh above is exempt: re-dating a fact that today's " +
+    'journals genuinely confirmed is always a valid reason to stage a file.)\n\n' +
     'Budget your tool calls: read only the files you actually intend to update, and stage only files that ' +
     TOPICS_RULE +
     '\nBudget your tool calls: read only the files you actually intend to update, and stage only files that ' +
@@ -336,8 +344,7 @@ export function integratePrompt(runDate: string, undeliveredNotes: PendingNote[]
     'Antwort bekomme", rather than recounting the dated exchange; leave anecdotes tied to one specific ' +
     'person or conversation out of this file.\n' +
     ' Person profiles use the 7-section template (Core Facts, Current Attitude, Ideas, ' +
-    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions) -- " +
-    'optionally followed by an "## Archiv" section at the very end for fully decayed facts -- where ' +
+    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions), where " +
     "Current Attitude is the person's current mood, outlook, and state of mind (no dated events here); " +
     'dated event snippets belong only in Recent Happenings, one short line each; ' +
     'Open Topics holds distinct unresolved threads, with duplicate bullets about the same topic collapsed; ' +
@@ -525,17 +532,17 @@ export function reviewPrompt(
     (lastTouchedAt === null
       ? 'never -- this would be its first version'
       : formatRunDate(new Date(lastTouchedAt))) +
-    '. A fact annotated as aging or moved to an archive section must genuinely lack recent corroboration, ' +
-    'given that last_touched_at date and the absolute dates in the current content -- reject a decay ' +
-    'annotation on a fact that the evidence actually re-corroborates, and also reject a proposal that ' +
-    'rewords well-dated facts with an incorrect or invented dating. Conversely, a correctly dated decay ' +
-    'annotation (confidence marker, archive section) is a valid, acceptable change. Reject a proposal ' +
-    'whose ONLY change is mechanical decay rewording without a substantive reason.\n' +
+    '. A fact annotated as aging must genuinely lack recent corroboration, given that last_touched_at ' +
+    'date and the absolute dates in the current content -- reject a decay annotation on a fact that the ' +
+    'evidence actually re-corroborates, and also reject a proposal that rewords well-dated facts with ' +
+    'an incorrect or invented dating. Conversely, a correctly dated decay annotation (confidence ' +
+    'marker) is a valid, acceptable change. A proposal whose only change is refreshing the date or ' +
+    'wording of a fact that the evidence genuinely re-confirms is also valid -- confirmation ' +
+    "refreshes a fact's dating in place. Reject a proposal whose ONLY change is mechanical decay " +
+    'rewording without a substantive reason.\n' +
     'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
     'German), broken file structure (the 7-section person template must stay intact and complete ' +
-    'for people/<name>.md, optionally followed by an "## Archiv" section at the very end -- an Archiv ' +
-    'section placed before the seventh section, or sections reordered, is broken), markdown code fences ' +
-    'around the content, non-first-person voice in ' +
+    'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
     'self-reflection/profile.md, or malformed/incomplete output.\n\n' +
     'Reply with STRICTLY a single JSON object of this exact shape and nothing else -- no markdown code ' +
     'fence, no extra prose:\n' +
@@ -743,9 +750,7 @@ export function compactPrompt(
       'per topic -- collapse any bullets that are really about the same thread into one; Communication ' +
       "Style = how Yasmin should communicate with them; Yasmin's Intentions = what Yasmin wants to do next " +
       'with them. Preserve the most important and current facts; drop stale or redundant detail, and keep ' +
-      'it tight enough to fit the limit without truncation. If the content contains an "## Archiv" ' +
-      'section with decayed facts, OMIT that section entirely -- do not carry it over and do not let ' +
-      'archived facts leak into the seven live sections. Stay under ' +
+      'it tight enough to fit the limit without truncation. Stay under ' +
       cap +
       ' characters total.' +
       footer

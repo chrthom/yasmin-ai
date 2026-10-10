@@ -1,4 +1,4 @@
-import { isOverCap, stripArchiveSection, stripSensitive, truncateToCap } from '../nightly/privacy';
+import { isOverCap, stripSensitive, truncateToCap } from '../nightly/privacy';
 
 describe('privacy', () => {
   describe('stripSensitive', () => {
@@ -116,21 +116,6 @@ describe('privacy', () => {
         expect(result.length).toBeLessThanOrEqual(maxChars);
         expect(result.endsWith('…[truncated]')).toBe(true);
       }
-    });
-  });
-
-  describe('stripArchiveSection', () => {
-    it('removes a trailing ## Archiv section but keeps everything before it', () => {
-      const content = '## Core Facts\nAlice is 34.\n\n## Archiv\nAlice used to play piano.';
-      expect(stripArchiveSection(content)).toBe('## Core Facts\nAlice is 34.');
-    });
-    it('returns content unchanged when there is no Archiv heading', () => {
-      const content = '## Core Facts\nAlice is 34.';
-      expect(stripArchiveSection(content)).toBe(content);
-    });
-    it('ignores a subsection heading that merely contains the word Archiv', () => {
-      const content = '## Core Facts\n### Archiviertes Detail\nSome text.';
-      expect(stripArchiveSection(content)).toBe(content);
     });
   });
 });
