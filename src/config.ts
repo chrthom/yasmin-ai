@@ -1,5 +1,18 @@
 import * as process from 'node:process';
 
+/** Parses an env var as an integer, clamped to [min, max]; absent or unparseable values use the default. */
+function parseClampedEnvInt(key: string, defaultValue: number, min: number, max: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultValue;
+  }
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    return defaultValue;
+  }
+  return Math.min(Math.max(parsed, min), max);
+}
+
 export const config = {
   server: {
     port: process.env['PORT'] || 5000
@@ -78,10 +91,10 @@ export const config = {
   },
   nightly: {
     tz: process.env['MEMORY_TZ'] || 'Europe/Berlin',
-    // Scheduled start time of the nightly run (local time in tz). Clamped to a valid wall-clock
-    // time so a bad env value cannot silently shift the schedule into another day/hour.
-    hour: Math.min(Math.max(parseInt(process.env['NIGHTLY_HOUR'] || '23', 10) || 0, 0), 23),
-    minute: Math.min(Math.max(parseInt(process.env['NIGHTLY_MINUTE'] || '0', 10) || 0, 0), 59),
+    // Scheduled start time of the nightly run (local time in tz). An unparseable or out-of-range
+    // value falls back to the default instead of silently rescheduling the nightly run.
+    hour: parseClampedEnvInt('NIGHTLY_HOUR', 23, 0, 23),
+    minute: parseClampedEnvInt('NIGHTLY_MINUTE', 0, 0, 59),
     transcriptMaxChars: 20000,
     journalSoftCapChars: 4000,
     shutdownTimeoutMs: 30_000,

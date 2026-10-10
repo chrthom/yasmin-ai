@@ -58,8 +58,8 @@ export const shortAnswerHint = (): string =>
 /**
  * Removes everything the harness (not the user) injected into a stored user message: handoff
  * blocks, context entries, the title manifest, the "You are talking to" line, and the
- * short-answer hint built by shortAnswerHint() -- the hint regex is derived from the same
- * config value, so prompt and cleanup can no longer drift apart.
+ * short-answer hint built by shortAnswerHint() -- the hint regex is built from the same
+ * config value (escaped), so prompt and cleanup can no longer drift apart.
  */
 export const cleanStoredText = (text: string): string =>
   text
@@ -67,5 +67,8 @@ export const cleanStoredText = (text: string): string =>
     .replace(AVAILABLE_CONTEXT_ENTRIES_BLOCK_RE, '')
     .replace(CONTEXT_ENTRY_BLOCK_RE, '')
     .replace(/^You are talking to .*\.$/m, '')
-    .replace(new RegExp('Your answer must be shorter than \\d+ characters\\.', 'g'), '')
+    .replace(
+      new RegExp(`Your answer must be shorter than ${config.chat.shortAnswerMaxChars} characters\\.`, 'g'),
+      ''
+    )
     .trim();
