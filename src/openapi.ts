@@ -58,6 +58,7 @@ export const openApiSpec: OpenAPIV3.Document = {
                   timestamp: '2024-01-15T10:30:00.000Z',
                   version: '0.1.0',
                   uptime: 1234.56,
+                  degraded: false,
                   requestId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
                 }
               }
@@ -362,6 +363,11 @@ export const openApiSpec: OpenAPIV3.Document = {
             description: 'Health status of the service',
             enum: ['healthy', 'unhealthy', 'degraded'],
             example: 'healthy'
+          },
+          degraded: {
+            type: 'boolean',
+            description: 'True when the database proxy has fallen back to static proxy data after a real-DB error',
+            example: false
           },
           timestamp: {
             type: 'string',

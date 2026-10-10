@@ -56,14 +56,35 @@ export const PROXY_DATA: DbRecord[] = [
   }
 ];
 
+const isProxyFallbackAllowed = (): boolean =>
+  process.env['ALLOW_PROXY_FALLBACK'] === 'true' && process.env['NODE_ENV'] !== 'production';
+
 /**
  * DB Proxy representing the 2-column database interface
  */
 export class DbProxy {
   private useRealDb: boolean = false;
+  private fallbackAllowed: boolean;
+  private degraded: boolean = false;
 
-  constructor(useRealDb: boolean = false) {
+  constructor(useRealDb: boolean = false, fallbackAllowed: boolean = isProxyFallbackAllowed()) {
     this.useRealDb = useRealDb;
+    this.fallbackAllowed = fallbackAllowed;
+  }
+
+  /**
+   * True if a real-DB read has failed and the static proxy data was served instead.
+   */
+  isDegraded(): boolean {
+    return this.degraded;
+  }
+
+  private handleDbError(operation: string, error: unknown): void {
+    if (!this.fallbackAllowed) {
+      throw error;
+    }
+    this.degraded = true;
+    console.error(`Error fetching ${operation} from real DB, falling back to proxy:`, error);
   }
 
   /**
@@ -74,7 +95,7 @@ export class DbProxy {
       try {
         return await getAllEntriesFromDb();
       } catch (error) {
-        console.error('Error fetching entries from real DB, falling back to proxy:', error);
+        this.handleDbError('entries', error);
       }
     }
     return PROXY_DATA;
@@ -88,7 +109,7 @@ export class DbProxy {
       try {
         return await getAllTitlesFromDb();
       } catch (error) {
-        console.error('Error fetching titles from real DB, falling back to proxy:', error);
+        this.handleDbError('titles', error);
       }
     }
     return PROXY_DATA.map(record => record.title);
@@ -105,7 +126,7 @@ export class DbProxy {
       try {
         return await getContentByTitleFromDb(title);
       } catch (error) {
-        console.error(`Error fetching content for ${title} from real DB, falling back to proxy:`, error);
+        this.handleDbError(`content for ${title}`, error);
       }
     }
     const found = PROXY_DATA.find(record => record.title.toLowerCase() === title.toLowerCase());
@@ -117,7 +138,8 @@ export class DbProxy {
    * "Profile of [name]" entry titles. Consults the real database first (like the other
    * readers) so people whose profile exists only in context_entries -- e.g. a brand-new
    * person file the nightly integrate agent created -- are recognized too; falls back to
-   * the static proxy data when the DB is unavailable or disabled.
+   * the static proxy data when the DB is unavailable or disabled (fallback only allowed
+   * when explicitly enabled; otherwise DB errors propagate).
    */
   async isKnownPerson(name: string): Promise<boolean> {
     const sought = name.trim().toLowerCase();
@@ -125,7 +147,7 @@ export class DbProxy {
       return false;
     }
     if (this.useRealDb) {
-      // getAllTitles() already catches DB errors and falls back to the proxy data itself.
+      // getAllTitles() already handles DB errors (fallback or propagation) itself.
       const titles = await this.getAllTitles();
       if (titles.some(title => title.toLowerCase() === `profile of ${sought}`)) {
         return true;
