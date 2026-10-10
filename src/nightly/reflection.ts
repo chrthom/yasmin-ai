@@ -224,10 +224,13 @@ const SELF_PROFILE_VOICE_RULE =
  * is the mandatory registry a new topic must be written into.
  */
 const TOPICS_RULE =
-  'topics/<topic>.md holds a THEME that spans TWO OR MORE people or recurs over time (e.g. shared ' +
-  'school stress, a recurring vacation wish) -- a pattern that is not about one single person. When ' +
-  "today's journals show such a pattern, consolidate it into a topic file instead of only " +
-  "general/family.md. A single-person theme belongs in that person's profile, never in a topic file. " +
+  'topics/<topic>.md holds a THEME that spans TWO OR MORE people -- either several people involved ' +
+  'at once, or a pattern that recurs over time across conversations and people (e.g. shared school ' +
+  'stress, a recurring vacation wish). A topic is NEVER about one single person: a theme that only ' +
+  "ever concerns one person belongs in that person's profile, even when it recurs, and never in a " +
+  'topic file. When ' +
+  "today's journals show such a cross-person pattern, consolidate it into a topic file instead of only " +
+  'general/family.md. ' +
   'Every topic file must START with an "Aliases:" line ("Aliases: also known as <other names>"), ' +
   'which serves as a matching anchor against duplicates. Content: the theme, what is known about it, ' +
   'with cross-references to the involved people.\n' +
