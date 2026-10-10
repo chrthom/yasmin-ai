@@ -69,14 +69,10 @@ describe('SynologyClient', () => {
       global.fetch = fetchMock as unknown as typeof fetch;
       const answers = ['chunk1', 'chunk2', 'chunk3'];
       await synologyClient.sendAnswersToChat(1, answers);
-<<<<<<< HEAD
+      global.fetch = originalFetch;
       const bodies = fetchMock.mock.calls.map(
         call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text
       );
-=======
-      global.fetch = originalFetch;
-      const bodies = fetchMock.mock.calls.map(call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text);
->>>>>>> 0061b25 (Restore prior fetch mock in ordering test instead of deleting it)
       expect(bodies).toEqual(answers);
     });
     it('should not mutate input array', () => {
