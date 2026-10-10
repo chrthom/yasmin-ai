@@ -24,7 +24,8 @@ export const config = {
     chatRequestTimeoutMs: (() => {
       const parsed = parseInt(process.env['CHAT_REQUEST_TIMEOUT_MS'] || '120000', 10);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 120000;
-    })()  },
+    })()
+  },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
     tokens: {
