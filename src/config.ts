@@ -2,9 +2,8 @@ import * as process from 'node:process';
 
 const optionalEnv = (key: string, fallback: string): string => process.env[key] || fallback;
 
-// Lazy required-getter: throws only when a value is actually read, so importing the config module
-// (e.g. in tests or CLIs that never touch a given section) is always safe. Entrypoints additionally
-// call validateEnv() to fail fast at startup with the complete list of missing variables.
+// Lazy getters throw on access instead of the compile-time-only `!`, so importing config without
+// validateEnv() can never silently yield undefined.
 const requiredEnv = (key: string): string => {
   const value = process.env[key];
   if (!value) {
@@ -25,26 +24,19 @@ export const config = {
       return requiredEnv('AGENT_ID_CONVERSATION');
     },
     conversationTtlMs: 12 * 60 * 60 * 1000,
-    // Turn-based compaction: once a live conversation reaches this many turns it gets closed
-    // (not deleted -- the nightly job still journals it) and the next turn starts a fresh one.
-    // The Mistral conversation API exposes no cumulative token count, so turns are the proxy.
+    // Turns are the compaction proxy because the Mistral conversation API exposes no token count.
     maxTurnsPerSession: parseInt(process.env['MAX_TURNS_PER_SESSION'] || '50', 10),
-    // How many of the previous conversation's last turns (user + assistant) are replayed verbatim into a
-    // fresh conversation, and how long the next turn waits for the background summary before going without.
     handoffRecentTurns: 3,
     handoffWaitMs: 5000,
     apiRoot: 'https://api.mistral.ai/v1',
-    // Required for every process: the nightly scheduler runs in-process inside app.ts (same Node process
-    // as the API server), so MISTRAL_LIBRARY_ID and AGENT_ID_NIGHTLY are always required. validateEnv()
-    // enforces them at startup for all processes.
+    // validateEnv() enforces these at startup; requiredEnv guards reads in non-entrypoint processes.
     get libraryId(): string {
       return requiredEnv('MISTRAL_LIBRARY_ID');
     },
     get nightlyAgentId(): string {
       return requiredEnv('AGENT_ID_NIGHTLY');
     },
-    // Optional: Mistral agent that summarizes a conversation for the turn-limit/respawn handoff. Without it
-    // the handoff degrades to replaying just the last turns. Kept as a plain (mutable for tests) property.
+    // Without this optional agent the handoff degrades to replaying just the last turns.
     summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', '')
   },
   synology: {
@@ -65,6 +57,7 @@ export const config = {
     host: '192.168.0.2',
     port: 3307,
     user: 'yasmin',
+    // Empty only when the DB is genuinely unused; validateEnv({ requireDb: true }) enforces it otherwise.
     password: optionalEnv('DB_PASSWORD', ''),
     name: 'yasmin'
   },
@@ -96,8 +89,8 @@ export interface ValidateEnvOptions {
   requireDb?: boolean;
 }
 
-// Validate required environment variables. Called explicitly by each entrypoint; never guesses the
-// process role from argv. USE_REAL_DB=true always implies the database variables as well.
+// Called explicitly by each entrypoint; never guesses the process role from argv.
+// USE_REAL_DB=true always implies the database variables as well.
 export function validateEnv(options: ValidateEnvOptions = {}): void {
   const required = [
     'MISTRAL_API_KEY',
