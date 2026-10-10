@@ -15,8 +15,7 @@ export const TEST_CONTEXT_DATA: TestContextRecord[] = [
   },
   {
     title: 'Profile of Christopher',
-    content:
-      "Christopher is Yasmin's father. His birthday was 03.12.1988. He lives with Yasmin in Hamburg."
+    content: "Christopher is Yasmin's father. His birthday was 03.12.1988. He lives with Yasmin in Hamburg."
   },
   {
     title: 'Profile of Zara',

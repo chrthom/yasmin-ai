@@ -1,4 +1,8 @@
-import { getAllEntriesFromDb, getAllTitlesFromDb, getContentByTitleFromDb } from '../database/models/context.model';
+import {
+  getAllEntriesFromDb,
+  getAllTitlesFromDb,
+  getContentByTitleFromDb
+} from '../database/models/context.model';
 
 export interface ContextRetrievalResult {
   formattedContext: string;

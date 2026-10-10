@@ -33,8 +33,9 @@ import { TEST_CONTEXT_DATA } from './fixtures/context_data';
 jest.mock('../database/models/context.model', () => ({
   getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
   getAllTitlesFromDb: jest.fn(async () => TEST_CONTEXT_DATA.map(record => record.title)),
-  getContentByTitleFromDb: jest.fn(async (title: string) =>
-    TEST_CONTEXT_DATA.find(record => record.title.toLowerCase() === title.toLowerCase())?.content ?? null
+  getContentByTitleFromDb: jest.fn(
+    async (title: string) =>
+      TEST_CONTEXT_DATA.find(record => record.title.toLowerCase() === title.toLowerCase())?.content ?? null
   ),
   isKnownPerson: jest.fn()
 }));
