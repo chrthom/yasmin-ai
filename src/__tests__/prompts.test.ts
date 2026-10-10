@@ -6,7 +6,6 @@ const PROMPT_DIR = path.resolve(__dirname, '../../mistral_config/nightly/prompts
 
 describe('nightly prompt templates', () => {
   it('renders every prompt variant used by the nightly pipeline without leaving tokens behind', () => {
-    const journals = [{ conversationId: 'c1', userName: 'Alice', content: 'journal text' }];
     const update = { path: 'people/alice.md', content: 'new content', isNew: false };
     const selfUpdate = { path: 'self-reflection/profile.md', content: 'new content', isNew: true };
     const prompts = [
@@ -52,11 +51,10 @@ describe('nightly prompt templates', () => {
         renderPrompt('compact_footer.txt', { content: 'content to compact' })
     ];
 
-    prompts.forEach((prompt, i) => {
+    prompts.forEach(prompt => {
       expect(prompt.length).toBeGreaterThan(0);
       expect(prompt).not.toMatch(/\{\{\w+\}\}/);
       expect(prompt).not.toMatch(/Missing value for prompt template token/);
-      void i;
     });
   });
 
