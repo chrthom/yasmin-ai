@@ -1,4 +1,5 @@
 import { OpenAPIV3 } from 'openapi-types';
+import { version } from './version';
 
 /**
  * OpenAPI/Swagger specification for Yasmin AI API
@@ -9,7 +10,7 @@ export const openApiSpec: OpenAPIV3.Document = {
   info: {
     title: 'Yasmin AI API',
     description: 'AI assistant API for thomsen.in - Powered by Mistral AI',
-    version: '0.1.0',
+    version,
     contact: {
       name: 'Christopher Thomsen',
       url: 'https://thomsen.in'
@@ -56,7 +57,7 @@ export const openApiSpec: OpenAPIV3.Document = {
                 example: {
                   status: 'healthy',
                   timestamp: '2024-01-15T10:30:00.000Z',
-                  version: '0.1.0',
+                  version,
                   uptime: 1234.56,
                   requestId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
                 }
@@ -360,7 +361,7 @@ export const openApiSpec: OpenAPIV3.Document = {
           status: {
             type: 'string',
             description: 'Health status of the service',
-            enum: ['healthy', 'unhealthy', 'degraded'],
+            enum: ['healthy', 'unhealthy'],
             example: 'healthy'
           },
           timestamp: {
@@ -372,7 +373,7 @@ export const openApiSpec: OpenAPIV3.Document = {
           version: {
             type: 'string',
             description: 'API version',
-            example: '0.1.0'
+            example: version
           },
           uptime: {
             type: 'number',

@@ -38,6 +38,14 @@ function sleep(ms: number): Promise<void> {
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
+ * Canonical URL of the conversations endpoint, derived from the single configured API root so
+ * the host exists in exactly one place (config.mistral.apiRoot).
+ */
+export function conversationsUrl(): string {
+  return config.mistral.apiRoot + '/conversations';
+}
+
+/**
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
  */
@@ -383,11 +391,8 @@ export async function askAgent(params: {
     ? { inputs }
     : { agent_id: agentId, name, inputs, ...(store === undefined ? {} : { store }) };
 
-  // Creating a new conversation (or appending a turn to an existing one) is NOT idempotent: a
-  // commit-then-retry would duplicate the conversation or the message. So use safeRetry: only a typed
-  // HTTP error response (429/5xx) is retried -- the server provably rejected the request without
-  // committing it -- while ambiguous network-style failures still fail fast and get reprocessed next
-  // night. Without this, a single transient 503 aborts the whole nightly run.
+  // Creating or appending a conversation is not idempotent, so safeRetry retries only typed HTTP
+  // errors (429/5xx, provably uncommitted) and fails fast on ambiguous network errors.
   const data = await requestJson('POST', path, AgentCallResponseSchema, body, { safeRetry: true });
   const outputs = data.outputs;
 

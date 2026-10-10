@@ -9,6 +9,7 @@ import { buildChannelHistoryBlock } from '../channel_history';
 interface ChatControllerOptions {
   token: string;
   responseStatus: number;
+  shortAnswer: boolean;
   stripPrefix?: string;
   sendToSynology?: boolean;
   includeChannelHistory?: boolean;
@@ -91,7 +92,6 @@ export function createChatController(
         userText = userText.replace(options.stripPrefix, '').trim();
       }
 
-      const isShortAnswer = options.responseStatus === 200;
       let channelContext: string | undefined;
       if (options.includeChannelHistory && reqBody.channel_id && reqBody.post_id) {
         channelContext = await fetchChannelHistory(
@@ -109,7 +109,7 @@ export function createChatController(
         synologyClient,
         userText,
         reqBody.username,
-        isShortAnswer,
+        options.shortAnswer,
         channelContext
       );
 
@@ -121,7 +121,7 @@ export function createChatController(
 
       if (options.sendToSynology !== false) {
         await synologyClient
-          .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse())
+          .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer))
           .catch(error => logger.error('Failed to send to Synology', { error }));
       }
     } catch (error) {
@@ -135,6 +135,7 @@ export function createBotController(chatAgent: ChatAgent, synologyClient: Synolo
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.bot,
     responseStatus: 202,
+    shortAnswer: false,
     sendToSynology: true
   });
 }
@@ -143,6 +144,7 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.slash,
     responseStatus: 200,
+    shortAnswer: true,
     stripPrefix: config.synology.history.slashPrefix,
     sendToSynology: false,
     includeChannelHistory: true
@@ -153,6 +155,7 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.group,
     responseStatus: 200,
+    shortAnswer: true,
     sendToSynology: false,
     includeChannelHistory: true
   });

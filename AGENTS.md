@@ -17,11 +17,13 @@ database/
 ├── schema.sql             # Database schema for the 2-column context model (context_entries)
 └── schema_memory.sql      # Additive schema for the nightly memory job: memory_archive,
                             #   nightly_job_log, processing_lock (does not touch context_entries)
+                            #   intraday_notes (cross-person note outbox) lives in schema.sql
 mistral_config/
 ├── conversation/                       # Live conversation agent
 │   ├── system_prompt.txt
 │   └── functions/
-│       └── read_context_entry.json     # Lazy-load a context entry (its only tool -- read-only)
+│       ├── read_context_entry.json     # Lazy-load a context entry (read-only)
+│       └── share_note.json              # Stage a note for another person (cross-person outbox)
 ├── summarizer/                         # Restart-handoff summarizer agent (Studio)
 │   └── system_prompt.txt
 └── nightly/                            # Nightly memory-consolidation agent
@@ -46,6 +48,8 @@ src/
 │   ├── db_proxy.ts     # Database proxy loaded with mock background entries
 │   └── models/
 │       ├── context.model.ts         # Context model query methods
+│       ├── intraday_notes.model.ts  # Cross-person note outbox (intraday_notes): staging, fetch-for-delivery,
+│       │                            #   claim/release-claim lifecycle, nightly reset (docs/intraday_notes_deployment.md)
 │       ├── memory_archive.model.ts  # Versioned verbose memory file storage (memory_archive)
 │       └── nightly_job.model.ts     # Nightly job log, resumable-run watermark, and locking
 ├── mistral/
@@ -68,6 +72,7 @@ src/
     ├── chat_agent.test.ts
     ├── synology_client.test.ts
     ├── database.test.ts
+    ├── intraday_notes.model.test.ts
     ├── context.test.ts
     ├── handoff.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
@@ -91,7 +96,7 @@ src/
 5. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 6. **Response** → Answers are sent back to Synology Chat via its API
 
-#### Memory writes: the live agent is read-only
+#### Memory writes: the live agent is read-only (memory)
 
 The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ever _reads_ them:
 
@@ -105,6 +110,25 @@ The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ev
   from earlier days can be searched via the agent's attached Mistral library (`document_library` tool; the
   model decides when to search, no application code involved). Conversations from the current day are not in
   the library yet.
+
+#### Cross-person notes: the intraday_notes cache
+
+Besides reading memory, the live agent can stage a **note for another person** via `share_note`
+(`mistral_config/conversation/functions/share_note.json`; the tool must also be registered on the
+Studio conversation agent). Notes are rows in `intraday_notes` (part of `database/schema.sql` --
+apply it before deploying), never `context_entries`: the table is an **intraday cache**, not a
+memory store -- it holds a note only until it is delivered with the recipient's next user input
+or until the nightly job consolidates and resets it. `to` is `"everyone"`, a single first name,
+or a list of first names (one row per recipient). Delivery happens **exactly once per
+recipient** with the recipient's next user input, injected as a `<nachrichten_fuer_dich>` block
+into the prompt; a note is never played back to its own sender (`from_username != ?`). Delivery is guarded by a claim/
+release-claim lifecycle (`claimNoteDelivery` / `releaseNoteDelivery` in
+`src/database/models/intraday_notes.model.ts`): a note is claimed just before the conversation
+request and the claim is rolled back if that request fails, so a failed delivery does not lose the
+note. The privacy barrier lives only in the live agent's prompt: never relay anything
+confidential or `[PRIVACY:SENSITIVE]`-related. Deployment checklist: `docs/intraday_notes_deployment.md`. The nightly job feeds still-undelivered notes to
+the integrate agent as evidence and then empties the outbox (only after phases 3+4 succeeded, and
+only up to the snapshot's max id, so concurrently inserted notes survive for the next run).
 
 #### Conversation restarts and the handoff
 
@@ -143,7 +167,7 @@ Once a night, an in-process scheduler (`src/nightly/scheduler.ts`, started from 
 pipeline the API server is already running in — no external cron daemon or wrapper script, so it always
 has the exact same environment/config as the server. (`src/nightly/run.ts`, run via ts-node from source,
 remains available for a manual one-off run or `--dry-run` preflight check; see
-`docs/deployment_checklist.md`.) This runs entirely offline from the request/response path above — it
+`docs/nightly_memory_processing_implementation.md` §11.) This runs entirely offline from the request/response path above — it
 consolidates the day's Synology conversations into long-term memory after the fact.
 
 At a high level, each run:

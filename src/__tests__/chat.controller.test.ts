@@ -1,9 +1,15 @@
+// ChatAgent builds its conversation URLs from the shared Mistral client helper; pin it to a
+// fixed value so fetch assertions stay deterministic regardless of config.
+jest.mock('../mistral/mistral_api', () => ({
+  ...jest.requireActual('../mistral/mistral_api'),
+  conversationsUrl: () => 'https://test.url'
+}));
+
 // Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
     server: { port: 5000 },
     mistral: {
-      baseUrl: 'https://api.mistral.ai/v1/conversations',
       apiKey: 'test-api-key',
       agentId: 'test-agent-id',
       conversationTtlMs: 12 * 60 * 60 * 1000
@@ -31,6 +37,24 @@ jest.mock('../config', () => ({
 // Mock fetch
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
+
+// The context model talks to MariaDB; serve the shared test fixture instead (see context.test.ts).
+jest.mock('../database/models/context.model', () => {
+  const { TEST_CONTEXT_DATA } = jest.requireActual('./fixtures/context_data');
+  return {
+    getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
+    getAllTitlesFromDb: jest.fn(async () =>
+      TEST_CONTEXT_DATA.map((record: { title: string }) => record.title)
+    ),
+    getContentByTitleFromDb: jest.fn(
+      async (title: string) =>
+        TEST_CONTEXT_DATA.find(
+          (record: { title: string; content: string }) => record.title.toLowerCase() === title.toLowerCase()
+        )?.content ?? null
+    ),
+    isKnownPerson: jest.fn(async () => true)
+  };
+});
 
 import { Request, Response } from 'express';
 import { createChatController } from '../controllers/chat.controller';
@@ -74,7 +98,7 @@ describe('Chat Controller', () => {
   let synologyClient: SynologyClient;
 
   beforeEach(() => {
-    chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
+    chatAgent = new ChatAgent('test-api-key', 'test-agent-id');
     synologyClient = new SynologyClient('https://test.url', 'test-token');
     clearMocks();
   });
@@ -86,6 +110,7 @@ describe('Chat Controller', () => {
       controller = createChatController(chatAgent, synologyClient, {
         token: 'test-bot-token',
         responseStatus: 202,
+        shortAnswer: false,
         sendToSynology: true
       });
     });
@@ -165,6 +190,7 @@ describe('Chat Controller', () => {
       controller = createChatController(chatAgent, synologyClient, {
         token: 'test-slash-token',
         responseStatus: 200,
+        shortAnswer: true,
         stripPrefix: '/yasmin',
         sendToSynology: true
       });
@@ -229,6 +255,7 @@ describe('Chat Controller', () => {
       controller = createChatController(chatAgent, synologyClient, {
         token: 'test-group-token',
         responseStatus: 200,
+        shortAnswer: true,
         sendToSynology: true
       });
     });
@@ -293,6 +320,7 @@ describe('Chat Controller', () => {
       const controller = createChatController(chatAgent, synologyClient, {
         token: 'test-bot-token',
         responseStatus: 202,
+        shortAnswer: false,
         sendToSynology: true
       });
 
@@ -462,6 +490,7 @@ describe('Chat Controller', () => {
     });
 
     it('falls back to the plain prompt when the history fetch fails', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       mockFetch.mockRejectedValueOnce(new Error('HTTP 500'));
       mockFetch.mockImplementationOnce(() => Promise.resolve(emptyConversationList));
       mockFetch.mockImplementationOnce((url: string, init: { body: string }) =>
@@ -487,6 +516,10 @@ describe('Chat Controller', () => {
       const { res, status } = createMockResponse();
       await controller(req, res);
       expect(status).toHaveBeenCalledWith(200);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch channel history; continuing without it')
+      );
+      warn.mockRestore();
       const prompt = lastPrompt();
       expect(prompt).toContain('\n\nHello\n\nYour answer must be shorter than 1500 characters.');
     });
