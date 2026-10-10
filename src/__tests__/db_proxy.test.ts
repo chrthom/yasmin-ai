@@ -39,23 +39,10 @@ describe('db_proxy.isKnownPerson', () => {
     expect(mockGetAllTitlesFromDb).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the proxy data when the DB lookup fails and fallback is allowed', async () => {
+  it('propagates the DB error instead of falling back to the proxy data', async () => {
     mockGetAllTitlesFromDb.mockRejectedValueOnce(new Error('db down'));
-    const proxy = new DbProxy(true, true);
-    expect(await proxy.isKnownPerson('Zara')).toBe(true);
-    expect(proxy.isDegraded()).toBe(true);
-  });
-  it('propagates the DB error when fallback is not allowed', async () => {
-    mockGetAllTitlesFromDb.mockRejectedValueOnce(new Error('db down'));
-    const proxy = new DbProxy(true, false);
+    const proxy = new DbProxy(true);
     await expect(proxy.isKnownPerson('Zara')).rejects.toThrow('db down');
-    expect(proxy.isDegraded()).toBe(false);
-  });
-  it('does not mark the proxy degraded when a fallback is not needed', async () => {
-    mockGetAllTitlesFromDb.mockResolvedValueOnce(['Profile of Zara']);
-    const proxy = new DbProxy(true, true);
-    expect(await proxy.isKnownPerson('Zara')).toBe(true);
-    expect(proxy.isDegraded()).toBe(false);
   });
 
   it('rejects an empty or blank name', async () => {
