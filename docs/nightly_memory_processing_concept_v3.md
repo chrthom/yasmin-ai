@@ -1,7 +1,7 @@
 # Nightly Memory Processing Concept - v3.0
 
 **Version**: 3.0 — Mistral-Long-Term + MariaDB-Eager-Cache + Passive Backup
-**Status**: Concept (polished) — precedes the implementation concept
+**Status**: Historical concept document — superseded; the system described here is shipped. See `AGENTS.md` ("Nightly Memory Pipeline") for the shipped architecture.
 **Date**: 2026-07-06
 **Supersedes**: `nightly_memory_processing_concept_v2.md` (v2.0)
 
@@ -337,7 +337,7 @@ A single daily cron barely needs job-vs-job locking, but it's cheap: a row in a 
 
 ### Environment / config
 
-- Align to `src/config.ts`: DB `yasmin` @ `192.168.0.2:3307`, user `yasmin`, `DB_PASSWORD` from env. `MISTRAL_API_KEY`, `AGENT_ID`, `YASMIN_LIBRARY_ID` as today.
+- Align to `src/config.ts`: DB `yasmin` @ `192.168.0.2:3307`, user `yasmin`, `DB_PASSWORD` from env. `MISTRAL_API_KEY`, `AGENT_ID_CONVERSATION`, `MISTRAL_LIBRARY_ID` (see `src/config.ts`; the nightly agent uses `AGENT_ID_NIGHTLY`).
 - Mistral API keys are not `sk_…` (that's an OpenAI convention) — don't use that placeholder.
 
 ---
@@ -407,4 +407,4 @@ All resolved — see `nightly_memory_processing_implementation.md` §14:
 
 ---
 
-_Supersedes `nightly_memory_processing_concept_v2.md`. Status: concept, ready to turn into an implementation concept once §10 is decided._
+_Historical document (superseded; the system is shipped). Supersedes `nightly_memory_processing_concept_v2.md`._

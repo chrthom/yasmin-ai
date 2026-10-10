@@ -4,6 +4,7 @@
     "composite": true,
     "module": "commonjs",
     "esModuleInterop": true,
+    "resolveJsonModule": true,
     "target": "es6",
     "strict": true,
     "moduleResolution": "node10",
@@ -17,5 +18,6 @@
     "noPropertyAccessFromIndexSignature": true,
     "noImplicitOverride": true,
     "lib": ["ES2022"]
-  }
+  },
+  "include": ["src", "scripts", "package.json"]
 }
