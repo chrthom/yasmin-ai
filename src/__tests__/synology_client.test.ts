@@ -65,14 +65,19 @@ describe('SynologyClient', () => {
 
     it('should send answers in natural order (first chunk first)', async () => {
       const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+      const originalFetch = global.fetch;
       global.fetch = fetchMock as unknown as typeof fetch;
       const answers = ['chunk1', 'chunk2', 'chunk3'];
       await synologyClient.sendAnswersToChat(1, answers);
+<<<<<<< HEAD
       const bodies = fetchMock.mock.calls.map(
         call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text
       );
+=======
+      global.fetch = originalFetch;
+      const bodies = fetchMock.mock.calls.map(call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text);
+>>>>>>> 0061b25 (Restore prior fetch mock in ordering test instead of deleting it)
       expect(bodies).toEqual(answers);
-      delete (global as { fetch?: typeof fetch }).fetch;
     });
     it('should not mutate input array', () => {
       const answers = ['msg1', 'msg2', 'msg3'];
