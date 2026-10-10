@@ -263,8 +263,8 @@ export function integratePrompt(runDate: string): string {
     '. A fact that has not been corroborated for a long time should age instead of being asserted as fresh ' +
     'forever. Three states: FRESH (recently corroborated -- leave as is), AGING (no new corroboration for a ' +
     'long time -- annotate the fact with a confidence marker such as "(veraltet? unsicher geworden?)" or ' +
-    '"(möglicherweise veraltet)"), DECAYED (no corroboration for a very long time -- move the fact into an ' +
-    'optional "## Archiv" section at the end of the file or remove it entirely). Note that last_touched_at ' +
+    '"(möglicherweise veraltet)"), DECAYED (no corroboration for a very long time -- ' +
+    'remove the fact from the file entirely). Note that last_touched_at ' +
     'is a file-level signal: any content change bumps it, so a file touched today may still hold stale ' +
     'facts -- therefore lean primarily on the absolute dates written inside the content itself (e.g. Recent ' +
     'Happenings lines), not on last_touched_at alone, when judging how old a specific fact is. When you ' +
@@ -290,8 +290,7 @@ export function integratePrompt(runDate: string): string {
     'Antwort bekomme", rather than recounting the dated exchange; leave anecdotes tied to one specific ' +
     'person or conversation out of this file.\n' +
     ' Person profiles use the 7-section template (Core Facts, Current Attitude, Ideas, ' +
-    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions) -- " +
-    'optionally followed by an "## Archiv" section at the very end for fully decayed facts -- where ' +
+    "Interests & Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions), where " +
     "Current Attitude is the person's current mood, outlook, and state of mind (no dated events here); " +
     'dated event snippets belong only in Recent Happenings, one short line each; ' +
     'Open Topics holds distinct unresolved threads, with duplicate bullets about the same topic collapsed; ' +
@@ -432,9 +431,7 @@ export function reviewPrompt(
     'whose ONLY change is mechanical decay rewording without a substantive reason.\n' +
     'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
     'German), broken file structure (the 7-section person template must stay intact and complete ' +
-    'for people/<name>.md, optionally followed by an "## Archiv" section at the very end -- an Archiv ' +
-    'section placed before the seventh section, or sections reordered, is broken), markdown code fences ' +
-    'around the content, non-first-person voice in ' +
+    'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
     'self-reflection/profile.md, or malformed/incomplete output.\n\n' +
     'Reply with STRICTLY a single JSON object of this exact shape and nothing else -- no markdown code ' +
     'fence, no extra prose:\n' +
@@ -641,9 +638,7 @@ export function compactPrompt(
       'per topic -- collapse any bullets that are really about the same thread into one; Communication ' +
       "Style = how Yasmin should communicate with them; Yasmin's Intentions = what Yasmin wants to do next " +
       'with them. Preserve the most important and current facts; drop stale or redundant detail, and keep ' +
-      'it tight enough to fit the limit without truncation. If the content contains an "## Archiv" ' +
-      'section with decayed facts, OMIT that section entirely -- do not carry it over and do not let ' +
-      'archived facts leak into the seven live sections. Stay under ' +
+      'it tight enough to fit the limit without truncation. Stay under ' +
       cap +
       ' characters total.' +
       footer

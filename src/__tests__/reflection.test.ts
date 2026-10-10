@@ -191,10 +191,6 @@ describe('reflection', () => {
       expect(prompt).toContain('A file whose content is merely old stays untouched');
       expect(prompt).toContain('last_touched_at is a file-level signal');
       expect(prompt).toContain('lean primarily on the absolute dates written inside the content itself');
-      expect(prompt).toContain('optional "## Archiv" section');
-      expect(prompt).toContain(
-        'optionally followed by an "## Archiv" section at the very end for fully decayed facts'
-      );
     });
   });
 
@@ -325,11 +321,6 @@ describe('reflection', () => {
       const prompt = reviewPrompt(update, 'old content', null, [], 0);
       expect(prompt).toContain('never -- this would be its first version');
     });
-    it('allows an optional trailing Archiv section in the formal structure rule', () => {
-      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
-      expect(prompt).toContain('optionally followed by an "## Archiv" section at the very end');
-      expect(prompt).toContain('an Archiv section placed before the seventh section');
-    });
     it('injects the date and lastTouchedAt into the prompt actually sent to askAgent', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
       await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
@@ -416,18 +407,6 @@ describe('reflection', () => {
 
       const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(prompt).toContain('first person');
-    });
-  });
-
-  describe('compactPrompt (person)', () => {
-    it('tells the compactor to omit an Archiv section instead of leaking decayed facts', () => {
-      const prompt = compactPrompt('person', 'Alice', 'Alice content');
-      expect(prompt).toContain('EXACTLY this markdown template');
-      expect(prompt).toContain(
-        'If the content contains an "## Archiv" section with decayed facts, OMIT that section'
-      );
-      expect(prompt).toContain('do not carry it over');
-      expect(prompt).toContain('do not let archived facts leak into the seven live sections');
     });
   });
 

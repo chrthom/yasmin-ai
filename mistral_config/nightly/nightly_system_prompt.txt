@@ -124,10 +124,7 @@ The seven sections mix facts about the person (Core Facts, Current Attitude, Ide
 Recent Happenings) with Yasmin's side of the relationship (Open Topics, Communication Style, Yasmin's
 Intentions) -- the latter group is always about Yasmin's interaction with the person, never a report on
 them. Write about the person in third person. Keep the file concise and current; drop stale or redundant
-detail rather than letting it grow without bound. One OPTIONAL eighth section, "## Archiv", may appear
-AFTER "## Yasmin's Intentions" and only there: fully decayed facts -- no longer corroborated, kept only
-for vague recollection -- can be moved into it instead of being deleted outright. Never place "## Archiv"
-before the seventh section, and never add it to a file that has no decayed facts.
+detail rather than letting it grow without bound.
 
 ---
 
