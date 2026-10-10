@@ -3,7 +3,7 @@
 // integrate phase to get an overview of what already exists before deciding which files to inspect further with
 // get_long_term_file or which new files need to be created with stage_update. The last_touched_at dates also
 // support the decay instruction: dated facts that have not been corroborated for more than 180 days are deleted
-// when the file is rewritten; nothing is ever annotated -- the in-content date alone carries the age.
+// when the file is rewritten.
 {
   "type": "object",
   "properties": {}
