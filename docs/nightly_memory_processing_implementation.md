@@ -249,6 +249,14 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 ```ts
 list_long_term_files(); // current versions from memory_archive: [{path, contentHash, lastTouchedAt}]
 //   (lastTouchedAt = created_at of the current version -- the decay/aging signal)
+//
+// Decay note: last_touched_at is a file-level signal, and every file seeded by
+// scripts/bootstrap-memory.ts shares the bootstrap run's created_at, so the first nightly runs see
+// all seeded files as equally fresh. The decay instruction therefore tells the agent to judge fact
+// age primarily by the absolute dates written inside the file content, not by last_touched_at alone;
+// the shared bootstrap timestamp evens out as files gain per-file history over time.
+// Re-confirmation refreshes a fact's dating in place, so an old in-content date genuinely means
+// "not corroborated since then".
 get_long_term_file(path); // memory_archive current content (local, exact — no Mistral call)
 read_todays_journals(); // this run's Phase-2 journals (the evidence base)
 stage_update(path, content, isNew); // append to in-run staged list  ← the ONLY writer
