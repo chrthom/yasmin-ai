@@ -42,7 +42,8 @@ export class SynologyClient {
     url.searchParams.append('version', '2');
     url.searchParams.append('token', this.token);
 
-    // Process messages in reverse order (LIFO) to maintain existing behavior
+    // Synology Chat displays the latest message first, so send chunks in
+    // reverse order (last chunk first) to keep them readable top-down.
     for (let i = answers.length - 1; i >= 0; i--) {
       const message = answers[i];
       if (!message) continue;

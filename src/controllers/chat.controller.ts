@@ -8,6 +8,7 @@ import { createRequestLogger } from '../middleware/requestTracing';
 interface ChatControllerOptions {
   token: string;
   responseStatus: number;
+  shortAnswer: boolean;
   stripPrefix?: string;
   sendToSynology?: boolean;
 }
@@ -59,13 +60,12 @@ export function createChatController(
         userText = userText.replace(options.stripPrefix, '').trim();
       }
 
-      const isShortAnswer = options.responseStatus === 200;
       const answer = await processRequest(
         chatAgent,
         synologyClient,
         userText,
         reqBody.username,
-        isShortAnswer
+        options.shortAnswer
       );
 
       if (options.responseStatus === 200) {
@@ -76,7 +76,7 @@ export function createChatController(
 
       if (options.sendToSynology !== false) {
         await synologyClient
-          .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer).reverse())
+          .sendAnswersToChat(reqBody.user_id, synologyClient.chunkText(answer))
           .catch(error => logger.error('Failed to send to Synology', { error }));
       }
     } catch (error) {
@@ -90,6 +90,7 @@ export function createBotController(chatAgent: ChatAgent, synologyClient: Synolo
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.bot,
     responseStatus: 202,
+    shortAnswer: false,
     sendToSynology: true
   });
 }
@@ -98,6 +99,7 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.slash,
     responseStatus: 200,
+    shortAnswer: true,
     stripPrefix: '/yasmin',
     sendToSynology: false
   });
@@ -107,6 +109,7 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
   return createChatController(chatAgent, synologyClient, {
     token: config.synology.tokens.group,
     responseStatus: 200,
+    shortAnswer: true,
     sendToSynology: false
   });
 }
