@@ -179,14 +179,17 @@ describe('reflection', () => {
   });
 
   describe('integratePrompt', () => {
-    it('carries the decay instruction: age uncorroborated facts, but never stage mechanical decay edits', () => {
+    it('carries the decay instruction: delete stale dated facts after 180 days, never annotate', () => {
       const prompt = integratePrompt('2026-10-05');
       expect(prompt).toContain('Today is 2026-10-05');
       expect(prompt).toContain('last_touched_at');
-      expect(prompt).toContain('FRESH');
-      expect(prompt).toContain('AGING');
-      expect(prompt).toContain('DECAYED');
-      expect(prompt).toContain('confidence marker');
+      expect(prompt).toContain(
+        'DELETE every dated fact that has not been corroborated for more than 180 days'
+      );
+      expect(prompt).toContain('Never mark or annotate anything');
+      expect(prompt).toContain('no confidence markers');
+      expect(prompt).toContain('the date alone carries the age');
+      expect(prompt).toContain('Undated evergreen content');
       expect(prompt).toContain('never stage a file JUST to add decay annotations');
       expect(prompt).toContain('A file whose content is merely old stays untouched');
       expect(prompt).toContain('last_touched_at is a file-level signal');
@@ -394,10 +397,11 @@ describe('reflection', () => {
       expect(prompt).not.toContain('T00:00:00.000Z');
       expect(prompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
       expect(prompt).toContain(
-        'reject a decay annotation on a fact that the evidence actually re-corroborates'
+        'reject a deletion of a fact the evidence actually re-corroborates or that is still within 180 days'
       );
-      expect(prompt).toContain('a correctly dated decay annotation (confidence marker');
-      expect(prompt).toContain('mechanical decay rewording without a substantive reason');
+      expect(prompt).toContain('must not add aging annotations or confidence markers');
+      expect(prompt).toContain('decay is deletion only');
+      expect(prompt).toContain('mechanical decay deletion or rewording without a substantive reason');
     });
 
     it('accepts a confirmation refresh and no longer references an archive section', () => {
