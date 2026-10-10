@@ -68,7 +68,9 @@ describe('SynologyClient', () => {
       global.fetch = fetchMock as unknown as typeof fetch;
       const answers = ['chunk1', 'chunk2', 'chunk3'];
       await synologyClient.sendAnswersToChat(1, answers);
-      const bodies = fetchMock.mock.calls.map(call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text);
+      const bodies = fetchMock.mock.calls.map(
+        call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text
+      );
       expect(bodies).toEqual(answers);
       delete (global as { fetch?: typeof fetch }).fetch;
     });
