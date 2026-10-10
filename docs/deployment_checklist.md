@@ -26,15 +26,27 @@ no longer tries (see `CONTEXT_CONVENTIONS.md` §2.1).
    and update its system prompt to the current `mistral_config/conversation/system_prompt.txt`. Attach the
    `memory` library if it is not attached yet. A stray `update_context_entry` call from a stale definition is
    answered with an error result by the code, so a missed step here is harmless but wasteful.
-2. **Live conversation agent -- cross-person notes**: register the `share_note` tool on the agent
-   (definition in `mistral_config/conversation/functions/share_note.json`) and apply the
-   `pending_notes` table from `database/schema.sql` to the database **before** deploying --
-   otherwise every `share_note` call and every note lookup on prompt build fails. Failures are
-   non-fatal (the chat keeps working, notes simply stay undelivered), but the feature is dead
-   until both are in place. Verify: ask the agent to tell another person something, confirm the
-   row in `pending_notes`, then message as that person and check for the `<nachrichten_fuer_dich>`
-   block in the server log.
-3. **Summarizer agent** (new): create an agent with a small model (`mistral-small-latest` is plenty), no tools,
+
+---
+
+## Cross-person notes (intraday_notes) -- deploy steps for the share_note feature
+
+The steps above are the one-time cutover runbook of the read-only memory change and are done.
+This section is separate: it is what a deploy of the cross-person notes feature (issue #46)
+needs -- apply it on its own, independently of the cutover above.
+
+1. Apply the `intraday_notes` table from `database/schema.sql` to the database **before**
+   deploying the code -- otherwise every `share_note` call and every note lookup on prompt
+   build fails. Failures are non-fatal (the chat keeps working, notes simply stay undelivered),
+   but the feature is dead until the table is in place.
+2. Register the `share_note` tool on the live conversation agent in Mistral Studio
+   (definition in `mistral_config/conversation/functions/share_note.json`) and update its
+   system prompt to the current `mistral_config/conversation/system_prompt.txt`.
+3. Verify: ask the agent to tell another person something, confirm the row in `intraday_notes`,
+   then message as that person and check for the `<nachrichten_fuer_dich>` block in the server
+   log. An "everyone" note must never be delivered back to its own sender (the delivery query
+   filters `from_username != ?`).
+4. **Summarizer agent** (new): create an agent with a small model (`mistral-small-latest` is plenty), no tools,
    no library, and the system prompt from `mistral_config/summarizer/system_prompt.txt`. Set its id as
    `AGENT_ID_SUMMARIZER` in the server's environment. It is optional: without it a conversation restart only
    replays the last 3 turns instead of a summary plus the last 3 turns. The agent is called one-shot with

@@ -2,7 +2,7 @@ import { config } from '../config';
 import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
 import { isOverCap, truncateToCap } from './privacy';
 import { StagedUpdate, JournalEntry } from './tools';
-import { PendingNote } from '../database/models/pending_notes.model';
+import { IntradayNote } from '../database/models/intraday_notes.model';
 
 // ---------------------------------------------------------------------------
 // Shared transcript helpers
@@ -221,8 +221,8 @@ const SELF_PROFILE_VOICE_RULE =
  * pending notes (the live agent's cross-person outbox) are appended as extra evidence so a
  * message that never reached its recipient still survives in long-term memory.
  */
-export function integratePrompt(undeliveredNotes: PendingNote[] = []): string {
-  const notesText = formatPendingNotesText(undeliveredNotes);
+export function integratePrompt(undeliveredNotes: IntradayNote[] = []): string {
+  const notesText = formatIntradayNotesText(undeliveredNotes);
   return (
     "You are consolidating today's long-term memory for a family assistant.\n\n" +
     'First, call list_long_term_files and read_todays_journals to see what long-term files already exist ' +
@@ -299,7 +299,7 @@ export function integratePrompt(undeliveredNotes: PendingNote[] = []): string {
  */
 export async function runIntegrate(
   executeTool: (name: string, args: Record<string, unknown>) => Promise<string>,
-  undeliveredNotes: PendingNote[] = []
+  undeliveredNotes: IntradayNote[] = []
 ): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
@@ -333,7 +333,7 @@ function stripCodeFence(text: string): string {
 }
 
 /** Formats the still-undelivered pending notes into the integrate evidence block */
-function formatPendingNotesText(notes: PendingNote[]): string {
+function formatIntradayNotesText(notes: IntradayNote[]): string {
   return notes
     .map(
       note =>

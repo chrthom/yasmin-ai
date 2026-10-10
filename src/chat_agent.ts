@@ -4,10 +4,10 @@ import { dbProxy } from './database/db_proxy';
 import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
-  insertPendingNote,
+  insertIntradayNote,
   releaseNoteDelivery,
-  PendingNoteForDelivery
-} from './database/models/pending_notes.model';
+  IntradayNoteForDelivery
+} from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
 
 // The live agent is the only filter between sender and recipient (no nightly reviewer sits in
@@ -89,10 +89,10 @@ export class ChatAgent {
    * must not break the chat -- the notes simply stay pending and are delivered with the
    * next input.
    */
-  private async deliverPendingNotes(
+  private async deliverIntradayNotes(
     username: string
   ): Promise<{ block: string; claimedIds: number[] } | undefined> {
-    let notes: PendingNoteForDelivery[];
+    let notes: IntradayNoteForDelivery[];
     try {
       notes = await getUndeliveredNotesForUser(username);
     } catch (error) {
@@ -102,7 +102,7 @@ export class ChatAgent {
     if (notes.length === 0) {
       return undefined;
     }
-    const claimed: PendingNoteForDelivery[] = [];
+    const claimed: IntradayNoteForDelivery[] = [];
     for (const note of notes) {
       try {
         if (await claimNoteDelivery(note.id, username)) {
@@ -152,19 +152,32 @@ export class ChatAgent {
 
   /**
    * Executes the live agent's share_note tool: validates the recipient and content, then
-   * writes the note to the pending_notes outbox. The note is delivered with the recipient's
+   * writes the note to the intraday_notes outbox. The note is delivered with the recipient's
    * next user input; the nightly pipeline consolidates anything still undelivered.
    */
   private async shareNote(username: string, to: unknown, content: unknown): Promise<string> {
-    if (typeof to !== 'string' || to.length === 0) {
-      return JSON.stringify({ success: false, error: 'Parameter "to" is required' });
-    }
-    const recipient = to === NOTE_TO_EVERYONE ? null : this.capitalize(to.trim());
-    if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
+    // "to" is either "everyone", a single first name, or a list of first names. A list becomes
+    // one row per recipient so each person's delivery is claimed (and released) individually.
+    let recipients: (string | null)[];
+    if (to === NOTE_TO_EVERYONE) {
+      recipients = [null];
+    } else if (typeof to === 'string' && to.trim().length > 0) {
+      recipients = [this.capitalize(to.trim())];
+    } else if (Array.isArray(to) && to.length > 0 && to.every((r): r is string => typeof r === 'string')) {
+      recipients = to.map(r => this.capitalize(r.trim()));
+    } else {
       return JSON.stringify({
         success: false,
-        error: `Unknown recipient "${to}". Use "everyone" or a known person's first name.`
+        error: 'Parameter "to" must be "everyone", a first name, or a list of first names'
       });
+    }
+    for (const recipient of recipients) {
+      if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
+        return JSON.stringify({
+          success: false,
+          error: `Unknown recipient "${recipient}". Use "everyone" or a known person's first name.`
+        });
+      }
     }
     if (typeof content !== 'string' || content.trim().length === 0) {
       return JSON.stringify({ success: false, error: 'Content must be a non-empty message' });
@@ -176,16 +189,20 @@ export class ChatAgent {
       });
     }
     try {
-      const id = await insertPendingNote(username, recipient, content.trim());
-      console.log(`INFO Staged pending note #${id} from ${username} to ${recipient ?? 'everyone'}`);
+      const ids: number[] = [];
+      for (const recipient of recipients) {
+        ids.push(await insertIntradayNote(username, recipient, content.trim()));
+      }
+      const toLabel = to === NOTE_TO_EVERYONE ? 'everyone' : recipients.join(', ');
+      console.log(`INFO Staged intraday note(s) [${ids.join(', ')}] from ${username} to ${toLabel}`);
       return JSON.stringify({
         success: true,
-        id,
-        to: recipient ?? 'everyone',
+        ids,
+        to: toLabel,
         delivery: "The note will be delivered with the recipient's next message."
       });
     } catch (error) {
-      console.error(`ERROR Failed to store pending note from ${username}: ${error}`);
+      console.error(`ERROR Failed to store intraday note from ${username}: ${error}`);
       return JSON.stringify({ success: false, error: 'Failed to store the note' });
     }
   }
@@ -329,7 +346,7 @@ export class ChatAgent {
       // (claiming again would silently drop them -- see processRequestInternal's respawn paths).
       let notesBlock = claimedNotesBlock;
       if (!isRespawn) {
-        const delivery = await this.deliverPendingNotes(username);
+        const delivery = await this.deliverIntradayNotes(username);
         if (delivery) {
           notesBlock = delivery.block;
           claimedNoteIds = delivery.claimedIds;

@@ -22,11 +22,11 @@ import {
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
 import {
-  clearPendingNotes,
-  getPendingNotesMaxId,
+  clearIntradayNotes,
+  getIntradayNotesMaxId,
   getUnconsolidatedNotes,
-  PendingNote
-} from '../database/models/pending_notes.model';
+  IntradayNote
+} from '../database/models/intraday_notes.model';
 import {
   JournalEntry,
   StagedUpdate,
@@ -258,7 +258,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
     // evidence so a message that never reached its recipient still survives in long-term
     // memory. A failed read must not fail the run -- consolidation continues on journals alone.
-    let undeliveredNotes: PendingNote[] = [];
+    let undeliveredNotes: IntradayNote[] = [];
     // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
     // never a note the live agent staged after the snapshot while the review loop was running.
     // The watermark is MAX(id) over ALL notes (delivered ones included), not over the
@@ -267,7 +267,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let notesSnapshotMaxId = 0;
     let notesConsolidated = true;
     try {
-      notesSnapshotMaxId = await getPendingNotesMaxId();
+      notesSnapshotMaxId = await getIntradayNotesMaxId();
       undeliveredNotes = await getUnconsolidatedNotes(notesSnapshotMaxId);
       if (undeliveredNotes.length > 0) {
         console.log(
@@ -576,18 +576,18 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // (e.g. a failed upload) may still empty the outbox.
     if (notesConsolidated && notesSnapshotMaxId > 0) {
       try {
-        await clearPendingNotes(notesSnapshotMaxId);
+        await clearIntradayNotes(notesSnapshotMaxId);
         console.log(
-          'INFO Cleared the pending_notes outbox (notes up to #' +
+          'INFO Cleared the intraday_notes outbox (notes up to #' +
             notesSnapshotMaxId +
             ') after successful consolidation'
         );
       } catch (error) {
-        console.error('ERROR Failed to clear the pending_notes outbox: ' + error);
+        console.error('ERROR Failed to clear the intraday_notes outbox: ' + error);
       }
     } else {
       console.warn(
-        'WARN Consolidation phases did not complete; keeping pending_notes for the next nightly run'
+        'WARN Consolidation phases did not complete; keeping intraday_notes for the next nightly run'
       );
     }
 

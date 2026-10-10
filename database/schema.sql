@@ -27,7 +27,7 @@ ON DUPLICATE KEY UPDATE content = VALUES(content);
 -- prepended in src/chat_agent.ts. The nightly pipeline (a) feeds still-undelivered notes to
 -- the integrate agent as evidence and (b) empties the table at the end of a healthy run,
 -- so the outbox holds at most one day of notes.
-CREATE TABLE IF NOT EXISTS pending_notes (
+CREATE TABLE IF NOT EXISTS intraday_notes (
     id            INT AUTO_INCREMENT PRIMARY KEY,
     from_username VARCHAR(64) NOT NULL,
     to_username  VARCHAR(64) NULL,      -- NULL = to everyone

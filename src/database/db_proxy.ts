@@ -125,13 +125,10 @@ export class DbProxy {
       return false;
     }
     if (this.useRealDb) {
-      try {
-        const titles = await this.getAllTitles();
-        if (titles.some(title => title.toLowerCase() === `profile of ${sought}`)) {
-          return true;
-        }
-      } catch (error) {
-        console.error('Error fetching titles from real DB, falling back to proxy:', error);
+      // getAllTitles() already catches DB errors and falls back to the proxy data itself.
+      const titles = await this.getAllTitles();
+      if (titles.some(title => title.toLowerCase() === `profile of ${sought}`)) {
+        return true;
       }
     }
     return PROXY_DATA.some(

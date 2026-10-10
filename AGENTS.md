@@ -17,7 +17,7 @@ database/
 ├── schema.sql             # Database schema for the 2-column context model (context_entries)
 └── schema_memory.sql      # Additive schema for the nightly memory job: memory_archive,
                             #   nightly_job_log, processing_lock (does not touch context_entries)
-                            #   pending_notes (cross-person note outbox) lives in schema.sql
+                            #   intraday_notes (cross-person note outbox) lives in schema.sql
 mistral_config/
 ├── conversation/                       # Live conversation agent
 │   ├── system_prompt.txt
@@ -103,14 +103,17 @@ The nightly job is the **sole writer** of `context_entries`. `ChatAgent` only ev
   model decides when to search, no application code involved). Conversations from the current day are not in
   the library yet.
 
-#### Cross-person notes: the pending_notes outbox
+#### Cross-person notes: the intraday_notes cache
 
 Besides reading memory, the live agent can stage a **note for another person** via `share_note`
 (`mistral_config/conversation/functions/share_note.json`; the tool must also be registered on the
-Studio conversation agent). Notes are rows in `pending_notes` (part of `database/schema.sql` --
-apply it before deploying), never `context_entries`, and are delivered **exactly once per
+Studio conversation agent). Notes are rows in `intraday_notes` (part of `database/schema.sql` --
+apply it before deploying), never `context_entries`: the table is an **intraday cache**, not a
+memory store -- it holds a note only until it is delivered with the recipient's next user input
+or until the nightly job consolidates and resets it. `to` is `"everyone"`, a single first name,
+or a list of first names (one row per recipient). Delivery happens **exactly once per
 recipient** with the recipient's next user input, injected as a `<nachrichten_fuer_dich>` block
-into the prompt. The privacy barrier lives only in the live agent's prompt: never relay anything
+into the prompt; a note is never played back to its own sender (`from_username != ?`). The privacy barrier lives only in the live agent's prompt: never relay anything
 confidential or `[PRIVACY:SENSITIVE]`-related. The nightly job feeds still-undelivered notes to
 the integrate agent as evidence and then empties the outbox (only after phases 3+4 succeeded, and
 only up to the snapshot's max id, so concurrently inserted notes survive for the next run).
