@@ -1,6 +1,6 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
-import { dbProxy } from './database/db_proxy';
+import { getContentByTitleFromDb, isKnownPerson } from './database/models/context.model';
 import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
@@ -181,7 +181,7 @@ export class ChatAgent {
       });
     }
     for (const recipient of recipients) {
-      if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
+      if (recipient !== null && !(await isKnownPerson(recipient))) {
         return JSON.stringify({
           success: false,
           error: `Unknown recipient "${recipient}". Use "everyone" or a known person's first name.`
@@ -504,7 +504,7 @@ export class ChatAgent {
               // Entries already injected into this conversation are still in its history; return a
               // pointer instead of the full text to save tokens on every subsequent turn.
               const alreadyLoaded = cached.loadedContextTitles.includes(title);
-              const content = alreadyLoaded ? null : await dbProxy.getContentByTitle(title);
+              const content = alreadyLoaded ? null : await getContentByTitleFromDb(title);
               const resultStr = alreadyLoaded
                 ? JSON.stringify({
                     title,

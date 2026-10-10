@@ -361,7 +361,7 @@ export const openApiSpec: OpenAPIV3.Document = {
           status: {
             type: 'string',
             description: 'Health status of the service',
-            enum: ['healthy', 'unhealthy', 'degraded'],
+            enum: ['healthy', 'unhealthy'],
             example: 'healthy'
           },
           timestamp: {
