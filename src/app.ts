@@ -12,6 +12,7 @@ import {
 } from './controllers/chat.controller';
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
+import { version } from './version';
 import { getDatabasePool } from './database/connection';
 import { startNightlyScheduler, stopNightlyScheduler } from './nightly/scheduler';
 
@@ -61,7 +62,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    version: '0.1.0',
+    version,
     uptime: process.uptime(),
     requestId
   });
