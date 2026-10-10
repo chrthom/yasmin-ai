@@ -84,11 +84,25 @@ export function getStagedUpdates(): StagedUpdate[] {
 }
 
 /**
- * Tool: lists every long-term memory file currently known, by path and content hash
+ * Tool: lists every long-term memory file currently known, by path, content hash, and last_touched_at
+ *
+ * last_touched_at is the created_at of the file's current memory_archive version -- the last time new
+ * evidence actually changed the content. It is the aging signal for the decay instruction: files whose
+ * facts have not been corroborated for a long time should be annotated or archived, not asserted forever.
  */
-export async function list_long_term_files(): Promise<{ path: string; contentHash: string }[]> {
+export async function list_long_term_files(): Promise<
+  {
+    path: string;
+    contentHash: string;
+    lastTouchedAt: string;
+  }[]
+> {
   const rows = await listCurrentVersions();
-  return rows.map(row => ({ path: row.filePath, contentHash: row.contentHash }));
+  return rows.map(row => ({
+    path: row.filePath,
+    contentHash: row.contentHash,
+    lastTouchedAt: row.createdAt.toISOString()
+  }));
 }
 
 /**

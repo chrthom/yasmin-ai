@@ -217,9 +217,35 @@ describe('nightly/tools', () => {
       const result = await list_long_term_files();
 
       expect(result).toEqual([
-        { path: 'people/christopher.md', contentHash: 'hash1' },
-        { path: 'people/yasmin.md', contentHash: 'hash2' }
+        {
+          path: 'people/christopher.md',
+          contentHash: 'hash1',
+          lastTouchedAt: '2026-01-01T00:00:00.000Z'
+        },
+        {
+          path: 'people/yasmin.md',
+          contentHash: 'hash2',
+          lastTouchedAt: '2026-01-02T00:00:00.000Z'
+        }
       ]);
+    });
+
+    it('derives lastTouchedAt from MAX(created_at) of the current version', async () => {
+      mockListCurrentVersions.mockResolvedValueOnce([
+        {
+          id: 1,
+          filePath: 'people/christopher.md',
+          content: 'hello',
+          contentHash: 'hash1',
+          version: 3,
+          mistralDocId: null,
+          syncedAt: null,
+          createdAt: new Date('2026-03-15T12:00:00Z')
+        }
+      ]);
+      const result = await list_long_term_files();
+      expect(result[0].lastTouchedAt).toBe('2026-03-15T12:00:00.000Z');
+      expect(mockListCurrentVersions).toHaveBeenCalledTimes(1);
     });
   });
 });

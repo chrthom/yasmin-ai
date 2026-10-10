@@ -5,6 +5,7 @@ jest.mock('../config', () => ({
       nightlyAgentId: 'nightly-agent-1'
     },
     nightly: {
+      tz: 'Europe/Berlin',
       maxIterations: 15,
       eagerMaxChars: 10000
     }
@@ -20,6 +21,9 @@ import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';
 import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
+  compactPrompt,
+  formatRunDate,
+  integratePrompt,
   journalPrompt,
   reviewPrompt,
   runJournal,
@@ -175,6 +179,26 @@ describe('reflection', () => {
     });
   });
 
+  describe('integratePrompt', () => {
+    it('carries the decay instruction: age uncorroborated facts, but never stage mechanical decay edits', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('Today is 2026-10-05');
+      expect(prompt).toContain('last_touched_at');
+      expect(prompt).toContain('FRESH');
+      expect(prompt).toContain('AGING');
+      expect(prompt).toContain('DECAYED');
+      expect(prompt).toContain('confidence marker');
+      expect(prompt).toContain('never stage a file JUST to add decay annotations');
+      expect(prompt).toContain('A file whose content is merely old stays untouched');
+      expect(prompt).toContain('last_touched_at is a file-level signal');
+      expect(prompt).toContain('lean primarily on the absolute dates written inside the content itself');
+      expect(prompt).toContain('optional "## Archiv" section');
+      expect(prompt).toContain(
+        'optionally followed by an "## Archiv" section at the very end for fully decayed facts'
+      );
+    });
+  });
+
   describe('runIntegrate', () => {
     it('passes agentId/maxIterations through to runAgentToolLoop and returns its result', async () => {
       mockRunAgentToolLoop.mockResolvedValueOnce({
@@ -191,6 +215,49 @@ describe('reflection', () => {
         expect.objectContaining({ agentId: 'nightly-agent-1', maxIterations: 15, executeTool })
       );
     });
+    it('injects the run date (MEMORY_TZ) into the integrate prompt sent to the agent loop', async () => {
+      mockRunAgentToolLoop.mockResolvedValueOnce({
+        conversationId: 'conv-1',
+        finalText: 'no changes needed',
+        iterations: 1
+      });
+      await runIntegrate(jest.fn());
+      expect(mockRunAgentToolLoop).toHaveBeenCalledTimes(1);
+      const initialInputs = mockRunAgentToolLoop.mock.calls[0][0].initialInputs;
+      expect(initialInputs).toHaveLength(1);
+      expect(initialInputs[0].content).toMatch(/Today is \d{4}-\d{2}-\d{2}\./);
+    });
+
+    it('embeds undelivered pending notes as extra evidence in the integrate prompt', async () => {
+      mockRunAgentToolLoop.mockResolvedValueOnce({
+        conversationId: 'conv-1',
+        finalText: 'staged',
+        iterations: 1
+      });
+      await runIntegrate(jest.fn(), [
+        {
+          id: 9,
+          fromUsername: 'christopher',
+          toUsername: 'zara',
+          content: 'Please be home by 6 pm',
+          createdAt: new Date('2026-07-05T15:00:00Z')
+        }
+      ]);
+      const prompt = mockRunAgentToolLoop.mock.calls[0][0].initialInputs[0].content;
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+    });
+
+    it('adds no notes evidence block when the outbox is empty', async () => {
+      mockRunAgentToolLoop.mockResolvedValueOnce({
+        conversationId: 'conv-1',
+        finalText: 'staged',
+        iterations: 1
+      });
+      await runIntegrate(jest.fn());
+      const prompt = mockRunAgentToolLoop.mock.calls[0][0].initialInputs[0].content;
+      expect(prompt).not.toContain('Undelivered note');
+    });
   });
 
   describe('runReview', () => {
@@ -199,7 +266,7 @@ describe('reflection', () => {
     it('parses a clean JSON verdict', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "looks good"}' });
 
-      const result = await runReview(update, 'old content', [], 0);
+      const result = await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
 
       expect(result).toEqual({ approved: true, reason: 'looks good' });
     });
@@ -209,7 +276,7 @@ describe('reflection', () => {
         outputText: '```json\n{"approved": false, "reason": "hallucinated"}\n```'
       });
 
-      const result = await runReview(update, 'old content', [], 0);
+      const result = await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
 
       expect(result).toEqual({ approved: false, reason: 'hallucinated' });
     });
@@ -217,7 +284,7 @@ describe('reflection', () => {
     it('safely defaults to approved: false on unparseable output', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: 'not json at all' });
 
-      const result = await runReview(update, 'old content', [], 0);
+      const result = await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
 
       expect(result.approved).toBe(false);
       expect(result.reason).toBe('Could not parse reviewer verdict; rejecting as a safe default.');
@@ -229,6 +296,7 @@ describe('reflection', () => {
       await runReview(
         update,
         'old content',
+        '2026-01-01T00:00:00.000Z',
         [{ conversationId: 'c1', userName: 'Alice', content: 'Alice bought crisps today' }],
         0
       );
@@ -241,19 +309,19 @@ describe('reflection', () => {
     });
 
     it('always demands formal correctness in every attempt', () => {
-      const prompt = reviewPrompt(update, 'old content', [], 2);
+      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 2);
       expect(prompt).toContain('Reject reliably and in EVERY attempt for formal problems');
       expect(prompt).toContain('content must be German');
     });
 
     it('applies the full grounding standard only on the first attempt', () => {
-      const first = reviewPrompt(update, 'old content', [], 0);
+      const first = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
       expect(first).toContain('On this first review, apply the full grounding standard');
       expect(first).not.toContain('Do NOT reject it again');
     });
 
     it('relaxes the grounding bar on later attempts so interpretive synthesis passes', () => {
-      const later = reviewPrompt(update, 'old content', [], 1);
+      const later = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 1);
       expect(later).toContain('Do NOT reject it again');
       expect(later).toContain('recurring-topic and character conclusions');
       expect(later).toContain('Review attempt 2');
@@ -268,7 +336,7 @@ describe('reflection', () => {
       const existing = [
         { path: 'topics/urlaub-planung.md', content: 'Aliases: Urlaub Planung, Sommerreise' }
       ];
-      const prompt = reviewPrompt(update, null, [], 0, existing);
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
       expect(prompt).toContain('urlaub-planung.md');
       expect(prompt).toContain('DUPLICATE');
       expect(prompt).toContain('merging');
@@ -280,7 +348,7 @@ describe('reflection', () => {
         isNew: true
       };
       const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];
-      const prompt = reviewPrompt(update, null, [], 0, existing);
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
       expect(prompt).toContain('--- topics/urlaub-planung.md ---');
       expect(prompt).toContain('Aliases: Sommerreise');
       expect(prompt).toContain('EXCLUDING topics/school-stress.md');
@@ -289,7 +357,7 @@ describe('reflection', () => {
     it('topic excerpt: short content is embedded verbatim', () => {
       const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
       const existing = [{ path: 'topics/kurz.md', content: 'Aliases: Kurz\nThema A.' }];
-      const prompt = reviewPrompt(update, null, [], 0, existing);
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
       expect(prompt).toContain('Aliases: Kurz\nThema A.');
       expect(prompt).not.toContain('truncated for review');
     });
@@ -297,7 +365,7 @@ describe('reflection', () => {
       const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
       const longContent = 'Aliases: Sommerreise, Urlaub Planung\n' + 'x'.repeat(1000);
       const existing = [{ path: 'topics/alt.md', content: longContent }];
-      const prompt = reviewPrompt(update, null, [], 0, existing);
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
       expect(prompt).toContain('Aliases: Sommerreise, Urlaub Planung');
       expect(prompt).toContain('truncated for review');
       expect(prompt).not.toContain('get_long_term_file');
@@ -308,7 +376,7 @@ describe('reflection', () => {
     it('adds no topics context for a non-topic update even when topics exist', () => {
       const update: StagedUpdate = { path: 'people/christopher.md', content: 'x', isNew: false };
       const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];
-      const prompt = reviewPrompt(update, 'old', [], 0, existing);
+      const prompt = reviewPrompt(update, 'old', null, [], 0, existing);
       expect(prompt).not.toContain('urlaub-planung.md');
       expect(prompt).not.toContain('DUPLICATE');
     });
@@ -316,10 +384,45 @@ describe('reflection', () => {
       const later = reviewPrompt(
         { path: 'self-reflection/profile.md', content: 'new content', isNew: false },
         'old content',
+        '2026-01-01T00:00:00.000Z',
         [],
         1
       );
       expect(later).toContain('personality traits, emotional patterns, and self-image');
+    });
+
+    it('judges decay-related rewordings by their dating and rejects wrong ones', () => {
+      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(prompt).toContain('Judge decay-related rewordings by their dating');
+      expect(prompt).toContain('The file was last touched');
+      expect(prompt).toContain('on 2026-01-01.');
+      expect(prompt).not.toContain('T00:00:00.000Z');
+      expect(prompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
+      expect(prompt).toContain(
+        'reject a decay annotation on a fact that the evidence actually re-corroborates'
+      );
+      expect(prompt).toContain(
+        'a correctly dated decay annotation (confidence marker, archive section) is a valid, acceptable change'
+      );
+      expect(prompt).toContain('mechanical decay rewording without a substantive reason');
+    });
+    it('states that a never-touched file would be a first version, instead of a last-touched date', () => {
+      const prompt = reviewPrompt(update, 'old content', null, [], 0);
+      expect(prompt).toContain('never -- this would be its first version');
+    });
+    it('allows an optional trailing Archiv section in the formal structure rule', () => {
+      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(prompt).toContain('optionally followed by an "## Archiv" section at the very end');
+      expect(prompt).toContain('an Archiv section placed before the seventh section');
+    });
+    it('injects the date and lastTouchedAt into the prompt actually sent to askAgent', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
+      await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(mockAskAgent).toHaveBeenCalledTimes(1);
+      const sentPrompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(sentPrompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
+      expect(sentPrompt).toContain('The file was last touched');
+      expect(sentPrompt).toContain('on 2026-01-01.');
     });
   });
 
@@ -398,6 +501,27 @@ describe('reflection', () => {
 
       const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(prompt).toContain('first person');
+    });
+  });
+
+  describe('compactPrompt (person)', () => {
+    it('tells the compactor to omit an Archiv section instead of leaking decayed facts', () => {
+      const prompt = compactPrompt('person', 'Alice', 'Alice content');
+      expect(prompt).toContain('EXACTLY this markdown template');
+      expect(prompt).toContain(
+        'If the content contains an "## Archiv" section with decayed facts, OMIT that section'
+      );
+      expect(prompt).toContain('do not carry it over');
+      expect(prompt).toContain('do not let archived facts leak into the seven live sections');
+    });
+  });
+
+  describe('formatRunDate', () => {
+    it('formats a Date as YYYY-MM-DD in the configured memory timezone', () => {
+      expect(formatRunDate(new Date('2026-10-09T23:30:00Z'))).toBe('2026-10-10');
+    });
+    it('uses UTC faithfully for a UTC instant near midnight in the other direction', () => {
+      expect(formatRunDate(new Date('2026-01-01T00:00:00Z'))).toBe('2026-01-01');
     });
   });
 
