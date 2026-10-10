@@ -1,0 +1,11 @@
+Compact the following content about {{personName}} into EXACTLY this markdown template, in this exact order:
+
+## Core Facts
+## Current Attitude
+## Ideas, Interests & Goals
+## Recent Happenings
+## Open Topics
+## Communication Style
+## Yasmin's Intentions
+
+Write about {{personName}} in third person, and fill each section as follows: Core Facts = stable facts; Current Attitude = how the person feels right now (mood, outlook, state of mind -- no dated events here); Ideas, Interests & Goals = what they think and care about; Recent Happenings = concise dated events, one short line each (e.g. "Am 2026-10-01 ..."); Open Topics = distinct unresolved threads, one bullet per topic -- collapse any bullets that are really about the same thread into one; Communication Style = how Yasmin should communicate with them; Yasmin's Intentions = what Yasmin wants to do next with them. Preserve the most important and current facts; drop stale or redundant detail, and keep it tight enough to fit the limit without truncation. Stay under {{cap}} characters total.
