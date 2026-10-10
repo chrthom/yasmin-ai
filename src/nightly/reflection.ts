@@ -237,6 +237,11 @@ const TOPICS_RULE =
   'general/topic-index.md is the topic registry: for EVERY topic file you create or change, also stage ' +
   'general/topic-index.md with one line per topic -- topic path, a one-line semantic description (not just a ' +
   'slug), and the involved people.\n' +
+  'When you create a topic file, MOVE the theme out of the individual profiles: for every involved ' +
+  'person whose people/<name>.md mentions the theme (e.g. in Open Topics or Ideas, Interests & Goals), ' +
+  'stage an updated version of that profile with the theme REMOVED, leaving at most a one-line ' +
+  "pointer to the topic file -- never keep the full theme in BOTH the person's profile and the topic " +
+  'file.\n' +
   'DUPLICATE PREVENTION, first line of defense: before creating a new topic file, check the EXISTING ' +
   "topics/*.md files -- even if the name sounds different. Read a candidate file's content (and its " +
   'Aliases line) with get_long_term_file; if an existing topic fits the theme content-wise, extend THAT ' +

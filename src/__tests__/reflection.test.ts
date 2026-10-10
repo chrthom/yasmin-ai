@@ -525,6 +525,17 @@ describe('reflection', () => {
     });
   });
 
+  describe('integratePrompt (topics layer)', () => {
+    it('instructs the agent to MOVE a theme out of the person profiles when a topic file is created', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('MOVE the theme out of the individual profiles');
+      expect(prompt).toContain('with the theme REMOVED');
+      expect(prompt).toContain('never keep the full theme in BOTH');
+      expect(prompt).toContain('topics/<topic>.md');
+      expect(prompt).toContain('general/topic-index.md');
+    });
+  });
+
   describe('runCompact', () => {
     it('returns the first attempt when under cap', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '  short summary  ' });
