@@ -149,11 +149,8 @@ export async function runJournal(userName: string, transcript: string): Promise<
     })
   ).outputText.trim();
 
-  // An empty entry is ALWAYS abnormal -- the journal prompt tells the agent to write at least a
-  // single short line ("If nothing meaningful happened ... write one short line") -- so an empty
-  // reply means a failed/incomplete generation, not "nothing to say". Give it one clarifying retry;
-  // if it stays empty, throw so the pipeline skips and reprocesses this conversation next night
-  // instead of silently persisting an empty journal file that poisons the whole downstream run.
+  // An empty reply is always a failed generation, not "nothing to say": retry once, then throw so the
+  // conversation is reprocessed next night instead of persisting an empty journal file.
   if (text.length === 0) {
     const retry = await askAgent({
       agentId: config.mistral.nightlyAgentId,
