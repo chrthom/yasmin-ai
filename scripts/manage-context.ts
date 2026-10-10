@@ -7,6 +7,9 @@ import {
   listContextEntries
 } from '../src/database/models/context.model';
 import { getDatabasePool, closeDatabasePool } from '../src/database/connection';
+import { validateEnv } from '../src/config';
+
+validateEnv({ requireDb: true });
 
 async function main() {
   const args = process.argv.slice(2);
