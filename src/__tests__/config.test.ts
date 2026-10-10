@@ -11,7 +11,11 @@ const REQUIRED_GETTER_KEYS = [
 ] as const;
 
 const get = (path: string): unknown =>
-  path.split('.').reduce<Record<string, unknown>>((obj, key) => obj[key] as Record<string, unknown>, config as unknown as Record<string, unknown>);
+  path
+    .split('.')
+    .reduce<
+      Record<string, unknown>
+    >((obj, key) => obj[key] as Record<string, unknown>, config as unknown as Record<string, unknown>);
 
 describe('config required getters', () => {
   const savedEnv: Record<string, string | undefined> = {};
@@ -44,11 +48,7 @@ describe('config required getters', () => {
 
 describe('validateEnv', () => {
   const savedEnv: Record<string, string | undefined> = {};
-  const keys = [
-    ...REQUIRED_GETTER_KEYS.map(([, key]) => key),
-    'DB_PASSWORD',
-    'USE_REAL_DB'
-  ];
+  const keys = [...REQUIRED_GETTER_KEYS.map(([, key]) => key), 'DB_PASSWORD', 'USE_REAL_DB'];
 
   beforeEach(() => {
     for (const key of keys) {
@@ -101,10 +101,13 @@ describe('validateEnv', () => {
 
   it.each([
     ['requireDb option', () => validateEnv({ requireDb: true })],
-    ['USE_REAL_DB=true', () => {
-      process.env['USE_REAL_DB'] = 'true';
-      validateEnv();
-    }]
+    [
+      'USE_REAL_DB=true',
+      () => {
+        process.env['USE_REAL_DB'] = 'true';
+        validateEnv();
+      }
+    ]
   ] as const)('requires DB_PASSWORD via %s', (_name, run) => {
     setAll('set');
     const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
