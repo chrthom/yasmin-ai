@@ -24,21 +24,22 @@ jest.mock('../database/models/intraday_notes.model', () => ({
   releaseNoteDelivery: jest.fn()
 }));
 
-// isKnownPerson consults context_entries via the DB proxy; mock only that method so recipient
-// validation is deterministic (the proxy's own path is covered by the database suites), while
-// the read paths (getAllEntries, getContentByTitle, ...) keep their real proxy behavior.
-jest.mock('../database/db_proxy', () => {
-  const actual = jest.requireActual('../database/db_proxy');
-  // Spread the prototype too: DbProxy's methods live on DbProxy.prototype, not on the instance.
-  const merged = Object.create(Object.getPrototypeOf(actual.dbProxy));
-  return {
-    ...actual,
-    dbProxy: Object.assign(merged, actual.dbProxy, { isKnownPerson: jest.fn() })
-  };
-});
-import { dbProxy } from '../database/db_proxy';
+// The context model talks to MariaDB; here its read paths serve the shared test fixture so
+// prompt building is deterministic (the SQL itself is covered by the model suites), while
+// isKnownPerson stays a plain mock so recipient validation is easy to steer per test.
+import { isKnownPerson } from '../database/models/context.model';
+import { TEST_CONTEXT_DATA } from './fixtures/context_data';
 
-const mockIsKnownPerson = dbProxy.isKnownPerson as jest.Mock;
+jest.mock('../database/models/context.model', () => ({
+  getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
+  getAllTitlesFromDb: jest.fn(async () => TEST_CONTEXT_DATA.map(record => record.title)),
+  getContentByTitleFromDb: jest.fn(async (title: string) =>
+    TEST_CONTEXT_DATA.find(record => record.title.toLowerCase() === title.toLowerCase())?.content ?? null
+  ),
+  isKnownPerson: jest.fn()
+}));
+
+const mockIsKnownPerson = isKnownPerson as jest.Mock;
 
 // The handoff talks to Mistral through its own client; it has dedicated tests in handoff.test.ts.
 jest.mock('../handoff', () => ({
@@ -1288,8 +1289,8 @@ describe('ChatAgent', () => {
     });
 
     it('accepts a recipient whose profile exists only in the database (DB-first lookup)', async () => {
-      // A person the nightly integrate agent created a profile for -- not in the static
-      // proxy data ('Mira' has no PROXY_DATA entry). isKnownPerson must consult
+      // A person the nightly integrate agent created a profile for -- one the static fixture
+      // does not know ('Mira' has no entry there). isKnownPerson must consult
       // context_entries and recognize them; the mocked true stands in for that DB lookup.
       mockIsKnownPerson.mockResolvedValueOnce(true);
       const result = await runShareNote({ to: 'Mira', content: 'Welcome!' });

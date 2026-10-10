@@ -41,6 +41,19 @@ import { SynologyClient } from '../synology_client';
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
+// The context model talks to MariaDB; serve the shared test fixture instead (see context.test.ts).
+jest.mock('../database/models/context.model', () => {
+  const { TEST_CONTEXT_DATA } = jest.requireActual('./fixtures/context_data');
+  return {
+    getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
+    getAllTitlesFromDb: jest.fn(async () => TEST_CONTEXT_DATA.map((record: { title: string }) => record.title)),
+    getContentByTitleFromDb: jest.fn(async (title: string) =>
+      TEST_CONTEXT_DATA.find((record: { title: string; content: string }) => record.title.toLowerCase() === title.toLowerCase())?.content ?? null
+    ),
+    isKnownPerson: jest.fn(async () => true)
+  };
+});
+
 describe('Integration Tests', () => {
   let chatAgent: ChatAgent;
   let synologyClient: SynologyClient;
