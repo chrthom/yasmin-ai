@@ -214,11 +214,24 @@ const SELF_PROFILE_VOICE_RULE =
   'If a correction or revision is for self-reflection/profile.md, its content MUST be first person.';
 
 /**
+ * Formats a Date as YYYY-MM-DD in the configured memory timezone (MEMORY_TZ) -- the run date the
+ * decay instruction tells the agent to judge file ages against.
+ */
+export function formatRunDate(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.nightly.tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+}
+
+/**
  * Builds the Phase-3 instruction that drives the tool-calling integrate loop. Undelivered
  * pending notes (the live agent's cross-person outbox) are appended as extra evidence so a
  * message that never reached its recipient still survives in long-term memory.
  */
-export function integratePrompt(undeliveredNotes: IntradayNote[] = []): string {
+export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[] = []): string {
   const notesText = formatIntradayNotesText(undeliveredNotes);
   return (
     "You are consolidating today's long-term memory for a family assistant.\n\n" +
@@ -247,12 +260,39 @@ export function integratePrompt(undeliveredNotes: IntradayNote[] = []): string {
     "now says is false must be rewritten to match. Treat the file's current content as a possibly stale " +
     'claim, not ground truth. If two different files assert conflicting facts, fix the wrong one rather than ' +
     'leaving both standing.\n' +
+    "Confirmation refreshes dating: when today's journals re-confirm a fact the file already has, do NOT " +
+    'leave it untouched just because it is already recorded -- update that existing statement IN PLACE ' +
+    "(same line, no duplicate added): refresh its date to today's corroboration (a dated Recent " +
+    'Happenings line gets its date rewritten to today, an undated topic bullet gets reworded to fold in ' +
+    "today's confirmation). This is what keeps an actively re-confirmed fact visibly FRESH; an old date " +
+    'inside the file must therefore always mean "not corroborated since then". This in-place refresh is ' +
+    'a substantive update, not churn.\n' +
     "Apply the same restraint when integrating: skip facts that are now irrelevant to this person's profile, " +
     'and never keep a stale fact just because it was recorded before.\n' +
     "Look beyond single files as well: when today's journals show something that connects TWO OR MORE " +
     'people -- a shared interest, a common plan, a topic several family members returned to, a change ' +
     'that affects the whole family -- consolidate that pattern into general/family.md instead of ' +
     'duplicating it across the individual profiles.\n' +
+    'Also apply the decay instruction: every file path from list_long_term_files carries a last_touched_at ' +
+    'date -- when its content was last changed by new evidence. Today is ' +
+    runDate +
+    '. Facts that stop being corroborated must not be asserted as fresh forever -- forgetting keeps the ' +
+    'files small. When you rewrite a file you have read, DELETE every dated fact that has not been ' +
+    'corroborated for more than 180 days (measured from its own in-content date or the last ' +
+    'confirmation refresh). Never mark or annotate anything -- no confidence markers, no "(veraltet?)" ' +
+    'hints: the date alone carries the age, and every reader can judge it. Undated evergreen content ' +
+    "(core facts, stable traits) does not decay by age; only today's contradicting evidence can " +
+    'remove it. Note that last_touched_at ' +
+    'is a file-level signal: any content change bumps it, so a file touched today may still hold stale ' +
+    'facts -- therefore lean primarily on the absolute dates written inside the content itself (e.g. Recent ' +
+    'Happenings lines), not on last_touched_at alone, when judging how old a specific fact is. When you ' +
+    'rewrite a file you have read, judge its facts by those inner dates and ' +
+    "today's date, not by how confidently they are written. But never stage a file JUST to add decay " +
+    'annotations: decay only ever rides along with a substantive update that has a real reason (new facts, ' +
+    'corrections, consolidation). A file whose content is merely old stays untouched -- do not mechanically ' +
+    "reword aging files without a substantive reason, and never reword a fact that today's journals actually " +
+    "corroborate again. (The confirmation refresh above is exempt: re-dating a fact that today's " +
+    'journals genuinely confirmed is always a valid reason to stage a file.)\n\n' +
     'Budget your tool calls: read only the files you actually intend to update, and stage only files that ' +
     'genuinely need a change. You do not have unlimited iterations.\n\n' +
     'Remember the file path conventions: ' +
@@ -300,7 +340,7 @@ export async function runIntegrate(
 ): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
-    initialInputs: [{ role: 'user', content: integratePrompt(undeliveredNotes) }],
+    initialInputs: [{ role: 'user', content: integratePrompt(formatRunDate(new Date()), undeliveredNotes) }],
     maxIterations: config.nightly.maxIterations,
     executeTool
   });
@@ -366,6 +406,7 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
 export function reviewPrompt(
   update: StagedUpdate,
   currentContent: string | null,
+  lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number
 ): string {
@@ -413,6 +454,21 @@ export function reviewPrompt(
     SELF_PROFILE_VOICE_RULE +
     '\n' +
     groundingRule +
+    'Judge decay-related rewordings by their dating. Today is ' +
+    formatRunDate(new Date()) +
+    '. The file was last touched (its content last changed by new evidence) on ' +
+    (lastTouchedAt === null
+      ? 'never -- this would be its first version'
+      : formatRunDate(new Date(lastTouchedAt))) +
+    '. A fact the proposal DELETES as decayed must genuinely be older than 180 days without ' +
+    'corroboration, given that last_touched_at date and the absolute dates in the current content -- ' +
+    'reject a deletion of a fact the evidence actually re-corroborates or that is still within 180 ' +
+    'days of its own dating, and also reject a proposal that rewords well-dated facts with an ' +
+    'incorrect or invented dating. The proposal must not add aging annotations or confidence markers ' +
+    '(decay is deletion only; the date alone carries the age). A proposal whose only change is ' +
+    'refreshing the date or wording of a fact that the evidence genuinely re-confirms is valid -- ' +
+    "confirmation refreshes a fact's dating in place. Reject a proposal whose ONLY change is " +
+    'mechanical decay deletion or rewording without a substantive reason.\n' +
     'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
     'German), broken file structure (the 7-section person template must stay intact and complete ' +
     'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
@@ -429,12 +485,18 @@ export function reviewPrompt(
 export async function runReview(
   update: StagedUpdate,
   currentContent: string | null,
+  lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: reviewPrompt(update, currentContent, todaysJournals, attempt) }],
+    inputs: [
+      {
+        role: 'user',
+        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt)
+      }
+    ],
     store: false
   });
 

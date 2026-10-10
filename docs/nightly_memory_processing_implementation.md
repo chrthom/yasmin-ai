@@ -221,7 +221,7 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 
 **Phase 3 — Integrate.** One `askAgent(nightly, integrationPrompt, tools)` tool loop (`maxIterations` 15). Tools (§7): reads come from `memory_archive`; the AI **stages** proposed verbose updates via `stage_update`. Returns the staged list. No real store is written yet.
 
-**Phase 4 — Review + Archive.** For each staged update: `askAgent(nightly, reviewPrompt(update, currentContent, todaysJournals))` → per-file verdict (structured JSON). Rejected files → quarantined (kept at current version, logged), **not** batch-aborted. Accepted files: in one transaction, insert new `memory_archive` versions (skip if `content_hash` unchanged → no churn). Commit **before** any Mistral write.
+**Phase 4 — Review + Archive.** For each staged update: `askAgent(nightly, reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals))` → per-file verdict (structured JSON). Rejected files → quarantined (kept at current version, logged), **not** batch-aborted. Accepted files: in one transaction, insert new `memory_archive` versions (skip if `content_hash` unchanged → no churn). Commit **before** any Mistral write.
 
 **Phase 5 — Upload.** For each current version with `synced_at IS NULL`: `replaceDocument(path, content)` (delete old `mistral_doc_id`, upload, store new id), set `synced_at`. On failure: retry; still failing → leave `synced_at` NULL (retried next run) and mark job `partial`. **Orphan reconcile:** `listDocuments()`; delete any Mistral doc whose path is not the current archive row (handles renames / failed prior deletes).
 
@@ -247,7 +247,10 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 ## 7. Integration tools (`src/nightly/tools.ts`)
 
 ```ts
-list_long_term_files(); // current versions from memory_archive: [{path, content_hash}]
+list_long_term_files(); // current versions from memory_archive: [{path, contentHash, lastTouchedAt}]
+//   (lastTouchedAt = created_at of the current version; a file-level hint for the decay rule --
+//   fact age is judged by the in-content dates, and bootstrap-seeded files share one timestamp)
+// Decay rule: dated facts not corroborated for >180 days are deleted when the file is rewritten.
 get_long_term_file(path); // memory_archive current content (local, exact — no Mistral call)
 read_todays_journals(); // this run's Phase-2 journals (the evidence base)
 stage_update(path, content, isNew); // append to in-run staged list  ← the ONLY writer

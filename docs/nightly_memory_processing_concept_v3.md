@@ -273,7 +273,8 @@ v2 never actually produced the `proposedUpdates` it threaded through later phase
 
 ```
 Integration tools (read-only w.r.t. real stores; writes are deferred to Phase 4):
-  list_long_term_files()            → paths + hashes from memory_archive (current versions)
+  list_long_term_files()            → paths + hashes + last_touched_at (created_at of the current
+                                      version) from memory_archive
   get_long_term_file(path)          → full current verbose content via Mistral text_content
                                       (verified byte-exact; memory_archive stays passive)
   read_todays_journals()            → the Phase-2 journals (the evidence base)
