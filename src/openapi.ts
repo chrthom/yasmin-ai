@@ -366,7 +366,8 @@ export const openApiSpec: OpenAPIV3.Document = {
           },
           degraded: {
             type: 'boolean',
-            description: 'True when the database proxy has fallen back to static proxy data after a real-DB error',
+            description:
+              'True when the database proxy has fallen back to static proxy data after a real-DB error',
             example: false
           },
           timestamp: {
