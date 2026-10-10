@@ -363,9 +363,7 @@ export async function runIntegrate(
 ): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
-    initialInputs: [
-      { role: 'user', content: integratePrompt(formatRunDate(new Date()), undeliveredNotes) }
-    ],
+    initialInputs: [{ role: 'user', content: integratePrompt(formatRunDate(new Date()), undeliveredNotes) }],
     maxIterations: config.nightly.maxIterations,
     executeTool
   });

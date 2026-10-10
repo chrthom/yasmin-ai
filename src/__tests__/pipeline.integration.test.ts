@@ -875,13 +875,13 @@ describe('nightly pipeline integration', () => {
     const seenTopics: any[][] = [];
     mockRunReview.mockImplementation(
       async (
-          _update: any,
-          _current: any,
-          _lastTouchedAt: any,
-          _journals: any,
-          _attempt: any,
-          existingTopics: any
-        ) => {
+        _update: any,
+        _current: any,
+        _lastTouchedAt: any,
+        _journals: any,
+        _attempt: any,
+        existingTopics: any
+      ) => {
         seenTopics.push(existingTopics);
         return { approved: true, reason: 'ok' };
       }
@@ -915,13 +915,13 @@ describe('nightly pipeline integration', () => {
     const seenTopics: any[][] = [];
     mockRunReview.mockImplementation(
       async (
-          update: any,
-          _current: any,
-          _lastTouchedAt: any,
-          _journals: any,
-          _attempt: any,
-          existingTopics: any
-        ) => {
+        update: any,
+        _current: any,
+        _lastTouchedAt: any,
+        _journals: any,
+        _attempt: any,
+        existingTopics: any
+      ) => {
         seenTopics.push(existingTopics);
         return { approved: true, reason: 'ok' };
       }
