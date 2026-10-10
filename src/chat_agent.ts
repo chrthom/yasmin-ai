@@ -156,19 +156,29 @@ export class ChatAgent {
    * next user input; the nightly pipeline consolidates anything still undelivered.
    */
   private async shareNote(username: string, to: unknown, content: unknown): Promise<string> {
-    // "to" is either "everyone", a single first name, or a list of first names. A list becomes
-    // one row per recipient so each person's delivery is claimed (and released) individually.
+    // "to" is either "everyone" or one or several comma-separated first names (the Studio tool
+    // schema is a plain string; an array is also accepted for robustness). Multiple recipients
+    // become one row per person so each delivery is claimed (and released) individually.
     let recipients: (string | null)[];
     if (to === NOTE_TO_EVERYONE) {
       recipients = [null];
     } else if (typeof to === 'string' && to.trim().length > 0) {
-      recipients = [this.capitalize(to.trim())];
+      recipients = to
+        .split(',')
+        .map(name => this.capitalize(name.trim()))
+        .filter(name => name.length > 0);
     } else if (Array.isArray(to) && to.length > 0 && to.every((r): r is string => typeof r === 'string')) {
       recipients = to.map(r => this.capitalize(r.trim()));
     } else {
       return JSON.stringify({
         success: false,
-        error: 'Parameter "to" must be "everyone", a first name, or a list of first names'
+        error: 'Parameter "to" must be "everyone", a first name, or a comma-separated list of first names'
+      });
+    }
+    if (recipients.length === 0) {
+      return JSON.stringify({
+        success: false,
+        error: 'Parameter "to" must contain at least one recipient'
       });
     }
     for (const recipient of recipients) {

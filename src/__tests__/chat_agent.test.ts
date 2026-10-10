@@ -1305,9 +1305,9 @@ describe('ChatAgent', () => {
       expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 
-    it('stores one note row per recipient when "to" is a list of names', async () => {
+    it('stores one note row per recipient when "to" is a comma-separated list of names', async () => {
       mockInsertIntradayNote.mockResolvedValueOnce(21).mockResolvedValueOnce(22);
-      const result = await runShareNote({ to: ['zara', 'samira'], content: 'Movie night at 8' });
+      const result = await runShareNote({ to: 'zara, samira', content: 'Movie night at 8' });
       expect(result.success).toBe(true);
       expect(result.to).toBe('Zara, Samira');
       expect(result.ids).toEqual([21, 22]);
@@ -1328,6 +1328,13 @@ describe('ChatAgent', () => {
       const result = await runShareNote({ to: 42, content: 'hello' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('must be "everyone"');
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
+    });
+
+    it('rejects a "to" string that contains only commas/whitespace', async () => {
+      const result = await runShareNote({ to: ' , , ', content: 'hello' });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('at least one recipient');
       expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 

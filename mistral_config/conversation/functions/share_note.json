@@ -3,11 +3,8 @@
   "required": ["to", "content"],
   "properties": {
     "to": {
-      "type": ["string", "array"],
-      "items": {
-        "type": "string"
-      },
-      "description": "Recipient(s) of the note. Either 'everyone' for all family members, the exact first name of one person whose profile you know (a 'Profile of <name>' memory entry), or a list of such first names for several specific people. Use 'everyone' for time-critical information that concerns the whole family (e.g. an event today), not a list of everyone's names."
+      "type": "string",
+      "description": "Recipient(s) of the note. Either 'everyone' for all family members, or the exact first name(s) of one or several specific people whose profile you know (a 'Profile of <name>' memory entry) -- for several people, separate the first names with commas, e.g. 'Zara, Samira'. Use 'everyone' for time-critical information that concerns the whole family (e.g. an event today), not a list of everyone's names."
     },
     "content": {
       "type": "string",
