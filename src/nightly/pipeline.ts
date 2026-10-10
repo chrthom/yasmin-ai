@@ -22,6 +22,12 @@ import {
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
 import {
+  clearPendingNotes,
+  getPendingNotesMaxId,
+  getUnconsolidatedNotes,
+  PendingNote
+} from '../database/models/pending_notes.model';
+import {
   JournalEntry,
   StagedUpdate,
   get_long_term_file,
@@ -39,9 +45,10 @@ import {
   runJournal,
   runReview,
   reviseProposal,
-  CompactKind
+  CompactKind,
+  ExistingTopic
 } from './reflection';
-import { isOverCap, stripSensitive, truncateToCap } from './privacy';
+import { isOverCap, stripArchiveSection, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
 import {
   deleteConversation,
@@ -249,7 +256,32 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
     // -----------------------------------------------------------------------
-    const integrateResult = await runIntegrate(executeIntegrateTool);
+    // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
+    // evidence so a message that never reached its recipient still survives in long-term
+    // memory. A failed read must not fail the run -- consolidation continues on journals alone.
+    let undeliveredNotes: PendingNote[] = [];
+    // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
+    // never a note the live agent staged after the snapshot while the review loop was running.
+    // The watermark is MAX(id) over ALL notes (delivered ones included), not over the
+    // undelivered subset: with only delivered notes the undelivered max would be 0 and the
+    // bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
+    let notesSnapshotMaxId = 0;
+    let notesConsolidated = true;
+    try {
+      notesSnapshotMaxId = await getPendingNotesMaxId();
+      undeliveredNotes = await getUnconsolidatedNotes(notesSnapshotMaxId);
+      if (undeliveredNotes.length > 0) {
+        console.log(
+          'INFO Feeding ' + undeliveredNotes.length + ' undelivered pending note(s) to the integrate agent'
+        );
+      }
+    } catch (error) {
+      // The notes themselves were never consolidated here, so phase 6.5 must NOT delete them;
+      // they stay in the outbox and are included again tomorrow.
+      console.error('ERROR Failed to load undelivered pending notes; continuing without them: ' + error);
+      notesConsolidated = false;
+    }
+    const integrateResult = await runIntegrate(executeIntegrateTool, undeliveredNotes);
     // Scratch conversation of the nightly agent; journal/review/compact calls use store:false instead.
     if (integrateResult.conversationId) {
       await deleteConversation(integrateResult.conversationId).catch(error =>
@@ -265,6 +297,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           config.nightly.maxIterations +
           '); staged updates for this run may be incomplete'
       );
+      // A truncated integrate may never have processed the pending-note evidence, so the notes
+      // must survive for the next nightly run rather than be deleted unconsolidated.
+      notesConsolidated = false;
     }
     const stagedUpdates: StagedUpdate[] = getStagedUpdates();
     await updateJobLog(jobId, { lastCompletedPhase: '3-integrate' });
@@ -276,17 +311,59 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let filesCreatedFromReview = 0;
     let anyReviewFailed = false;
 
-    for (const update of stagedUpdates) {
+    // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every OTHER
+    // topic (title, Aliases line, content) so it can reject a semantic duplicate before it ever
+    // reaches the archive. Seeded from the archive and then EXTENDED as this run approves topic
+    // files -- otherwise two new topics staged in one night would both pass the barrier.
+    let topicsLoadFailed = false;
+    let existingTopics: ExistingTopic[];
+    try {
+      const allCurrent = await listCurrentVersions();
+      existingTopics = allCurrent
+        .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
+        .map(row => ({ path: row.filePath, content: row.content }));
+    } catch (error) {
+      // The barrier set drives TWO safety mechanisms (duplicate detection and index validation).
+      // On a load failure we must not silently degrade to an empty set: an approved index would
+      // then have every topics/ line stripped, wiping the registry. Instead, skip BOTH mechanisms
+      // for this run and mark it 'partial' so the next invocation retries with a working load.
+      console.error(
+        'ERROR Failed to load existing topics; skipping the topics duplicate barrier and index validation: ' +
+          error
+      );
+      existingTopics = [];
+      topicsLoadFailed = true;
+      anyReviewFailed = true;
+    }
+    const archivedTopicPaths = new Set(existingTopics.map(topic => topic.path.toLowerCase()));
+    // Topics skipped this run because the barrier load failed; collected across iterations so the
+    // index (processed last) can drop their lines -- those files are known locally and were never
+    // archived, so leaving their entries would create dangling registry references.
+    const skippedTopicPaths = new Set<string>();
+
+    // The topic index is reviewed LAST and validated against the topics that actually made it into
+    // the archive: it references other files by path, so a rejected topics/*.md proposal must not
+    // leave a dangling registry entry behind.
+    const TOPIC_INDEX_PATH = 'general/topic-index.md';
+    const orderedUpdates = [
+      ...stagedUpdates.filter(update => update.path !== TOPIC_INDEX_PATH),
+      ...stagedUpdates.filter(update => update.path === TOPIC_INDEX_PATH)
+    ];
+
+    for (const update of orderedUpdates) {
       try {
         const currentVersion = await getCurrentVersion(update.path);
         const currentContent = currentVersion ? currentVersion.content : null;
+        const lastTouchedAt = currentVersion ? currentVersion.createdAt.toISOString() : null;
 
         let proposal = update.content;
         let verdict = await runReview(
           { path: update.path, content: proposal, isNew: update.isNew },
           currentContent,
+          lastTouchedAt,
           todaysJournals,
-          0
+          0,
+          topicsLoadFailed ? [] : existingTopics.filter(topic => topic.path !== update.path)
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -311,8 +388,10 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           verdict = await runReview(
             { path: update.path, content: proposal, isNew: update.isNew },
             currentContent,
+            lastTouchedAt,
             todaysJournals,
-            revisions + 1
+            revisions + 1,
+            topicsLoadFailed ? [] : existingTopics.filter(topic => topic.path !== update.path)
           );
           revisions++;
         }
@@ -323,8 +402,56 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           await deleteConversation(revisionConversationId);
         }
 
-        if (verdict.approved) {
-          const { created } = await insertNextVersion(update.path, proposal, collectedAt);
+        // Without barrier data this run cannot judge topic duplicates -- do not archive a possibly
+        // duplicate topic on a broken load. The proposal is DROPPED: Phase 7 still deletes the
+        // conversations and the next run rebuilds its journals only from ITS fresh conversations,
+        // so nothing re-stages this material (same outcome as a rejected duplicate). The index, by
+        // contrast, IS archived so the registry survives -- but with lines for this run's skipped
+        // topics removed (see below), since those files are known locally and never got archived.
+        const skipTopicArchive = topicsLoadFailed && update.path.toLowerCase().startsWith('topics/');
+        if (skipTopicArchive) {
+          skippedTopicPaths.add(update.path.toLowerCase());
+          console.warn(
+            'WARN Skipping archive of topic proposal ' +
+              update.path +
+              ' because the existing-topics load failed; it is DROPPED (not re-reviewed next run)'
+          );
+        }
+
+        let contentToArchive = proposal;
+        if (verdict.approved && update.path === TOPIC_INDEX_PATH) {
+          // Registry validation: keep only the index lines whose topic file actually exists in the
+          // archive (pre-existing or approved earlier in this same run), or -- on a broken topics
+          // load, where the archive set is unknown -- at least drop the lines for topics THIS run
+          // skipped. A rejected, never-staged, or skipped topic would otherwise leave a dangling
+          // registry entry.
+          const keptLines: string[] = [];
+          const droppedLines: string[] = [];
+          for (const line of proposal.split('\n')) {
+            const match = /topics\/[a-z0-9-]+\.md/i.exec(line);
+            if (match && skippedTopicPaths.has(match[0].toLowerCase())) {
+              droppedLines.push(line);
+              continue;
+            }
+            if (match && !topicsLoadFailed && !archivedTopicPaths.has(match[0].toLowerCase())) {
+              droppedLines.push(line);
+              continue;
+            }
+            keptLines.push(line);
+          }
+          if (droppedLines.length > 0) {
+            console.warn(
+              'WARN Dropping ' +
+                droppedLines.length +
+                ' topic-index line(s) whose topic file was not archived: ' +
+                droppedLines.join(' | ')
+            );
+            contentToArchive = keptLines.join('\n');
+          }
+        }
+
+        if (verdict.approved && !skipTopicArchive) {
+          const { created } = await insertNextVersion(update.path, contentToArchive, collectedAt);
           // Classify create-vs-update from whether an archived version already existed, not from
           // the AI-supplied isNew flag, which is never cross-checked against real archive state.
           if (created && currentContent === null) {
@@ -332,7 +459,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           } else if (created) {
             filesUpdatedFromReview++;
           }
-        } else {
+          // Extend the same-run duplicate barrier and the index-validation set with the newly
+          // archived topic, so a second semantically-equal proposal staged this same night is
+          // still caught by the reviewer, and the index can reference it.
+          if (update.path.toLowerCase().startsWith('topics/')) {
+            existingTopics.push({ path: update.path, content: contentToArchive });
+            archivedTopicPaths.add(update.path.toLowerCase());
+          }
+        } else if (!verdict.approved) {
           // A reviewer rejection -- even after the revision cap -- is a normal, handled outcome: the
           // proposal is simply not written. It must not degrade a healthy run to 'partial' (which would
           // block the watermark and reprocess the same conversations forever). Log it so it stays
@@ -340,10 +474,27 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           console.warn(
             'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
           );
+          // Rejected duplicates are DROPPED BY DESIGN: the reviewer is instructed to name the
+          // existing topic to merge into, but this pipeline cannot rewrite that other file here
+          // (reviseProposal only ever revises the same path). Because a rejection deliberately
+          // does not degrade the run, the watermark still advances and the day's journal evidence
+          // is NOT reprocessed -- so the proposal's material is gone from the topic layer and this
+          // WARN is the only trace. It exists so the loss stays auditable and a human can merge
+          // manually if the material mattered.
+          if (!verdict.approved && update.path.toLowerCase().startsWith('topics/')) {
+            console.warn(
+              'WARN Topic proposal ' +
+                update.path +
+                ' was rejected (likely a duplicate) and is DROPPED BY DESIGN; its material is not merged automatically. ' +
+                'Archived topics it may belong to: ' +
+                (topicsLoadFailed ? '(unknown: topics load failed)' : [...archivedTopicPaths].join(', '))
+            );
+          }
         }
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
         anyReviewFailed = true;
+        notesConsolidated = false;
       }
     }
 
@@ -503,7 +654,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       }
 
       try {
-        const stripped = stripSensitive(row.content);
+        const stripped = stripArchiveSection(stripSensitive(row.content));
         let compacted = await runCompact(kind, personName, stripped);
 
         if (compacted.trim().length === 0) {
@@ -530,6 +681,31 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
 
     await updateJobLog(jobId, { lastCompletedPhase: '6-eager' });
+    // -----------------------------------------------------------------------
+    // Phase 6.5 -- Pending-notes reset (outbox)
+    // -----------------------------------------------------------------------
+    // The outbox holds at most one day: after integrate (3) and review/archive (4) succeeded,
+    // every note -- delivered or not -- has served its purpose (delivered notes live on in the
+    // journals, undelivered ones were just consolidated as evidence). Deliberately a plain
+    // DELETE, no TRUNCATE (DROP privileges / implicit commit). Only the failure of the
+    // consolidation phases themselves keeps the notes for another day; a merely 'partial' run
+    // (e.g. a failed upload) may still empty the outbox.
+    if (notesConsolidated && notesSnapshotMaxId > 0) {
+      try {
+        await clearPendingNotes(notesSnapshotMaxId);
+        console.log(
+          'INFO Cleared the pending_notes outbox (notes up to #' +
+            notesSnapshotMaxId +
+            ') after successful consolidation'
+        );
+      } catch (error) {
+        console.error('ERROR Failed to clear the pending_notes outbox: ' + error);
+      }
+    } else {
+      console.warn(
+        'WARN Consolidation phases did not complete; keeping pending_notes for the next nightly run'
+      );
+    }
 
     // -----------------------------------------------------------------------
     // Phase 7 -- Cleanup

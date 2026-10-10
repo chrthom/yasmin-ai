@@ -80,9 +80,66 @@ describe('nightly/tools', () => {
       expect(asUndefined.success).toBe(false);
       expect(getStagedUpdates()).toHaveLength(0);
     });
+
+    it('stages general/topic-index.md', () => {
+      const result = stage_update(
+        'general/topic-index.md',
+        'topics/urlaub-planung.md - Urlaubsplanung - Christopher, Samira',
+        true
+      );
+      expect(result).toEqual({ success: true, path: 'general/topic-index.md' });
+      expect(getStagedUpdates()).toEqual([
+        {
+          path: 'general/topic-index.md',
+          content: 'topics/urlaub-planung.md - Urlaubsplanung - Christopher, Samira',
+          isNew: true
+        }
+      ]);
+    });
+
+    it('sanitizes a topics/ slug: casing, spaces, and a traversal fragment are normalized', () => {
+      const result = stage_update('topics/Urlaub Planung.md', 'Aliases: Urlaub', true);
+      expect(result).toEqual({ success: true, path: 'topics/urlaub-planung.md' });
+      const traversal = stage_update('topics/../secrets/x.md', 'evil', true);
+      expect(traversal).toEqual({ success: true, path: 'topics/secrets-x.md' });
+    });
+
+    it('transliterates German umlauts in topics/ slugs (Ausflüge -> ausfluege, not ausfl-ge)', () => {
+      const result = stage_update('topics/Ausflüge.md', 'Aliases: Ausflüge', true);
+      expect(result).toEqual({ success: true, path: 'topics/ausfluege.md' });
+      const sz = stage_update('topics/Schwarzwälder Straße.md', 'content', true);
+      expect(sz).toEqual({ success: true, path: 'topics/schwarzwaelder-strasse.md' });
+    });
+
+    it('rejects a topics/ path with an empty slug', () => {
+      const result = stage_update('topics/.md', 'content', true);
+      expect(result.success).toBe(false);
+      expect(getStagedUpdates()).toHaveLength(0);
+    });
   });
 
   describe('get_long_term_file', () => {
+    it('normalizes topics/ paths like stage_update, so a differently-written path still finds the file', async () => {
+      mockGetCurrentVersion.mockImplementation(async (path: string) =>
+        path === 'topics/urlaub-planung.md'
+          ? {
+              id: 7,
+              filePath: path,
+              content: 'topic content',
+              contentHash: 'hash',
+              version: 1,
+              mistralDocId: null,
+              syncedAt: null,
+              createdAt: new Date()
+            }
+          : null
+      );
+      const result = await get_long_term_file('topics/Urlaub Planung.md');
+      expect(result).toEqual({ path: 'topics/urlaub-planung.md', content: 'topic content', found: true });
+      const missing = await get_long_term_file('topics/.md');
+      expect(missing.found).toBe(false);
+    });
+
     it('reads through to the mocked model and returns the content when found', async () => {
       mockGetCurrentVersion.mockResolvedValueOnce({
         id: 1,
@@ -160,9 +217,35 @@ describe('nightly/tools', () => {
       const result = await list_long_term_files();
 
       expect(result).toEqual([
-        { path: 'people/christopher.md', contentHash: 'hash1' },
-        { path: 'people/yasmin.md', contentHash: 'hash2' }
+        {
+          path: 'people/christopher.md',
+          contentHash: 'hash1',
+          lastTouchedAt: '2026-01-01T00:00:00.000Z'
+        },
+        {
+          path: 'people/yasmin.md',
+          contentHash: 'hash2',
+          lastTouchedAt: '2026-01-02T00:00:00.000Z'
+        }
       ]);
+    });
+
+    it('derives lastTouchedAt from MAX(created_at) of the current version', async () => {
+      mockListCurrentVersions.mockResolvedValueOnce([
+        {
+          id: 1,
+          filePath: 'people/christopher.md',
+          content: 'hello',
+          contentHash: 'hash1',
+          version: 3,
+          mistralDocId: null,
+          syncedAt: null,
+          createdAt: new Date('2026-03-15T12:00:00Z')
+        }
+      ]);
+      const result = await list_long_term_files();
+      expect(result[0].lastTouchedAt).toBe('2026-03-15T12:00:00.000Z');
+      expect(mockListCurrentVersions).toHaveBeenCalledTimes(1);
     });
   });
 });

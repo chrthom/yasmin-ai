@@ -1,7 +1,19 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
 import { dbProxy } from './database/db_proxy';
+import {
+  claimNoteDelivery,
+  getUndeliveredNotesForUser,
+  insertPendingNote,
+  releaseNoteDelivery,
+  PendingNoteForDelivery
+} from './database/models/pending_notes.model';
 import { buildHandoff, waitFor } from './handoff';
+
+// The live agent is the only filter between sender and recipient (no nightly reviewer sits in
+// between), so the share_note tool validates as strictly as stage_update does on the nightly side.
+const NOTE_CONTENT_MAX_CHARS = 500;
+const NOTE_TO_EVERYONE = 'everyone';
 
 interface MistralConversationResponseOutputPart {
   type: string;
@@ -66,6 +78,116 @@ export class ChatAgent {
 
   private capitalize(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  /**
+   * Delivers undelivered pending notes to the given user, claiming each note's delivery
+   * atomically right before it is used, so a concurrent duplicate input can never deliver
+   * the same note to the same person twice (the lost UPDATE race returns false and the note
+   * is skipped). Returns the formatted <nachrichten_fuer_dich> block plus the ids of the
+   * notes it contains, or undefined if there is nothing to deliver. A failed outbox read
+   * must not break the chat -- the notes simply stay pending and are delivered with the
+   * next input.
+   */
+  private async deliverPendingNotes(
+    username: string
+  ): Promise<{ block: string; claimedIds: number[] } | undefined> {
+    let notes: PendingNoteForDelivery[];
+    try {
+      notes = await getUndeliveredNotesForUser(username);
+    } catch (error) {
+      console.error(`ERROR Failed to load pending notes for ${username}: ${error}`);
+      return undefined;
+    }
+    if (notes.length === 0) {
+      return undefined;
+    }
+    const claimed: PendingNoteForDelivery[] = [];
+    for (const note of notes) {
+      try {
+        if (await claimNoteDelivery(note.id, username)) {
+          claimed.push(note);
+        }
+      } catch (error) {
+        console.error(`ERROR Failed to claim delivery of note ${note.id} for ${username}: ${error}`);
+      }
+    }
+    if (claimed.length === 0) {
+      return undefined;
+    }
+    console.log(
+      `INFO Delivering ${claimed.length} pending note(s) to ${username}: ` +
+        claimed.map(n => `#${n.id} from ${n.fromUsername}`).join(', ')
+    );
+    const lines = claimed.map(
+      note => `${this.capitalize(note.fromUsername)} wants me to tell you: ${note.content}`
+    );
+    return {
+      block: `<nachrichten_fuer_dich>\n${lines.join('\n')}\n</nachrichten_fuer_dich>`,
+      claimedIds: claimed.map(note => note.id)
+    };
+  }
+
+  /**
+   * Rolls back the delivery claims of the notes that were injected into a request which then
+   * failed for a non-stale reason (HTTP 5xx, network error, or the tool request failing): the
+   * notes were never actually shown to the user, so they become deliverable again with their
+   * next input instead of being lost. A respawn (stale 404/400) reuses the claimed block and
+   * must NOT release anything. Best-effort: a failed release is logged, not thrown.
+   */
+  private async releaseClaimedNotes(username: string, claimedIds: number[]): Promise<void> {
+    for (const id of claimedIds) {
+      try {
+        await releaseNoteDelivery(id, username);
+      } catch (error) {
+        console.error(`ERROR Failed to release delivery claim of note ${id} for ${username}: ${error}`);
+      }
+    }
+    if (claimedIds.length > 0) {
+      console.log(
+        `INFO Released ${claimedIds.length} undelivered pending note claim(s) for ${username}; they will be delivered with the next input`
+      );
+    }
+  }
+
+  /**
+   * Executes the live agent's share_note tool: validates the recipient and content, then
+   * writes the note to the pending_notes outbox. The note is delivered with the recipient's
+   * next user input; the nightly pipeline consolidates anything still undelivered.
+   */
+  private async shareNote(username: string, to: unknown, content: unknown): Promise<string> {
+    if (typeof to !== 'string' || to.length === 0) {
+      return JSON.stringify({ success: false, error: 'Parameter "to" is required' });
+    }
+    const recipient = to === NOTE_TO_EVERYONE ? null : this.capitalize(to.trim());
+    if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
+      return JSON.stringify({
+        success: false,
+        error: `Unknown recipient "${to}". Use "everyone" or a known person's first name.`
+      });
+    }
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      return JSON.stringify({ success: false, error: 'Content must be a non-empty message' });
+    }
+    if (content.length > NOTE_CONTENT_MAX_CHARS) {
+      return JSON.stringify({
+        success: false,
+        error: `Content exceeds the ${NOTE_CONTENT_MAX_CHARS} character cap (${content.length} characters)`
+      });
+    }
+    try {
+      const id = await insertPendingNote(username, recipient, content.trim());
+      console.log(`INFO Staged pending note #${id} from ${username} to ${recipient ?? 'everyone'}`);
+      return JSON.stringify({
+        success: true,
+        id,
+        to: recipient ?? 'everyone',
+        delivery: "The note will be delivered with the recipient's next message."
+      });
+    } catch (error) {
+      console.error(`ERROR Failed to store pending note from ${username}: ${error}`);
+      return JSON.stringify({ success: false, error: 'Failed to store the note' });
+    }
   }
 
   private async getActiveConversationId(username: string): Promise<string | undefined> {
@@ -143,7 +265,14 @@ export class ChatAgent {
     username: string,
     shortAnswer: boolean = false,
     isRespawn: boolean = false,
-    handoffFrom?: string
+    handoffFrom?: string,
+    // Notes already claimed (and therefore marked delivered) for this input. The respawn path
+    // passes the block through: a respawn re-builds the prompt for the SAME input, so the notes
+    // must ride along again -- getUndeliveredNotesForUser no longer returns them once claimed.
+    claimedNotesBlock?: string,
+    // Ids of the notes whose delivery was claimed for this input; released again when the
+    // request fails for a non-stale reason (the notes were never shown to the user).
+    claimedNoteIds: number[] = []
   ): Promise<MistralConversationResponseOutput[]> {
     try {
       let conversationId = await this.getActiveConversationId(username);
@@ -194,10 +323,25 @@ export class ChatAgent {
       const handoffBlock =
         !conversationId && handoffFrom ? await this.resolveHandoff(username, handoffFrom) : undefined;
 
+      // Real-time outbox delivery: notes other people asked to pass to this user travel with
+      // their next input, so a session that is already 20 turns old still receives them. On a
+      // respawn the notes were already claimed for this input and are passed through instead
+      // (claiming again would silently drop them -- see processRequestInternal's respawn paths).
+      let notesBlock = claimedNotesBlock;
+      if (!isRespawn) {
+        const delivery = await this.deliverPendingNotes(username);
+        if (delivery) {
+          notesBlock = delivery.block;
+          claimedNoteIds = delivery.claimedIds;
+        }
+      }
       // Prepend dynamic XML context (and handoff) to user text if present
       let promptContent = userText;
       if (handoffBlock) {
         promptContent = `${handoffBlock}\n\n${promptContent}`;
+      }
+      if (notesBlock) {
+        promptContent = `${notesBlock}\n\n${promptContent}`;
       }
       if (formattedContext) {
         promptContent = `${formattedContext}\n\n${promptContent}`;
@@ -252,7 +396,15 @@ export class ChatAgent {
         // isRespawn guards against looping if the freshly created conversation also fails.
         if (isStale && conversationId && !isRespawn) {
           console.log(`INFO Respawning a fresh conversation for ${username}`);
-          return this.processRequestInternal(userText, username, shortAnswer, true, conversationId);
+          return this.processRequestInternal(
+            userText,
+            username,
+            shortAnswer,
+            true,
+            conversationId,
+            notesBlock,
+            claimedNoteIds
+          );
         }
         throw new Error(`Mistral API request failed: HTTP ${response.status}`);
       }
@@ -343,6 +495,20 @@ export class ChatAgent {
                 tool_call_id: call.id,
                 result: resultStr
               });
+            } else if (call.name === 'share_note') {
+              let args: any = {};
+              try {
+                args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
+              } catch (e) {
+                console.error(`ERROR Failed to parse share_note arguments: ${e}`);
+              }
+              console.log(`INFO Tool execution: share_note to "${String(args.to)}" for ${username}`);
+              const resultStr = await this.shareNote(username, args.to, args.content);
+              toolInputs.push({
+                type: 'function.result',
+                tool_call_id: call.id,
+                result: resultStr
+              });
             } else {
               // Unknown tool (e.g. a stray update_context_entry call from a not-yet-reconfigured
               // Mistral Console agent): answer the call so the conversation cannot stall, but
@@ -400,7 +566,9 @@ export class ChatAgent {
                   username,
                   shortAnswer,
                   true,
-                  currentConversationId
+                  currentConversationId,
+                  notesBlock,
+                  claimedNoteIds
                 );
               }
               throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
@@ -421,6 +589,13 @@ export class ChatAgent {
       this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {
+      // A non-stale failure (HTTP 5xx, network error, failed tool request without respawn)
+      // means the notes injected above were never shown to the user. Release their delivery
+      // claims so they are delivered with the next input instead of being lost. On the respawn
+      // paths the recursive call owns the claims from here on -- releasing would race it.
+      if (!isRespawn && claimedNoteIds.length > 0) {
+        await this.releaseClaimedNotes(username, claimedNoteIds);
+      }
       console.error(`ERROR Failed to process request for ${username}: ${error}`);
       throw error;
     }

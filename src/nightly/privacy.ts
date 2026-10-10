@@ -6,6 +6,23 @@ const SENSITIVE_BLOCK_RE = /\[PRIVACY:SENSITIVE\][\s\S]*?\[\/PRIVACY:SENSITIVE\]
 const EXCESSIVE_BLANK_LINES_RE = /\n{3,}/g;
 const TRUNCATION_MARKER = '…[truncated]';
 
+const ARCHIVE_HEADING_RE = /^##\s*Archiv\s*$/im;
+
+/**
+ * Removes a trailing "## Archiv" section (decayed facts) from verbose memory content, so the
+ * eager-cache compaction never carries archived facts back into the live profile -- regardless
+ * of whether the compaction model complies with its prompt instruction to omit the section.
+ * Only a heading at the very top level (## , not ###) qualifies; the earliest such heading wins,
+ * which also drops an Archiv section that is the last heading by construction of the templates.
+ */
+export function stripArchiveSection(content: string): string {
+  const match = ARCHIVE_HEADING_RE.exec(content);
+  if (match === null) {
+    return content;
+  }
+  return content.slice(0, match.index).trimEnd();
+}
+
 /**
  * Removes every [PRIVACY:SENSITIVE]...[/PRIVACY:SENSITIVE] block and collapses resulting blank-line gaps.
  *

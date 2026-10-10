@@ -1,5 +1,11 @@
 import * as process from 'node:process';
 
+/** parseInt with a fallback: a missing or malformed env value must never become NaN */
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export const config = {
   server: {
     port: process.env['PORT'] || 5000
@@ -59,7 +65,7 @@ export const config = {
     maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
     maxRevisions: 3,
     lockStaleMs: 2 * 60 * 60 * 1000,
-    maxIterations: 15,
+    maxIterations: parsePositiveInt(process.env['NIGHTLY_MAX_ITERATIONS'], 25),
     archiveKeepVersions: 10,
     eagerMaxChars: 10000,
     watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000

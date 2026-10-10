@@ -54,6 +54,11 @@ jest.mock('../database/models/memory_archive.model', () => ({
 jest.mock('../database/models/context.model', () => ({
   upsertContextEntry: jest.fn()
 }));
+jest.mock('../database/models/pending_notes.model', () => ({
+  getPendingNotesMaxId: jest.fn(),
+  getUnconsolidatedNotes: jest.fn(),
+  clearPendingNotes: jest.fn()
+}));
 
 jest.mock('../nightly/reflection', () => ({
   buildTranscript: jest.fn(),
@@ -99,6 +104,11 @@ import {
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
 import {
+  clearPendingNotes,
+  getPendingNotesMaxId,
+  getUnconsolidatedNotes
+} from '../database/models/pending_notes.model';
+import {
   buildTranscript,
   runCompact,
   runIntegrate,
@@ -134,6 +144,9 @@ const mockMarkSynced = markSynced as jest.Mock;
 const mockPruneOldVersions = pruneOldVersions as jest.Mock;
 
 const mockUpsertContextEntry = upsertContextEntry as jest.Mock;
+const mockGetPendingNotesMaxId = getPendingNotesMaxId as jest.Mock;
+const mockGetUnconsolidatedNotes = getUnconsolidatedNotes as jest.Mock;
+const mockClearPendingNotes = clearPendingNotes as jest.Mock;
 
 const mockBuildTranscript = buildTranscript as jest.Mock;
 const mockRunJournal = runJournal as jest.Mock;
@@ -269,6 +282,9 @@ describe('nightly pipeline integration', () => {
     mockSetWatermark.mockResolvedValue(undefined);
 
     mockUpsertContextEntry.mockResolvedValue('updated');
+    mockGetPendingNotesMaxId.mockResolvedValue(0);
+    mockGetUnconsolidatedNotes.mockResolvedValue([]);
+    mockClearPendingNotes.mockResolvedValue(undefined);
 
     mockListConversations.mockResolvedValue([]);
     mockGetConversationMessages.mockResolvedValue([]);
@@ -838,6 +854,168 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 9b. Topics layer wiring
+  // -------------------------------------------------------------------------
+
+  it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'topics/urlaub-planung.md',
+      'Aliases: Urlaub Planung, Sommerreise\nFamilie will ans Meer.'
+    );
+    await archive.seed('people/bob.md', 'Bob profile'); // non-topic seed must not reach the barrier
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Aliases: Ausflüge\nWas die Familie am Urlaubsort tun will.',
+        isNew: true
+      });
+      return { finalText: 'staged a topic', iterations: 1 };
+    });
+    const seenTopics: any[][] = [];
+    mockRunReview.mockImplementation(
+      async (
+          _update: any,
+          _current: any,
+          _lastTouchedAt: any,
+          _journals: any,
+          _attempt: any,
+          existingTopics: any
+        ) => {
+        seenTopics.push(existingTopics);
+        return { approved: true, reason: 'ok' };
+      }
+    );
+    await runNightlyPipeline();
+    // Every review attempt saw exactly the archived topics -- the people/ seed excluded, the
+    // proposal's own path excluded, the other archived topic present with its content.
+    expect(seenTopics.length).toBeGreaterThan(0);
+    for (const topics of seenTopics) {
+      expect(topics.map((t: any) => t.path)).toEqual(['topics/urlaub-planung.md']);
+    }
+    expect(seenTopics[0][0].content).toContain('Sommerreise');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('same-run duplicate barrier: a topic approved earlier in the run is part of the next review barrier', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Aliases: Urlaub Aktivitäten',
+        isNew: true
+      });
+      return { finalText: 'staged two topics', iterations: 1 };
+    });
+    const seenTopics: any[][] = [];
+    mockRunReview.mockImplementation(
+      async (
+          update: any,
+          _current: any,
+          _lastTouchedAt: any,
+          _journals: any,
+          _attempt: any,
+          existingTopics: any
+        ) => {
+        seenTopics.push(existingTopics);
+        return { approved: true, reason: 'ok' };
+      }
+    );
+    await runNightlyPipeline();
+    // First topic review starts from the (empty) archive; the second must already see the first.
+    expect(seenTopics[0]).toEqual([]);
+    expect(seenTopics[1].map((t: any) => t.path)).toEqual(['topics/urlaub-planung.md']);
+    // Both were archived (the reviewer approved both) -- the barrier's job is visibility, not rejection.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'topics/urlaub-planung.md',
+      'Aliases: Sommerreise',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'topics/urlaub-aktivitaeten.md',
+      'Aliases: Urlaub Aktivitäten',
+      expect.any(Date)
+    );
+  });
+
+  it('topic index is archived last with lines dropped for topics that were not archived', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'general/topic-index.md',
+        content:
+          'Index:\n' +
+          'topics/urlaub-planung.md - Familienurlaub - Alice, Bob\n' +
+          'topics/abgelehntes-thema.md - nie archiviert - Alice',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      return { finalText: 'staged index and topic', iterations: 1 };
+    });
+    // Reject the 'abgelehntes-thema' topic (not staged at all), approve the rest -- the index line
+    // for the never-archived topic must be dropped, the line for the approved topic must survive.
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+    const result = await runNightlyPipeline();
+    const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
+    expect(indexCall).toBeDefined();
+    expect(indexCall![1]).toContain('topics/urlaub-planung.md - Familienurlaub - Alice, Bob');
+    expect(indexCall![1]).not.toContain('abgelehntes-thema');
+    // The approved topic WAS archived and the index was archived AFTER it (index call comes last).
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(true);
+    const paths = mockInsertNextVersion.mock.calls
+      .map(call => call[0])
+      .filter(p => p !== 'journals/alice/conv-1.md');
+    expect(paths.indexOf('general/topic-index.md')).toBeGreaterThan(
+      paths.indexOf('topics/urlaub-planung.md')
+    );
+    expect(result.status).toBe('completed');
+  });
+
+  it('topics load failure: run is partial, topic dropped (not re-reviewed), index archived without the skipped topic line', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
+    mockListCurrentVersions
+      .mockRejectedValueOnce(new Error('db boom listing current versions'))
+      .mockImplementation(archive.listCurrentVersions);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'general/topic-index.md',
+        content: 'topics/urlaub-planung.md - Familienurlaub - Alice, Bob',
+        isNew: true
+      });
+      return { finalText: 'staged topic and index', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+    const result = await runNightlyPipeline();
+    // The load failure marks the run partial so the next invocation retries with healthy data.
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+    // Without barrier data no topic may be archived (it could be a duplicate)...
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(false);
+    // ...and the index is archived, but WITHOUT the line for the skipped topic (known locally,
+    // never archived) -- so no dangling registry entry. Entries for PRE-EXISTING archived topics
+    // survive, because the archive-set validation is skipped on a broken load.
+    const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
+    expect(indexCall).toBeDefined();
+    expect(indexCall![1]).not.toContain('urlaub-planung');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
   // 10. Phase 6 privacy wiring
   // -------------------------------------------------------------------------
   it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
@@ -856,6 +1034,21 @@ describe('nightly pipeline integration', () => {
     expect(strippedContentPassedToCompact).toContain('Public fact about Bob.');
     expect(strippedContentPassedToCompact).toContain('More public info.');
 
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('Phase 6 strips a trailing ## Archiv section before compaction -- decayed facts never reach the eager cache', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'people/bob.md',
+      'Public fact about Bob.\n\n## Archiv\nBob used to play piano in 2010.'
+    );
+    await runNightlyPipeline();
+    expect(mockRunCompact).toHaveBeenCalledTimes(1);
+    const [, , strippedContentPassedToCompact] = mockRunCompact.mock.calls[0];
+    expect(strippedContentPassedToCompact).toContain('Public fact about Bob.');
+    expect(strippedContentPassedToCompact).not.toContain('## Archiv');
+    expect(strippedContentPassedToCompact).not.toContain('piano');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
@@ -902,5 +1095,156 @@ describe('nightly pipeline integration', () => {
     const archived = await archive.getCurrentVersion('people/bob.md');
     expect(archived?.content).toContain('secretly hates broccoli');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 13. Decay wiring: last_touched_at flows from memory_archive into the
+  //     integrate tool surface and the review prompt
+  // -------------------------------------------------------------------------
+  it('decay wiring: list_long_term_files exposes lastTouchedAt to the integrate loop, and runReview receives it with the current content', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    const seeded = await archive.seed('people/alice.md', 'Existing alice content');
+    let listed: { path: string; contentHash: string; lastTouchedAt: string }[] = [];
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      listed = JSON.parse(await executeTool('list_long_term_files', {}));
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile content',
+        isNew: false
+      });
+      return { finalText: 'staged 1 file', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'looks good' });
+    mockRunCompact.mockResolvedValue('compacted profile');
+    mockUpsertContextEntry.mockResolvedValue('inserted');
+    await runNightlyPipeline();
+    const aliceEntry = listed.find(entry => entry.path === 'people/alice.md');
+    expect(aliceEntry).toBeDefined();
+    expect(aliceEntry!.lastTouchedAt).toBe(seeded.createdAt.toISOString());
+    expect(mockRunReview).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'people/alice.md' }),
+      'Existing alice content',
+      seeded.createdAt.toISOString(),
+      expect.any(Array),
+      0,
+      []
+    );
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Pending-notes outbox (issue #46)
+  // -------------------------------------------------------------------------
+
+  it('outbox: undelivered notes are passed to the integrate agent, then the outbox is emptied', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(5);
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockGetUnconsolidatedNotes).toHaveBeenCalledWith(5);
+    expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+  });
+
+  it('outbox: is emptied on a merely partial run (failed upload) because consolidation succeeded', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(9);
+    mockListUnsynced.mockImplementationOnce(() => {
+      throw new Error('db read failed');
+    });
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingNotes).toHaveBeenCalledWith(9);
+  });
+
+  it('outbox: is NOT emptied when the review/archive phase failed (notes stay for tomorrow)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile content',
+        isNew: true
+      });
+      return { finalText: 'staged', iterations: 1 };
+    });
+    // The first two getCurrentVersion calls belong to phase 2 (journal check + re-read);
+    // the third is the failing phase-4 archive read of the staged update's current content.
+    mockGetCurrentVersion
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ content: 'Journal about Alice' })
+      .mockImplementationOnce(() => {
+        throw new Error('archive read failed');
+      });
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+  });
+
+  it('outbox: a failed note read does not fail the run, and the outbox is NOT cleared (notes stay for tomorrow)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetUnconsolidatedNotes.mockRejectedValueOnce(new Error('db down'));
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), []);
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+  });
+
+  it('outbox: is NOT emptied when the integrate loop hit maxIterations (notes may be unconsolidated)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'staged', iterations: 15 });
+    const result = await runNightlyPipeline();
+    // integrateTruncated itself already degrades the run to 'partial'
+    expect(result.status).toBe('partial');
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+  });
+
+  it('outbox: clearing deletes up to the MAX(id) over ALL notes, so a delivered-only outbox still empties', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    // All notes already delivered individually: undelivered set is empty, but the table still
+    // holds rows -- the watermark must come from MAX(id), not from the undelivered subset.
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(23);
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([]);
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingNotes).toHaveBeenCalledWith(23);
+  });
+
+  it('outbox: skips the DELETE entirely when the table is empty (no pointless clear)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
+    mockGetPendingNotesMaxId.mockResolvedValueOnce(0);
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+    expect(mockClearPendingNotes).not.toHaveBeenCalled();
   });
 });
