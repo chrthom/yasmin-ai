@@ -343,10 +343,17 @@ describe('reflection', () => {
       expect(prompt).toContain(
         'reject a decay annotation on a fact that the evidence actually re-corroborates'
       );
-      expect(prompt).toContain(
-        'a correctly dated decay annotation (confidence marker, archive section) is a valid, acceptable change'
-      );
+      expect(prompt).toContain('a correctly dated decay annotation (confidence marker');
       expect(prompt).toContain('mechanical decay rewording without a substantive reason');
+    });
+
+    it('accepts a confirmation refresh and no longer references an archive section', () => {
+      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(prompt).toContain(
+        'refreshing the date or wording of a fact that the evidence genuinely re-confirms'
+      );
+      expect(prompt).toContain("refreshes a fact's dating in place");
+      expect(prompt).not.toContain('archive section');
     });
     it('states that a never-touched file would be a first version, instead of a last-touched date', () => {
       const prompt = reviewPrompt(update, 'old content', null, [], 0);
