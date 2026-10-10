@@ -190,6 +190,37 @@ describe('reflection', () => {
         expect.objectContaining({ agentId: 'nightly-agent-1', maxIterations: 15, executeTool })
       );
     });
+
+    it('embeds undelivered pending notes as extra evidence in the integrate prompt', async () => {
+      mockRunAgentToolLoop.mockResolvedValueOnce({
+        conversationId: 'conv-1',
+        finalText: 'staged',
+        iterations: 1
+      });
+      await runIntegrate(jest.fn(), [
+        {
+          id: 9,
+          fromUsername: 'christopher',
+          toUsername: 'zara',
+          content: 'Please be home by 6 pm',
+          createdAt: new Date('2026-07-05T15:00:00Z')
+        }
+      ]);
+      const prompt = mockRunAgentToolLoop.mock.calls[0][0].initialInputs[0].content;
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+    });
+
+    it('adds no notes evidence block when the outbox is empty', async () => {
+      mockRunAgentToolLoop.mockResolvedValueOnce({
+        conversationId: 'conv-1',
+        finalText: 'staged',
+        iterations: 1
+      });
+      await runIntegrate(jest.fn());
+      const prompt = mockRunAgentToolLoop.mock.calls[0][0].initialInputs[0].content;
+      expect(prompt).not.toContain('Undelivered note');
+    });
   });
 
   describe('runReview', () => {
