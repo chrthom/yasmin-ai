@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
 import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
+import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
@@ -13,20 +14,9 @@ import { IntradayNote } from '../database/models/intraday_notes.model';
 // Re-exported for callers that only need the message shape, without redefining it.
 export type RawConversationMessage = ConversationMessage;
 
-// Joins the text parts of a single message's content (string, or array of {type, text} parts) --
-// mirrors the same content-shape assumptions as extractOutputText in mistral_api.ts.
+// Joins the text parts of a single message's content (string, or array of {type, text} parts).
 export function extractMessageText(content: unknown): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .filter((part): part is { type: string; text?: string } => typeof part === 'object' && part !== null)
-      .filter(part => part.type === 'text' && typeof part.text === 'string')
-      .map(part => part.text as string)
-      .join(' ');
-  }
-  return '';
+  return extractContentText(content);
 }
 
 // The live agent seeds a fresh conversation (turn-limit reset or respawn) with a replayed summary and the

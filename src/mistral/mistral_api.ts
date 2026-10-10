@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { config } from '../config';
+import { extractContentText } from './content';
 
 // ---------------------------------------------------------------------------
 // Errors + retry
@@ -366,18 +367,8 @@ const AgentCallResponseSchema = z.object({
 
 // Joins the text parts of a single message.output's content (string, or array of {type, text} parts)
 function extractOutputText(content: z.infer<typeof OutputContentResponseSchema> | undefined): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .filter(p => p.type === 'text' && typeof p.text === 'string')
-      .map(p => p.text as string)
-      .join(' ');
-  }
-  return '';
+  return extractContentText(content);
 }
-
 /**
  * Sends inputs to the agent (starting or continuing a conversation) and parses text + tool calls from the reply
  */
