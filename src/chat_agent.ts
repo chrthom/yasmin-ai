@@ -11,8 +11,7 @@ import {
 import { buildHandoff, waitFor } from './handoff';
 import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 
-// The live agent is the only filter between sender and recipient (no nightly reviewer sits in
-// between), so the share_note tool validates as strictly as stage_update does on the nightly side.
+// The live agent is the only filter between sender and recipient, so share_note validates strictly.
 const NOTE_CONTENT_MAX_CHARS = 500;
 const NOTE_TO_EVERYONE = 'everyone';
 
@@ -173,9 +172,8 @@ export class ChatAgent {
    * next user input; the nightly pipeline consolidates anything still undelivered.
    */
   private async shareNote(username: string, to: unknown, content: unknown): Promise<string> {
-    // "to" is either "everyone" or one or several comma-separated first names (the Studio tool
-    // schema is a plain string; an array is also accepted for robustness). Multiple recipients
-    // become one row per person so each delivery is claimed (and released) individually.
+    // Accept a string ("everyone" or comma-separated names) or, for robustness, an array; each recipient
+    // gets its own row so deliveries are claimed individually.
     let recipients: (string | null)[];
     if (to === NOTE_TO_EVERYONE) {
       recipients = [null];
@@ -372,12 +370,10 @@ export class ChatAgent {
     shortAnswer: boolean = false,
     isRespawn: boolean = false,
     handoffFrom?: string,
-    // Notes already claimed (and therefore marked delivered) for this input. The respawn path
-    // passes the block through: a respawn re-builds the prompt for the SAME input, so the notes
-    // must ride along again -- getUndeliveredNotesForUser no longer returns them once claimed.
+    // Notes already claimed for this input; a respawn passes them through because claiming again
+    // would silently drop them (claimed notes are no longer returned as undelivered).
     claimedNotesBlock?: string,
-    // Ids of the notes whose delivery was claimed for this input; released again when the
-    // request fails for a non-stale reason (the notes were never shown to the user).
+    // Ids of the notes claimed for this input; released if the request fails (they were never shown).
     claimedNoteIds: number[] = []
   ): Promise<MistralConversationResponseOutput[]> {
     // Declared outside the try so the shared respawn handling in the catch block can pass the
@@ -399,11 +395,8 @@ export class ChatAgent {
         this.conversationCache.set(username, cached);
       }
 
-      // Turn-based compaction: long conversations make every turn slower because Mistral
-      // reprocesses the full history each time. Once the turn budget is exhausted, close the
-      // current conversation (the nightly job still journals and deletes it later) and start a
-      // fresh one so latency resets. A summary of the old conversation plus its last turns is
-      // handed over in the new conversation's first prompt (see handoff.ts).
+      // Mistral reprocesses the full history each turn, so reset latency by starting a fresh
+      // conversation (with a handoff) once the turn budget is exhausted.
       if (conversationId && cached.turnCount >= this.maxTurnsPerSession) {
         console.log(
           `INFO Compacting session for ${username}: conversation ${conversationId} reached ` +
@@ -432,10 +425,8 @@ export class ChatAgent {
       const handoffBlock =
         !conversationId && handoffFrom ? await this.resolveHandoff(username, handoffFrom) : undefined;
 
-      // Real-time outbox delivery: notes other people asked to pass to this user travel with
-      // their next input, so a session that is already 20 turns old still receives them. On a
-      // respawn the notes were already claimed for this input and are passed through instead
-      // (claiming again would silently drop them -- see processRequestInternal's respawn paths).
+      // Notes travel with the next input so old sessions still receive them; a respawn reuses the
+      // already-claimed block instead of re-claiming.
       if (!isRespawn) {
         const delivery = await this.deliverIntradayNotes(username);
         if (delivery) {
@@ -606,10 +597,8 @@ export class ChatAgent {
             };
 
             console.log(`INFO Sending tool results to Mistral: ${JSON.stringify(toolBody)}`);
-            // A failed tool-result request can leave the conversation in a broken state (pending
-            // function call) that rejects all further turns with HTTP 400. postToConversation turns
-            // that stale 400/404 into RespawnRequestedException, which the shared catch block below
-            // turns into poison + cache-clear + respawn-once -- the same handling as the initial send.
+            // A failed tool-result request can poison the conversation; postToConversation
+            // turns the failure into RespawnRequestedException for the shared respawn handling.
             const toolData = await this.postToConversation(currentConversationId, toolBody, true);
             console.log(`DEBUG Received raw answer after tool execution: ${JSON.stringify(toolData)}`);
 
@@ -625,12 +614,10 @@ export class ChatAgent {
       this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {
-      // A stale conversation (HTTP 400/404, from postToConversation): poison it so it is never
-      // re-selected, clear the cache, and respawn a fresh conversation once so the user's message
-      // isn't dropped (the nightly job deletes consolidated conversations; a failed tool-result
-      // request can equally leave the conversation broken). isRespawn guards against looping if the
-      // freshly created conversation also fails. On the respawn path the recursive call owns the
-      // claimed notes from here on -- do not release them.
+      // A stale conversation (HTTP 400/404, from postToConversation): poison it, clear the
+      // cache, and respawn once so the user's message isn't dropped (isRespawn guards against
+      // looping). Without a respawn the turn is dropped, so the notes were never shown -- their
+      // claims are released like any other non-recoverable failure.
       if (error instanceof RespawnRequestedException) {
         const failedConversationId = error.failedConversationId;
         if (failedConversationId) {
@@ -650,9 +637,6 @@ export class ChatAgent {
             claimedNoteIds
           );
         }
-        // No respawn possible (a fresh-conversation create already failed, or this WAS the
-        // respawn): the turn is dropped, so the notes injected above were never shown to the
-        // user -- release their delivery claims like any other non-recoverable failure.
         if (!isRespawn && claimedNoteIds.length > 0) {
           await this.releaseClaimedNotes(username, claimedNoteIds);
         }
@@ -660,10 +644,7 @@ export class ChatAgent {
           `Mistral API request failed: stale conversation ${failedConversationId || '(new)'} and no respawn possible`
         );
       }
-      // A non-stale failure (HTTP 5xx, network error, failed tool request without respawn)
-      // means the notes injected above were never shown to the user. Release their delivery
-      // claims so they are delivered with the next input instead of being lost. On the respawn
-      // paths the recursive call owns the claims from here on -- releasing would race it.
+      // The notes were never shown, so release their claims (respawn paths own them now).
       if (!isRespawn && claimedNoteIds.length > 0) {
         await this.releaseClaimedNotes(username, claimedNoteIds);
       }
