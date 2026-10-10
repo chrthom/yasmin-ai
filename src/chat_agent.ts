@@ -9,12 +9,7 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
-import {
-  conversationsUrl,
-  fetchWithTimeout,
-  MistralApiError,
-  withRetry
-} from './mistral/mistral_api';
+import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 
 // The live agent is the only filter between sender and recipient (no nightly reviewer sits in
 // between), so the share_note tool validates as strictly as stage_update does on the nightly side.
