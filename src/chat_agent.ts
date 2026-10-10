@@ -87,6 +87,7 @@ export class ChatAgent {
   >();
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
+  private chatRequestTimeoutMs = config.mistral.chatRequestTimeoutMs;
 
   constructor(url: string, apiKey: string, agentId: string) {
     this.url = url;
@@ -236,16 +237,10 @@ export class ChatAgent {
   }
 
   /**
-   * POSTs `body` to the conversation endpoint (creating a new conversation when no
-   * `conversationId` is given) using the hardened client from mistral_api.ts: a 30s hard
-   * timeout (fetchWithTimeout) plus withRetry with safeRetry semantics -- POSTs to this API
-   * are not idempotent, so only typed 429/5xx MistralApiErrors (the server provably rejected
-   * the request without committing it) are retried; ambiguous network-style failures (e.g.
-   * timeout after commit) fail fast instead of risking a duplicated message.
-   *
-   * A stale 400/404 response is converted to RespawnRequestedException so the (single) caller
-   * performs the poison + cache-clear + respawn-once handling for both the initial and the
-   * tool-result send.
+   * POSTs `body` to the conversation endpoint with a hard timeout and safeRetry: only typed
+   * 429/5xx responses are retried, network-style failures fail fast (the POST is not idempotent).
+   * A stale 400/404 is converted to RespawnRequestedException for the caller's shared
+   * poison + cache-clear + respawn handling.
    */
   private async postToConversation(
     conversationId: string | undefined,
@@ -259,20 +254,31 @@ export class ChatAgent {
     try {
       return await withRetry(
         async () => {
-          const response = await fetchWithTimeout(url, {
-            method: 'post',
-            body: JSON.stringify(body),
-            headers: {
-              'Content-Type': 'application/json',
-              ...authorizationHeader(this.apiKey)
-            }
-          });
+          const response = await fetchWithTimeout(
+            url,
+            {
+              method: 'post',
+              body: JSON.stringify(body),
+              headers: {
+                'Content-Type': 'application/json',
+                ...authorizationHeader(this.apiKey)
+              }
+            },
+            // A live turn reprocesses the full conversation history and can legitimately exceed
+            // the nightly pipeline's 30s ceiling, so the interactive path gets its own generous
+            // timeout (config.mistral.chatRequestTimeoutMs).
+            this.chatRequestTimeoutMs
+          );
           if (!response.ok) {
             console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
             throw new MistralApiError(`Mistral API request failed: HTTP ${response.status}`, response.status);
           }
           return <MistralConversationResponse>await response.json();
         },
+        // safeRetry heuristic: a typed 429/5xx response PROBABLY means the server rejected the
+        // request without committing it -- but that is not airtight (a proxy 502 after an
+        // upstream commit, or a post-commit serialization crash, would duplicate the message).
+        // The small duplication window is accepted in exchange for surviving transient 5xx.
         { safeRetry: true }
       );
     } catch (error) {
