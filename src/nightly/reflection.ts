@@ -88,7 +88,9 @@ export function buildTranscript(messages: ConversationMessage[]): string {
 // Phase 2 -- Journal
 // ---------------------------------------------------------------------------
 
-/** Soft cap on journal length -- keeps the archive from bloating with runaway output, not a hard limit */
+/** Soft cap on journal length -- keeps the archive from bloating with runaway output, not a hard limit.
+ * Named alias for config.nightly.journalSoftCapChars, kept as the domain term used by this module's
+ * prompts and tests. */
 export const JOURNAL_SOFT_CAP_CHARS: number = config.nightly.journalSoftCapChars;
 
 /**
