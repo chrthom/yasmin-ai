@@ -1,4 +1,15 @@
 import { contextService } from '../services/context.service';
+import { TEST_CONTEXT_DATA } from './fixtures/context_data';
+
+// The service reads context_entries through the context model; serve the shared test fixture
+// instead of a real DB (the SQL itself is covered by the model suites).
+jest.mock('../database/models/context.model', () => ({
+  getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
+  getAllTitlesFromDb: jest.fn(async () => TEST_CONTEXT_DATA.map(record => record.title)),
+  getContentByTitleFromDb: jest.fn(async (title: string) =>
+    TEST_CONTEXT_DATA.find(record => record.title.toLowerCase() === title.toLowerCase())?.content ?? null
+  )
+}));
 
 describe('Context Service', () => {
   describe('getRelevantContext', () => {
