@@ -42,10 +42,9 @@ export class SynologyClient {
     url.searchParams.append('version', '2');
     url.searchParams.append('token', this.token);
 
-    // Synology Chat displays the latest message first, so send chunks in
-    // reverse order (last chunk first) to keep them readable top-down.
-    for (let i = answers.length - 1; i >= 0; i--) {
-      const message = answers[i];
+    // Synology Chat shows messages in send order, so deliver chunks in natural
+    // order (first chunk first) to keep the answer readable top-down.
+    for (const message of answers) {
       if (!message) continue;
 
       try {
