@@ -383,6 +383,7 @@ describe('Chat Controller', () => {
       const controller = createChatController(chatAgent, synologyClient, {
         token: 'test-group-token',
         responseStatus: 200,
+        shortAnswer: true,
         sendToSynology: false,
         includeChannelHistory: true
       });
@@ -433,6 +434,7 @@ describe('Chat Controller', () => {
       const controller = createChatController(chatAgent, synologyClient, {
         token: 'test-slash-token',
         responseStatus: 200,
+        shortAnswer: true,
         stripPrefix: '/yasmin',
         sendToSynology: false,
         includeChannelHistory: true
@@ -469,6 +471,7 @@ describe('Chat Controller', () => {
       const controller = createChatController(chatAgent, synologyClient, {
         token: 'test-bot-token',
         responseStatus: 202,
+        shortAnswer: false,
         sendToSynology: false
       });
       const req = createMockRequest(
@@ -499,6 +502,7 @@ describe('Chat Controller', () => {
       const controller = createChatController(chatAgent, synologyClient, {
         token: 'test-group-token',
         responseStatus: 200,
+        shortAnswer: true,
         sendToSynology: false,
         includeChannelHistory: true
       });
