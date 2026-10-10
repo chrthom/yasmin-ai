@@ -1,13 +1,17 @@
+// Description for Mistral Console: Passes a short message to another family member in real time.
+// The note is delivered automatically -- exactly once -- with the recipient's next chat message,
+// phrased as if Yasmin relays it herself. Use it when the user explicitly asks you to tell someone
+// something (e.g. "Tell Zara to be home by 6 pm"), or to bring something up at your next contact
+// with a person. NEVER use it for anything confidential or [PRIVACY:SENSITIVE]-related -- you are
+// the only filter between sender and recipient. Never address a note to the person you are
+// currently talking to; say it to them directly.
 {
   "type": "object",
   "required": ["to", "content"],
   "properties": {
     "to": {
-      "type": ["string", "array"],
-      "items": {
-        "type": "string"
-      },
-      "description": "Recipient(s) of the note. Either 'everyone' for all family members, the exact first name of one person whose profile you know (a 'Profile of <name>' memory entry), or a list of such first names for several specific people. Use 'everyone' for time-critical information that concerns the whole family (e.g. an event today), not a list of everyone's names."
+      "type": "string",
+      "description": "Recipient(s) of the note. Either 'everyone' for all family members, or the exact first name(s) of one or several specific people whose profile you know (a 'Profile of <name>' memory entry) -- for several people, separate the first names with commas, e.g. 'Zara, Samira'. Use 'everyone' for time-critical information that concerns the whole family (e.g. an event today), not a list of everyone's names."
     },
     "content": {
       "type": "string",

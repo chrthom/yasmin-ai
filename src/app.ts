@@ -12,6 +12,7 @@ import {
 } from './controllers/chat.controller';
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
+import { version } from './version';
 import { getDatabasePool } from './database/connection';
 import { startNightlyScheduler, stopNightlyScheduler } from './nightly/scheduler';
 
@@ -22,7 +23,7 @@ getDatabasePool();
 
 const chatIncomingBaseURL = config.synology.chatIncomingUrl;
 
-export const chatAgent = new ChatAgent(config.mistral.baseUrl, config.mistral.apiKey, config.mistral.agentId);
+export const chatAgent = new ChatAgent(config.mistral.apiKey, config.mistral.agentId);
 export const synologyClient = new SynologyClient(chatIncomingBaseURL, config.synology.tokens.bot);
 
 const limiter = rateLimit({
@@ -61,7 +62,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    version: '0.1.0',
+    version,
     uptime: process.uptime(),
     requestId
   });
@@ -87,10 +88,8 @@ process.on('unhandledRejection', (reason, promise) => {
 const NIGHTLY_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 /**
- * Graceful shutdown: stop scheduling new nightly runs and give an in-flight pipeline up to a bounded
- * timeout to finish, so a SIGTERM mid-run doesn't hard-kill it and leave a stale processing_lock
- * behind. The pipeline logs its own progress/state; we only decide the exit code from whether it
- * drained in time.
+ * Stop scheduling new nightly runs and let an in-flight pipeline drain within a bounded timeout,
+ * so a SIGTERM mid-run doesn't leave a stale processing_lock behind.
  */
 const shutdown = async (signal: string): Promise<void> => {
   console.log(`INFO: ${signal} received, shutting down`);

@@ -1,3 +1,10 @@
+// ChatAgent builds its conversation URLs from the shared Mistral client helper; pin it to a
+// fixed value so fetch assertions stay deterministic regardless of config.
+jest.mock('../mistral/mistral_api', () => ({
+  ...jest.requireActual('../mistral/mistral_api'),
+  conversationsUrl: () => 'https://test.url'
+}));
+
 import { ChatAgent } from '../chat_agent';
 import { buildHandoff } from '../handoff';
 import {
@@ -17,21 +24,23 @@ jest.mock('../database/models/intraday_notes.model', () => ({
   releaseNoteDelivery: jest.fn()
 }));
 
-// isKnownPerson consults context_entries via the DB proxy; mock only that method so recipient
-// validation is deterministic (the proxy's own path is covered by the database suites), while
-// the read paths (getAllEntries, getContentByTitle, ...) keep their real proxy behavior.
-jest.mock('../database/db_proxy', () => {
-  const actual = jest.requireActual('../database/db_proxy');
-  // Spread the prototype too: DbProxy's methods live on DbProxy.prototype, not on the instance.
-  const merged = Object.create(Object.getPrototypeOf(actual.dbProxy));
-  return {
-    ...actual,
-    dbProxy: Object.assign(merged, actual.dbProxy, { isKnownPerson: jest.fn() })
-  };
-});
-import { dbProxy } from '../database/db_proxy';
+// The context model talks to MariaDB; here its read paths serve the shared test fixture so
+// prompt building is deterministic (the SQL itself is covered by the model suites), while
+// isKnownPerson stays a plain mock so recipient validation is easy to steer per test.
+import { isKnownPerson } from '../database/models/context.model';
+import { TEST_CONTEXT_DATA } from './fixtures/context_data';
 
-const mockIsKnownPerson = dbProxy.isKnownPerson as jest.Mock;
+jest.mock('../database/models/context.model', () => ({
+  getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
+  getAllTitlesFromDb: jest.fn(async () => TEST_CONTEXT_DATA.map(record => record.title)),
+  getContentByTitleFromDb: jest.fn(
+    async (title: string) =>
+      TEST_CONTEXT_DATA.find(record => record.title.toLowerCase() === title.toLowerCase())?.content ?? null
+  ),
+  isKnownPerson: jest.fn()
+}));
+
+const mockIsKnownPerson = isKnownPerson as jest.Mock;
 
 // The handoff talks to Mistral through its own client; it has dedicated tests in handoff.test.ts.
 jest.mock('../handoff', () => ({
@@ -52,7 +61,7 @@ describe('ChatAgent', () => {
   let chatAgent: ChatAgent;
 
   beforeEach(() => {
-    chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
+    chatAgent = new ChatAgent('test-api-key', 'test-agent-id');
     mockFetch.mockClear();
     mockBuildHandoff.mockReset();
     mockGetUndeliveredNotesForUser.mockReset().mockResolvedValue([]);
@@ -1281,8 +1290,8 @@ describe('ChatAgent', () => {
     });
 
     it('accepts a recipient whose profile exists only in the database (DB-first lookup)', async () => {
-      // A person the nightly integrate agent created a profile for -- not in the static
-      // proxy data ('Mira' has no PROXY_DATA entry). isKnownPerson must consult
+      // A person the nightly integrate agent created a profile for -- one the static fixture
+      // does not know ('Mira' has no entry there). isKnownPerson must consult
       // context_entries and recognize them; the mocked true stands in for that DB lookup.
       mockIsKnownPerson.mockResolvedValueOnce(true);
       const result = await runShareNote({ to: 'Mira', content: 'Welcome!' });
@@ -1305,9 +1314,9 @@ describe('ChatAgent', () => {
       expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 
-    it('stores one note row per recipient when "to" is a list of names', async () => {
+    it('stores one note row per recipient when "to" is a comma-separated list of names', async () => {
       mockInsertIntradayNote.mockResolvedValueOnce(21).mockResolvedValueOnce(22);
-      const result = await runShareNote({ to: ['zara', 'samira'], content: 'Movie night at 8' });
+      const result = await runShareNote({ to: 'zara, samira', content: 'Movie night at 8' });
       expect(result.success).toBe(true);
       expect(result.to).toBe('Zara, Samira');
       expect(result.ids).toEqual([21, 22]);
@@ -1328,6 +1337,13 @@ describe('ChatAgent', () => {
       const result = await runShareNote({ to: 42, content: 'hello' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('must be "everyone"');
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
+    });
+
+    it('rejects a "to" string that contains only commas/whitespace', async () => {
+      const result = await runShareNote({ to: ' , , ', content: 'hello' });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('at least one recipient');
       expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 

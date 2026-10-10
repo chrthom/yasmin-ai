@@ -1,9 +1,15 @@
+// ChatAgent builds its conversation URLs from the shared Mistral client helper; pin it to a
+// fixed value so fetch assertions stay deterministic regardless of config.
+jest.mock('../mistral/mistral_api', () => ({
+  ...jest.requireActual('../mistral/mistral_api'),
+  conversationsUrl: () => 'https://test.url'
+}));
+
 // Mock config for tests - MUST be before any imports that use config
 jest.mock('../config', () => ({
   config: {
     server: { port: 5000 },
     mistral: {
-      baseUrl: 'https://api.mistral.ai/v1/conversations',
       apiKey: 'test-api-key',
       agentId: 'test-agent-id',
       conversationTtlMs: 12 * 60 * 60 * 1000
@@ -35,12 +41,30 @@ import { SynologyClient } from '../synology_client';
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
+// The context model talks to MariaDB; serve the shared test fixture instead (see context.test.ts).
+jest.mock('../database/models/context.model', () => {
+  const { TEST_CONTEXT_DATA } = jest.requireActual('./fixtures/context_data');
+  return {
+    getAllEntriesFromDb: jest.fn(async () => TEST_CONTEXT_DATA),
+    getAllTitlesFromDb: jest.fn(async () =>
+      TEST_CONTEXT_DATA.map((record: { title: string }) => record.title)
+    ),
+    getContentByTitleFromDb: jest.fn(
+      async (title: string) =>
+        TEST_CONTEXT_DATA.find(
+          (record: { title: string; content: string }) => record.title.toLowerCase() === title.toLowerCase()
+        )?.content ?? null
+    ),
+    isKnownPerson: jest.fn(async () => true)
+  };
+});
+
 describe('Integration Tests', () => {
   let chatAgent: ChatAgent;
   let synologyClient: SynologyClient;
 
   beforeEach(() => {
-    chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
+    chatAgent = new ChatAgent('test-api-key', 'test-agent-id');
     synologyClient = new SynologyClient('https://test.url', 'test-token');
     mockFetch.mockClear();
     jest.clearAllMocks();

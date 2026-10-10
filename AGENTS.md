@@ -47,6 +47,8 @@ src/
 │   ├── db_proxy.ts     # Database proxy loaded with mock background entries
 │   └── models/
 │       ├── context.model.ts         # Context model query methods
+│       ├── intraday_notes.model.ts  # Cross-person note outbox (intraday_notes): staging, fetch-for-delivery,
+│       │                            #   claim/release-claim lifecycle, nightly reset (docs/intraday_notes_deployment.md)
 │       ├── memory_archive.model.ts  # Versioned verbose memory file storage (memory_archive)
 │       └── nightly_job.model.ts     # Nightly job log, resumable-run watermark, and locking
 ├── mistral/
@@ -69,6 +71,7 @@ src/
     ├── chat_agent.test.ts
     ├── synology_client.test.ts
     ├── database.test.ts
+    ├── intraday_notes.model.test.ts
     ├── context.test.ts
     ├── handoff.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
@@ -113,8 +116,12 @@ memory store -- it holds a note only until it is delivered with the recipient's 
 or until the nightly job consolidates and resets it. `to` is `"everyone"`, a single first name,
 or a list of first names (one row per recipient). Delivery happens **exactly once per
 recipient** with the recipient's next user input, injected as a `<nachrichten_fuer_dich>` block
-into the prompt; a note is never played back to its own sender (`from_username != ?`). The privacy barrier lives only in the live agent's prompt: never relay anything
-confidential or `[PRIVACY:SENSITIVE]`-related. The nightly job feeds still-undelivered notes to
+into the prompt; a note is never played back to its own sender (`from_username != ?`). Delivery is guarded by a claim/
+release-claim lifecycle (`claimNoteDelivery` / `releaseNoteDelivery` in
+`src/database/models/intraday_notes.model.ts`): a note is claimed just before the conversation
+request and the claim is rolled back if that request fails, so a failed delivery does not lose the
+note. The privacy barrier lives only in the live agent's prompt: never relay anything
+confidential or `[PRIVACY:SENSITIVE]`-related. Deployment checklist: `docs/intraday_notes_deployment.md`. The nightly job feeds still-undelivered notes to
 the integrate agent as evidence and then empties the outbox (only after phases 3+4 succeeded, and
 only up to the snapshot's max id, so concurrently inserted notes survive for the next run).
 

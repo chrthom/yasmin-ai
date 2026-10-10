@@ -1,6 +1,6 @@
 # Nightly Memory Processing — Implementation Concept
 
-**Status**: Implementation concept (developer-actionable)
+**Status**: Historical plan document — shipped. The build steps and cutover checklists below were executed; they are kept for design rationale only. `AGENTS.md` ("Nightly Memory Pipeline") and the code in `src/nightly/` describe the shipped system.
 **Design basis**: `nightly_memory_processing_concept_v3.md`
 **Review incorporated**: `feedback_v3_concept.md` (triaged in Appendix C)
 **Date**: 2026-07-06
@@ -328,7 +328,7 @@ nightly: {
 }
 ```
 
-`validateEnv()` requires `MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, `DB_PASSWORD` when running the nightly entrypoint (detect via `process.argv[1]` like the existing `manage-context` check). Secrets stay in env (a secrets manager is out of scope, §0); ensure logs never print `MISTRAL_API_KEY` (client redacts headers).
+`validateEnv({ requireDb: true })` requires `MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, `DB_PASSWORD` when running the nightly entrypoint (each DB-using entrypoint passes `requireDb: true` to `validateEnv()` explicitly). Secrets stay in env (a secrets manager is out of scope, §0); ensure logs never print `MISTRAL_API_KEY` (client redacts headers).
 
 ---
 
