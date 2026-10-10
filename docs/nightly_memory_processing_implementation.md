@@ -319,7 +319,7 @@ nightly: {
 }
 ```
 
-`validateEnv()` requires `MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, `DB_PASSWORD` when running the nightly entrypoint (detect via `process.argv[1]` like the existing `manage-context` check). Secrets stay in env (a secrets manager is out of scope, §0); ensure logs never print `MISTRAL_API_KEY` (client redacts headers).
+`validateEnv({ requireDb: true })` requires `MISTRAL_LIBRARY_ID`, `AGENT_ID_NIGHTLY`, `DB_PASSWORD` when running the nightly entrypoint (each DB-using entrypoint passes `requireDb: true` to `validateEnv()` explicitly). Secrets stay in env (a secrets manager is out of scope, §0); ensure logs never print `MISTRAL_API_KEY` (client redacts headers).
 
 ---
 
