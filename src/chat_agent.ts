@@ -303,7 +303,8 @@ export class ChatAgent {
 
     try {
       // A GET is idempotent, so ambiguous network-style failures (timeout, socket reset)
-      // may be retried as well -- no safeRetry restriction needed.
+      // may be retried as well -- no safeRetry restriction needed. It keeps fetchWithTimeout's
+      // default 30s ceiling (a lightweight list call) while the POSTs use chatRequestTimeoutMs.
       const response = await withRetry(() =>
         fetchWithTimeout(conversationsUrl(), {
           method: 'get',

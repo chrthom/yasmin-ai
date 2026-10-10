@@ -28,8 +28,13 @@ export const config = {
     summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || '',
     // Hard timeout for one live (interactive) Mistral HTTP call. Generous because a live turn
     // reprocesses the full conversation history and can legitimately be slow at high turn
-    // counts; the nightly pipeline keeps its own tighter 30s ceiling.
-    chatRequestTimeoutMs: parseInt(process.env['CHAT_REQUEST_TIMEOUT_MS'] || '120000', 10)
+    // counts; the nightly pipeline keeps its own tighter 30s ceiling. A non-numeric or
+    // non-positive value falls back to the default (a NaN here would abort every live request
+    // immediately, since setTimeout(abort, NaN) fires at once).
+    chatRequestTimeoutMs: (() => {
+      const parsed = parseInt(process.env['CHAT_REQUEST_TIMEOUT_MS'] || '120000', 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 120000;
+    })()
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
