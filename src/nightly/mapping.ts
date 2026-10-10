@@ -1,3 +1,5 @@
+import { config } from '../config';
+
 /**
  * Table-driven mapping between long-term verbose file paths (memory_archive.file_path)
  * and MariaDB context_entries titles. Paths/titles with no matching rule map to null --
@@ -8,8 +10,6 @@ interface FixedMapping {
   path: string;
   title: string;
 }
-
-import { config } from '../config';
 
 const FIXED_MAPPINGS: FixedMapping[] = [
   { path: 'self-reflection/profile.md', title: config.context.profileOfYasminTitle },
