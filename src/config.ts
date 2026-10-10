@@ -65,7 +65,7 @@ export const config = {
     host: '192.168.0.2',
     port: 3307,
     user: 'yasmin',
-    password: process.env['DB_PASSWORD'] || '',
+    password: optionalEnv('DB_PASSWORD', ''),
     name: 'yasmin'
   },
   rateLimit: {
