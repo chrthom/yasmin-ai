@@ -128,6 +128,7 @@ describe('Chat Controller', () => {
       controller = createChatController(chatAgent, synologyClient, {
         token: 'test-bot-token',
         responseStatus: 202,
+        shortAnswer: false,
         sendToSynology: true
       });
     });
@@ -207,6 +208,7 @@ describe('Chat Controller', () => {
       controller = createChatController(chatAgent, synologyClient, {
         token: 'test-slash-token',
         responseStatus: 200,
+        shortAnswer: true,
         stripPrefix: '/yasmin',
         sendToSynology: true
       });
@@ -271,6 +273,7 @@ describe('Chat Controller', () => {
       controller = createChatController(chatAgent, synologyClient, {
         token: 'test-group-token',
         responseStatus: 200,
+        shortAnswer: true,
         sendToSynology: true
       });
     });
@@ -335,6 +338,7 @@ describe('Chat Controller', () => {
       const controller = createChatController(chatAgent, synologyClient, {
         token: 'test-bot-token',
         responseStatus: 202,
+        shortAnswer: false,
         sendToSynology: true
       });
 

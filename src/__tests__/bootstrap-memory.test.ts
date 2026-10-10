@@ -10,6 +10,15 @@ jest.mock('../database/models/memory_archive.model', () => ({
 jest.mock('../mistral/mistral_api', () => ({
   uploadDocument: jest.fn()
 }));
+jest.mock('../config', () => ({
+  validateEnv: jest.fn(),
+  config: {
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    }
+  }
+}));
 
 import { listContextEntries } from '../database/models/context.model';
 import { insertNextVersion, markSynced } from '../database/models/memory_archive.model';
