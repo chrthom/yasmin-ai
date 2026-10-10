@@ -30,6 +30,7 @@ jest.mock('../mistral/mistral_api', () => ({
 }));
 
 import { ChatAgent } from '../chat_agent';
+import { config } from '../config';
 import { buildHandoff } from '../handoff';
 import {
   claimNoteDelivery,
@@ -454,9 +455,8 @@ describe('ChatAgent', () => {
         statusText: 'OK',
         json: () => Promise.resolve({ outputs: [{ content: 'ok', type: 'message.output' }] })
       });
-      const { config } = jest.requireMock('../config');
       const original = config.mistral.handoffWaitMs;
-      config.mistral.handoffWaitMs = 20;
+      (config.mistral as { handoffWaitMs: number }).handoffWaitMs = 20;
       mockBuildHandoff.mockImplementation((_id: string, opts?: { withSummary: boolean }) =>
         opts?.withSummary === false
           ? Promise.resolve('<previous_conversation>\nRECENT ONLY\n</previous_conversation>')
@@ -471,7 +471,7 @@ describe('ChatAgent', () => {
       try {
         await chatAgent.processRequest('Hello', 'testuser');
       } finally {
-        config.mistral.handoffWaitMs = original;
+        (config.mistral as { handoffWaitMs: number }).handoffWaitMs = original;
       }
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.inputs[0].content).toContain('RECENT ONLY');
