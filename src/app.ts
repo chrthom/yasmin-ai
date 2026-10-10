@@ -12,6 +12,7 @@ import {
 } from './controllers/chat.controller';
 import { requestTracingMiddleware, getRequestId } from './middleware/requestTracing';
 import { openApiSpec } from './openapi';
+import { dbProxy } from './database/db_proxy';
 import { getDatabasePool } from './database/connection';
 import { startNightlyScheduler, stopNightlyScheduler } from './nightly/scheduler';
 
@@ -58,11 +59,13 @@ app.post('/chat/group', groupController);
 
 app.get('/health', (req, res) => {
   const requestId = getRequestId(req);
+  const degraded = dbProxy.isDegraded();
   res.status(200).json({
-    status: 'healthy',
+    status: degraded ? 'degraded' : 'healthy',
     timestamp: new Date().toISOString(),
     version: '0.1.0',
     uptime: process.uptime(),
+    degraded,
     requestId
   });
 });
