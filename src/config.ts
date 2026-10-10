@@ -25,7 +25,11 @@ export const config = {
     nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!,
     // Optional: Mistral agent that summarizes a conversation for the turn-limit/respawn handoff. Without it
     // the handoff degrades to replaying just the last turns.
-    summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || ''
+    summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || '',
+    // Hard timeout for one live (interactive) Mistral HTTP call. Generous because a live turn
+    // reprocesses the full conversation history and can legitimately be slow at high turn
+    // counts; the nightly pipeline keeps its own tighter 30s ceiling.
+    chatRequestTimeoutMs: parseInt(process.env['CHAT_REQUEST_TIMEOUT_MS'] || '120000', 10)
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
