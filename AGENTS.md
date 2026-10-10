@@ -155,7 +155,7 @@ Once a night, an in-process scheduler (`src/nightly/scheduler.ts`, started from 
 pipeline the API server is already running in — no external cron daemon or wrapper script, so it always
 has the exact same environment/config as the server. (`src/nightly/run.ts`, run via ts-node from source,
 remains available for a manual one-off run or `--dry-run` preflight check; see
-`docs/deployment_checklist.md`.) This runs entirely offline from the request/response path above — it
+`docs/nightly_memory_processing_implementation.md` §11.) This runs entirely offline from the request/response path above — it
 consolidates the day's Synology conversations into long-term memory after the fact.
 
 At a high level, each run:

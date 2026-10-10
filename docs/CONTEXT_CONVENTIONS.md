@@ -82,7 +82,7 @@ questions to ask next), populated by the live conversation agent writing to it d
   live, the live agent's system prompt and `update_context_entry` tool still assume a `Session with [Sender]`
   entry exists. Applying the new `schema.sql` to a production database before the new `chat_agent.ts` is
   deployed would make every attempt to write to it silently fail (`UPDATE ... WHERE title = ?` matches zero
-  rows). See `docs/deployment_checklist.md` and `docs/nightly_memory_processing_implementation.md` §13.
+  rows). See `docs/nightly_memory_processing_implementation.md` §13.
 - **Existing production rows:** if a production database already has old `Session with X` / `Journal with X`
   rows, applying the updated `schema.sql` will **not** remove them (its `INSERT ... ON DUPLICATE KEY UPDATE`
   only adds/updates rows, it never deletes). Run
