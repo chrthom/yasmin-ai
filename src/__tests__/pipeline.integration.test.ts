@@ -54,10 +54,10 @@ jest.mock('../database/models/memory_archive.model', () => ({
 jest.mock('../database/models/context.model', () => ({
   upsertContextEntry: jest.fn()
 }));
-jest.mock('../database/models/pending_notes.model', () => ({
-  getPendingNotesMaxId: jest.fn(),
+jest.mock('../database/models/intraday_notes.model', () => ({
+  getIntradayNotesMaxId: jest.fn(),
   getUnconsolidatedNotes: jest.fn(),
-  clearPendingNotes: jest.fn()
+  clearIntradayNotes: jest.fn()
 }));
 
 jest.mock('../nightly/reflection', () => ({
@@ -104,10 +104,10 @@ import {
 } from '../database/models/memory_archive.model';
 import { upsertContextEntry } from '../database/models/context.model';
 import {
-  clearPendingNotes,
-  getPendingNotesMaxId,
+  clearIntradayNotes,
+  getIntradayNotesMaxId,
   getUnconsolidatedNotes
-} from '../database/models/pending_notes.model';
+} from '../database/models/intraday_notes.model';
 import {
   buildTranscript,
   runCompact,
@@ -144,9 +144,9 @@ const mockMarkSynced = markSynced as jest.Mock;
 const mockPruneOldVersions = pruneOldVersions as jest.Mock;
 
 const mockUpsertContextEntry = upsertContextEntry as jest.Mock;
-const mockGetPendingNotesMaxId = getPendingNotesMaxId as jest.Mock;
+const mockGetIntradayNotesMaxId = getIntradayNotesMaxId as jest.Mock;
 const mockGetUnconsolidatedNotes = getUnconsolidatedNotes as jest.Mock;
-const mockClearPendingNotes = clearPendingNotes as jest.Mock;
+const mockClearIntradayNotes = clearIntradayNotes as jest.Mock;
 
 const mockBuildTranscript = buildTranscript as jest.Mock;
 const mockRunJournal = runJournal as jest.Mock;
@@ -282,9 +282,9 @@ describe('nightly pipeline integration', () => {
     mockSetWatermark.mockResolvedValue(undefined);
 
     mockUpsertContextEntry.mockResolvedValue('updated');
-    mockGetPendingNotesMaxId.mockResolvedValue(0);
+    mockGetIntradayNotesMaxId.mockResolvedValue(0);
     mockGetUnconsolidatedNotes.mockResolvedValue([]);
-    mockClearPendingNotes.mockResolvedValue(undefined);
+    mockClearIntradayNotes.mockResolvedValue(undefined);
 
     mockListConversations.mockResolvedValue([]);
     mockGetConversationMessages.mockResolvedValue([]);
@@ -1125,7 +1125,7 @@ describe('nightly pipeline integration', () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
-    mockGetPendingNotesMaxId.mockResolvedValueOnce(5);
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
     mockGetUnconsolidatedNotes.mockResolvedValueOnce([
       {
         id: 5,
@@ -1147,21 +1147,21 @@ describe('nightly pipeline integration', () => {
         createdAt: new Date('2026-07-05T15:00:00Z')
       }
     ]);
-    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearIntradayNotes).toHaveBeenCalledTimes(1);
   });
 
   it('outbox: is emptied on a merely partial run (failed upload) because consolidation succeeded', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
-    mockGetPendingNotesMaxId.mockResolvedValueOnce(9);
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(9);
     mockListUnsynced.mockImplementationOnce(() => {
       throw new Error('db read failed');
     });
     const result = await runNightlyPipeline();
     expect(result.status).toBe('partial');
-    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
-    expect(mockClearPendingNotes).toHaveBeenCalledWith(9);
+    expect(mockClearIntradayNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(9);
   });
 
   it('outbox: is NOT emptied when the review/archive phase failed (notes stay for tomorrow)', async () => {
@@ -1185,7 +1185,7 @@ describe('nightly pipeline integration', () => {
       });
     const result = await runNightlyPipeline();
     expect(result.status).toBe('partial');
-    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+    expect(mockClearIntradayNotes).not.toHaveBeenCalled();
   });
 
   it('outbox: a failed note read does not fail the run, and the outbox is NOT cleared (notes stay for tomorrow)', async () => {
@@ -1196,7 +1196,7 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
     expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), []);
-    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+    expect(mockClearIntradayNotes).not.toHaveBeenCalled();
   });
 
   it('outbox: is NOT emptied when the integrate loop hit maxIterations (notes may be unconsolidated)', async () => {
@@ -1206,7 +1206,7 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
     // integrateTruncated itself already degrades the run to 'partial'
     expect(result.status).toBe('partial');
-    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+    expect(mockClearIntradayNotes).not.toHaveBeenCalled();
   });
 
   it('outbox: clearing deletes up to the MAX(id) over ALL notes, so a delivered-only outbox still empties', async () => {
@@ -1215,21 +1215,21 @@ describe('nightly pipeline integration', () => {
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
     // All notes already delivered individually: undelivered set is empty, but the table still
     // holds rows -- the watermark must come from MAX(id), not from the undelivered subset.
-    mockGetPendingNotesMaxId.mockResolvedValueOnce(23);
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(23);
     mockGetUnconsolidatedNotes.mockResolvedValueOnce([]);
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
-    expect(mockClearPendingNotes).toHaveBeenCalledTimes(1);
-    expect(mockClearPendingNotes).toHaveBeenCalledWith(23);
+    expect(mockClearIntradayNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(23);
   });
 
   it('outbox: skips the DELETE entirely when the table is empty (no pointless clear)', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
     mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing to stage', iterations: 1 });
-    mockGetPendingNotesMaxId.mockResolvedValueOnce(0);
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(0);
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
-    expect(mockClearPendingNotes).not.toHaveBeenCalled();
+    expect(mockClearIntradayNotes).not.toHaveBeenCalled();
   });
 });

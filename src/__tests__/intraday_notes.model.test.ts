@@ -5,28 +5,28 @@ jest.mock('../database/connection', () => ({
 import { executeQuery } from '../database/connection';
 import {
   claimNoteDelivery,
-  clearPendingNotes,
-  getPendingNotesMaxId,
+  clearIntradayNotes,
+  getIntradayNotesMaxId,
   getUnconsolidatedNotes,
   getUndeliveredNotesForUser,
-  insertPendingNote,
+  insertIntradayNote,
   releaseNoteDelivery
-} from '../database/models/pending_notes.model';
+} from '../database/models/intraday_notes.model';
 
 const mockExecuteQuery = executeQuery as jest.Mock;
 
-describe('pending_notes.model', () => {
+describe('intraday_notes.model', () => {
   beforeEach(() => {
     mockExecuteQuery.mockReset();
   });
 
-  describe('insertPendingNote', () => {
+  describe('insertIntradayNote', () => {
     it('inserts with the current timestamp and returns the new id', async () => {
       mockExecuteQuery.mockResolvedValueOnce([{ insertId: 7 }]);
-      const id = await insertPendingNote('christopher', 'zara', 'Be home by 6 pm');
+      const id = await insertIntradayNote('christopher', 'zara', 'Be home by 6 pm');
       expect(id).toBe(7);
       const [sql, params] = mockExecuteQuery.mock.calls[0];
-      expect(sql).toMatch(/^INSERT INTO pending_notes/);
+      expect(sql).toMatch(/^INSERT INTO intraday_notes/);
       expect(params[0]).toBe('christopher');
       expect(params[1]).toBe('zara');
       expect(params[2]).toBe('Be home by 6 pm');
@@ -35,14 +35,24 @@ describe('pending_notes.model', () => {
 
     it('passes NULL as recipient for an "everyone" note', async () => {
       mockExecuteQuery.mockResolvedValueOnce([{ insertId: 8 }]);
-      await insertPendingNote('christopher', null, 'Family movie night');
+      await insertIntradayNote('christopher', null, 'Family movie night');
       const [sql, params] = mockExecuteQuery.mock.calls[0];
-      expect(sql).toMatch(/^INSERT INTO pending_notes/);
+      expect(sql).toMatch(/^INSERT INTO intraday_notes/);
       expect(params[1]).toBeNull();
     });
   });
 
   describe('getUndeliveredNotesForUser', () => {
+    it('never returns a note to its own sender (from_username != ? excludes the source)', async () => {
+      mockExecuteQuery.mockResolvedValueOnce([[]]);
+      await getUndeliveredNotesForUser('christopher');
+      const [sql, params] = mockExecuteQuery.mock.calls[0];
+      expect(sql).toContain('from_username != ?');
+      // The same parameter is bound as the exclusion filter, so an "everyone" note staged by
+      // christopher is never delivered back to christopher.
+      expect(params[0]).toBe('christopher');
+    });
+
     it('compares delivered_to entries case-insensitively (canonical lowercase parameter)', async () => {
       mockExecuteQuery.mockResolvedValueOnce([[]]);
       await getUndeliveredNotesForUser('Zara');
@@ -134,10 +144,10 @@ describe('pending_notes.model', () => {
     });
   });
 
-  describe('getPendingNotesMaxId', () => {
+  describe('getIntradayNotesMaxId', () => {
     it('returns the highest note id over all notes (0 when the table is empty)', async () => {
       mockExecuteQuery.mockResolvedValueOnce([[{ max_id: 17 }]]);
-      const maxId = await getPendingNotesMaxId();
+      const maxId = await getIntradayNotesMaxId();
       expect(maxId).toBe(17);
       const [sql] = mockExecuteQuery.mock.calls[0];
       expect(sql).toContain('COALESCE(MAX(id), 0)');
@@ -204,12 +214,12 @@ describe('pending_notes.model', () => {
     });
   });
 
-  describe('clearPendingNotes', () => {
+  describe('clearIntradayNotes', () => {
     it('empties only notes up to the snapshot max id (never younger, concurrently inserted ones)', async () => {
       mockExecuteQuery.mockResolvedValueOnce([{ affectedRows: 4 }]);
-      await clearPendingNotes(17);
+      await clearIntradayNotes(17);
       const [sql, params] = mockExecuteQuery.mock.calls[0];
-      expect(sql).toBe('DELETE FROM pending_notes WHERE id <= ?');
+      expect(sql).toBe('DELETE FROM intraday_notes WHERE id <= ?');
       expect(params).toEqual([17]);
     });
   });

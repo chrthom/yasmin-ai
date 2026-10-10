@@ -3,17 +3,17 @@ import { buildHandoff } from '../handoff';
 import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
-  insertPendingNote,
+  insertIntradayNote,
   releaseNoteDelivery
-} from '../database/models/pending_notes.model';
+} from '../database/models/intraday_notes.model';
 
 // The outbox model talks to MariaDB; without a mock every prompt build would attempt a real
-// connection (see deliverPendingNotes in chat_agent.ts). The dedicated model tests cover the
+// connection (see deliverIntradayNotes in chat_agent.ts). The dedicated model tests cover the
 // SQL itself; here only the delivery/claim interaction is of interest.
-jest.mock('../database/models/pending_notes.model', () => ({
+jest.mock('../database/models/intraday_notes.model', () => ({
   getUndeliveredNotesForUser: jest.fn(),
   claimNoteDelivery: jest.fn(),
-  insertPendingNote: jest.fn(),
+  insertIntradayNote: jest.fn(),
   releaseNoteDelivery: jest.fn()
 }));
 
@@ -41,7 +41,7 @@ jest.mock('../handoff', () => ({
 const mockBuildHandoff = buildHandoff as jest.Mock;
 const mockGetUndeliveredNotesForUser = getUndeliveredNotesForUser as jest.Mock;
 const mockClaimNoteDelivery = claimNoteDelivery as jest.Mock;
-const mockInsertPendingNote = insertPendingNote as jest.Mock;
+const mockInsertIntradayNote = insertIntradayNote as jest.Mock;
 const mockReleaseNoteDelivery = releaseNoteDelivery as jest.Mock;
 
 // Mock fetch
@@ -57,7 +57,7 @@ describe('ChatAgent', () => {
     mockBuildHandoff.mockReset();
     mockGetUndeliveredNotesForUser.mockReset().mockResolvedValue([]);
     mockClaimNoteDelivery.mockReset().mockResolvedValue(true);
-    mockInsertPendingNote.mockReset().mockResolvedValue(1);
+    mockInsertIntradayNote.mockReset().mockResolvedValue(1);
     mockReleaseNoteDelivery.mockReset().mockResolvedValue(undefined);
     mockIsKnownPerson.mockReset().mockResolvedValue(true);
     mockBuildHandoff.mockResolvedValue('<previous_conversation>\nHANDOFF\n</previous_conversation>');
@@ -1257,19 +1257,19 @@ describe('ChatAgent', () => {
     }
 
     it('stores a valid note for a known recipient and answers the tool call', async () => {
-      mockInsertPendingNote.mockResolvedValueOnce(11);
+      mockInsertIntradayNote.mockResolvedValueOnce(11);
       const result = await runShareNote({ to: 'zara', content: 'Be home by 6 pm' });
       expect(result.success).toBe(true);
       expect(result.to).toBe('Zara');
-      expect(mockInsertPendingNote).toHaveBeenCalledWith('christopher', 'Zara', 'Be home by 6 pm');
+      expect(mockInsertIntradayNote).toHaveBeenCalledWith('christopher', 'Zara', 'Be home by 6 pm');
     });
 
     it('stores an "everyone" note with a NULL recipient', async () => {
-      mockInsertPendingNote.mockResolvedValueOnce(12);
+      mockInsertIntradayNote.mockResolvedValueOnce(12);
       const result = await runShareNote({ to: 'everyone', content: 'Family movie night' });
       expect(result.success).toBe(true);
       expect(result.to).toBe('everyone');
-      expect(mockInsertPendingNote).toHaveBeenCalledWith('christopher', null, 'Family movie night');
+      expect(mockInsertIntradayNote).toHaveBeenCalledWith('christopher', null, 'Family movie night');
     });
 
     it('rejects an unknown recipient', async () => {
@@ -1277,7 +1277,7 @@ describe('ChatAgent', () => {
       const result = await runShareNote({ to: 'stranger', content: 'hello' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('Unknown recipient');
-      expect(mockInsertPendingNote).not.toHaveBeenCalled();
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 
     it('accepts a recipient whose profile exists only in the database (DB-first lookup)', async () => {
@@ -1288,25 +1288,51 @@ describe('ChatAgent', () => {
       const result = await runShareNote({ to: 'Mira', content: 'Welcome!' });
       expect(result.success).toBe(true);
       expect(result.to).toBe('Mira');
-      expect(mockInsertPendingNote).toHaveBeenCalledWith('christopher', 'Mira', 'Welcome!');
+      expect(mockInsertIntradayNote).toHaveBeenCalledWith('christopher', 'Mira', 'Welcome!');
     });
 
     it('rejects empty content', async () => {
       const result = await runShareNote({ to: 'zara', content: '   ' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('non-empty');
-      expect(mockInsertPendingNote).not.toHaveBeenCalled();
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 
     it('rejects content over the 500 character cap', async () => {
       const result = await runShareNote({ to: 'zara', content: 'x'.repeat(501) });
       expect(result.success).toBe(false);
       expect(result.error).toContain('500');
-      expect(mockInsertPendingNote).not.toHaveBeenCalled();
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
+    });
+
+    it('stores one note row per recipient when "to" is a list of names', async () => {
+      mockInsertIntradayNote.mockResolvedValueOnce(21).mockResolvedValueOnce(22);
+      const result = await runShareNote({ to: ['zara', 'samira'], content: 'Movie night at 8' });
+      expect(result.success).toBe(true);
+      expect(result.to).toBe('Zara, Samira');
+      expect(result.ids).toEqual([21, 22]);
+      expect(mockInsertIntradayNote).toHaveBeenCalledTimes(2);
+      expect(mockInsertIntradayNote).toHaveBeenNthCalledWith(1, 'christopher', 'Zara', 'Movie night at 8');
+      expect(mockInsertIntradayNote).toHaveBeenNthCalledWith(2, 'christopher', 'Samira', 'Movie night at 8');
+    });
+
+    it('rejects a recipient list containing an unknown person', async () => {
+      mockIsKnownPerson.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const result = await runShareNote({ to: ['zara', 'stranger'], content: 'hello' });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Unknown recipient "Stranger"');
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid "to" shape', async () => {
+      const result = await runShareNote({ to: 42, content: 'hello' });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('must be "everyone"');
+      expect(mockInsertIntradayNote).not.toHaveBeenCalled();
     });
 
     it('answers with a failure result when the insert fails, without breaking the conversation', async () => {
-      mockInsertPendingNote.mockRejectedValueOnce(new Error('db down'));
+      mockInsertIntradayNote.mockRejectedValueOnce(new Error('db down'));
       const result = await runShareNote({ to: 'zara', content: 'Be home by 6 pm' });
       expect(result.success).toBe(false);
       expect(result.error).toBe('Failed to store the note');

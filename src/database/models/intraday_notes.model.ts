@@ -11,7 +11,12 @@ function canonicalUsername(username: string): string {
   return username.trim().toLowerCase();
 }
 
-export interface PendingNote {
+/** Escapes the LIKE wildcards % and _ (JSON_SEARCH patterns) by doubling the escape char */
+function escapeLike(pattern: string): string {
+  return pattern.replace(/[%_\\]/g, m => '\\' + m);
+}
+
+export interface IntradayNote {
   id: number;
   fromUsername: string;
   toUsername: string | null;
@@ -19,7 +24,7 @@ export interface PendingNote {
   createdAt: Date;
 }
 
-interface PendingNoteRow {
+interface IntradayNoteRow {
   id: number;
   from_username: string;
   to_username: string | null;
@@ -27,16 +32,16 @@ interface PendingNoteRow {
   created_at: Date;
 }
 
-export interface PendingNoteForDelivery {
+export interface IntradayNoteForDelivery {
   id: number;
   fromUsername: string;
   content: string;
 }
 
 /**
- * Maps a raw snake_case DB row into a camelCase PendingNote
+ * Maps a raw snake_case DB row into a camelCase IntradayNote
  */
-function mapRow(row: PendingNoteRow): PendingNote {
+function mapRow(row: IntradayNoteRow): IntradayNote {
   return {
     id: row.id,
     fromUsername: row.from_username,
@@ -49,13 +54,13 @@ function mapRow(row: PendingNoteRow): PendingNote {
 /**
  * Inserts a new pending note (the live agent's share_note tool)
  */
-export async function insertPendingNote(
+export async function insertIntradayNote(
   fromUsername: string,
   toUsername: string | null,
   content: string
 ): Promise<number> {
   const [result]: any = await executeQuery(
-    'INSERT INTO pending_notes (from_username, to_username, content, created_at) VALUES (?, ?, ?, ?)',
+    'INSERT INTO intraday_notes (from_username, to_username, content, created_at) VALUES (?, ?, ?, ?)',
     [fromUsername, toUsername, content, new Date()]
   );
   return result.insertId;
@@ -67,10 +72,10 @@ export async function insertPendingNote(
  * user is not yet listed in delivered_to; a copy addressed to them is included while
  * delivered_at is still NULL.
  */
-export async function getUndeliveredNotesForUser(username: string): Promise<PendingNoteForDelivery[]> {
+export async function getUndeliveredNotesForUser(username: string): Promise<IntradayNoteForDelivery[]> {
   const canonical = canonicalUsername(username);
   const [rows]: any = await executeQuery(
-    `SELECT id, from_username, content FROM pending_notes
+    `SELECT id, from_username, content FROM intraday_notes
      WHERE from_username != ?
        AND (
          (to_username = ? AND delivered_at IS NULL)
@@ -96,14 +101,14 @@ export async function getUndeliveredNotesForUser(username: string): Promise<Pend
 export async function claimNoteDelivery(noteId: number, username: string): Promise<boolean> {
   const canonical = canonicalUsername(username);
   const [individual]: any = await executeQuery(
-    'UPDATE pending_notes SET delivered_at = ? WHERE id = ? AND to_username = ? AND delivered_at IS NULL',
+    'UPDATE intraday_notes SET delivered_at = ? WHERE id = ? AND to_username = ? AND delivered_at IS NULL',
     [new Date(), noteId, username]
   );
   if (individual.affectedRows > 0) {
     return true;
   }
   const [everyone]: any = await executeQuery(
-    `UPDATE pending_notes
+    `UPDATE intraday_notes
      SET delivered_to = JSON_ARRAY_APPEND(COALESCE(delivered_to, JSON_ARRAY()), '$', JSON_QUOTE(?))
      WHERE id = ? AND to_username IS NULL AND delivered_at IS NULL
        AND NOT JSON_CONTAINS(COALESCE(delivered_to, JSON_ARRAY()), JSON_QUOTE(?))`,
@@ -113,12 +118,12 @@ export async function claimNoteDelivery(noteId: number, username: string): Promi
 }
 
 /**
- * Returns the highest pending_notes id currently in the table (0 when empty). The nightly
+ * Returns the highest intraday_notes id currently in the table (0 when empty). The nightly
  * consolidation snapshot is bounded by this id: notes staged after it are not yet part of the
  * snapshot and must survive the phase-6.5 reset.
  */
-export async function getPendingNotesMaxId(): Promise<number> {
-  const [rows]: any = await executeQuery('SELECT COALESCE(MAX(id), 0) AS max_id FROM pending_notes');
+export async function getIntradayNotesMaxId(): Promise<number> {
+  const [rows]: any = await executeQuery('SELECT COALESCE(MAX(id), 0) AS max_id FROM intraday_notes');
   return rows[0].max_id;
 }
 
@@ -131,12 +136,12 @@ export async function getPendingNotesMaxId(): Promise<number> {
  * delivered_to, and partial delivery stays pending for the remaining family members), so it
  * is consolidated until the nightly reset empties it.
  */
-export async function getUnconsolidatedNotes(maxId: number): Promise<PendingNote[]> {
+export async function getUnconsolidatedNotes(maxId: number): Promise<IntradayNote[]> {
   const [rows]: any = await executeQuery(
-    'SELECT * FROM pending_notes WHERE delivered_at IS NULL AND id <= ?',
+    'SELECT * FROM intraday_notes WHERE delivered_at IS NULL AND id <= ?',
     [maxId]
   );
-  return (rows as PendingNoteRow[]).map(mapRow);
+  return (rows as IntradayNoteRow[]).map(mapRow);
 }
 
 /**
@@ -145,16 +150,18 @@ export async function getUnconsolidatedNotes(maxId: number): Promise<PendingNote
  * next input instead of being lost. Best-effort and idempotent.
  */
 export async function releaseNoteDelivery(noteId: number, username: string): Promise<void> {
-  const canonical = canonicalUsername(username);
+  // JSON_SEARCH treats its argument as a search pattern (with % and _ wildcards), not as a
+  // literal -- escape both so a username containing them cannot over-match.
+  const canonical = escapeLike(canonicalUsername(username));
   const [individual]: any = await executeQuery(
-    'UPDATE pending_notes SET delivered_at = NULL WHERE id = ? AND to_username = ?',
+    'UPDATE intraday_notes SET delivered_at = NULL WHERE id = ? AND to_username = ?',
     [noteId, username]
   );
   if (individual.affectedRows > 0) {
     return;
   }
   await executeQuery(
-    `UPDATE pending_notes
+    `UPDATE intraday_notes
      SET delivered_to = JSON_REMOVE(delivered_to, JSON_UNQUOTE(JSON_SEARCH(delivered_to, 'one', ?)))
      WHERE id = ? AND to_username IS NULL AND delivered_at IS NULL
        AND JSON_SEARCH(delivered_to, 'one', ?) IS NOT NULL`,
@@ -170,6 +177,6 @@ export async function releaseNoteDelivery(noteId: number, username: string): Pro
  * loop was still running) is NOT deleted -- it is still undelivered and unconsolidated, so
  * it stays for the next nightly run.
  */
-export async function clearPendingNotes(maxId: number): Promise<void> {
-  await executeQuery('DELETE FROM pending_notes WHERE id <= ?', [maxId]);
+export async function clearIntradayNotes(maxId: number): Promise<void> {
+  await executeQuery('DELETE FROM intraday_notes WHERE id <= ?', [maxId]);
 }
