@@ -79,9 +79,10 @@ export const config = {
   },
   nightly: {
     tz: process.env['MEMORY_TZ'] || 'Europe/Berlin',
-    // Scheduled start time of the nightly run (local time in tz).
-    hour: parseInt(process.env['NIGHTLY_HOUR'] || '23', 10),
-    minute: parseInt(process.env['NIGHTLY_MINUTE'] || '0', 10),
+    // Scheduled start time of the nightly run (local time in tz). Clamped to a valid wall-clock
+    // time so a bad env value cannot silently shift the schedule into another day/hour.
+    hour: Math.min(Math.max(parseInt(process.env['NIGHTLY_HOUR'] || '23', 10) || 0, 0), 23),
+    minute: Math.min(Math.max(parseInt(process.env['NIGHTLY_MINUTE'] || '0', 10) || 0, 0), 59),
     transcriptMaxChars: 20000,
     journalSoftCapChars: 4000,
     shutdownTimeoutMs: 30_000,

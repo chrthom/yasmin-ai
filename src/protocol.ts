@@ -26,7 +26,6 @@ export const AVAILABLE_CONTEXT_ENTRIES_BLOCK_RE = blockRegex(TAG.availableContex
 export const PREVIOUS_CONVERSATION_BLOCK_RE = blockRegex(TAG.previousConversation);
 // Non-global twin for one-shot captures: a /g regex would carry lastIndex between exec() calls.
 export const PREVIOUS_CONVERSATION_CAPTURE_RE = captureRegex(TAG.previousConversation);
-export const NOTES_BLOCK_RE = blockRegex(TAG.notes);
 /** Strip form with trailing whitespace, for transcript cleanup in the nightly journal. */
 export const PREVIOUS_CONVERSATION_STRIP_RE = new RegExp(
   `<${TAG.previousConversation}>[\\s\\S]*?<\\/${TAG.previousConversation}>\\s*`,

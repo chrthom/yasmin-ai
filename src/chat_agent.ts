@@ -9,11 +9,7 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
-
-// The live agent is the only filter between sender and recipient (no nightly reviewer sits in
-// between), so the share_note tool validates as strictly as stage_update does on the nightly side.
-const NOTE_CONTENT_MAX_CHARS = 500;
-const NOTE_TO_EVERYONE = 'everyone';
+import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 
 interface MistralConversationResponseOutputPart {
   type: string;
@@ -123,7 +119,7 @@ export class ChatAgent {
       note => `${this.capitalize(note.fromUsername)} wants me to tell you: ${note.content}`
     );
     return {
-      block: `<nachrichten_fuer_dich>\n${lines.join('\n')}\n</nachrichten_fuer_dich>`,
+      block: renderNotesBlock(lines),
       claimedIds: claimed.map(note => note.id)
     };
   }
@@ -160,7 +156,8 @@ export class ChatAgent {
     // schema is a plain string; an array is also accepted for robustness). Multiple recipients
     // become one row per person so each delivery is claimed (and released) individually.
     let recipients: (string | null)[];
-    if (to === NOTE_TO_EVERYONE) {
+    const noteToEveryone = config.chat.noteToEveryone;
+    if (to === noteToEveryone) {
       recipients = [null];
     } else if (typeof to === 'string' && to.trim().length > 0) {
       recipients = to
@@ -192,10 +189,10 @@ export class ChatAgent {
     if (typeof content !== 'string' || content.trim().length === 0) {
       return JSON.stringify({ success: false, error: 'Content must be a non-empty message' });
     }
-    if (content.length > NOTE_CONTENT_MAX_CHARS) {
+    if (content.length > config.chat.noteContentMaxChars) {
       return JSON.stringify({
         success: false,
-        error: `Content exceeds the ${NOTE_CONTENT_MAX_CHARS} character cap (${content.length} characters)`
+        error: `Content exceeds the ${config.chat.noteContentMaxChars} character cap (${content.length} characters)`
       });
     }
     try {
@@ -203,7 +200,7 @@ export class ChatAgent {
       for (const recipient of recipients) {
         ids.push(await insertIntradayNote(username, recipient, content.trim()));
       }
-      const toLabel = to === NOTE_TO_EVERYONE ? 'everyone' : recipients.join(', ');
+      const toLabel = to === noteToEveryone ? 'everyone' : recipients.join(', ');
       console.log(`INFO Staged intraday note(s) [${ids.join(', ')}] from ${username} to ${toLabel}`);
       return JSON.stringify({
         success: true,
@@ -376,7 +373,7 @@ export class ChatAgent {
 
       // Add short answer constraint if requested
       if (shortAnswer) {
-        promptContent = `${promptContent}\n\nYour answer must be shorter than 1500 characters.`;
+        promptContent = `${promptContent}\n\n${shortAnswerHint()}`;
       }
 
       // Track newly loaded titles to avoid duplicates on future turns
@@ -451,7 +448,7 @@ export class ChatAgent {
       let responseOutputs = data.outputs;
       let toolCallDetected = true;
       let loopCount = 0;
-      const maxToolCalls = 5;
+      const maxToolCalls = config.mistral.maxToolCalls;
 
       while (toolCallDetected && loopCount < maxToolCalls) {
         const toolCalls: Array<{ id: string; name: string; arguments: any }> = [];
