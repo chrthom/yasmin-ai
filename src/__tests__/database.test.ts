@@ -5,7 +5,7 @@ import { getDatabasePool, executeQuery, closeDatabasePool } from '../database/co
 // jest's default per-test timeout, so a real attempt reliably either times out mid-test or leaves the
 // pool tearing down a still-in-flight connection in afterAll, failing the whole suite to run. Gate it
 // behind the same USE_REAL_DB opt-in the rest of the codebase already uses for real-DB integration
-// checks (see src/database/db_proxy.ts), and run it explicitly against a real/reachable DB when needed.
+// checks, and run it explicitly against a real/reachable DB when needed.
 const describeIfRealDb = process.env['USE_REAL_DB'] === 'true' ? describe : describe.skip;
 
 describeIfRealDb('Database Connection', () => {

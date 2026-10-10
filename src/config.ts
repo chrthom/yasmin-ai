@@ -5,7 +5,6 @@ export const config = {
     port: process.env['PORT'] || 5000
   },
   mistral: {
-    baseUrl: 'https://api.mistral.ai/v1/conversations',
     apiKey: process.env['MISTRAL_API_KEY']!,
     agentId: process.env['AGENT_ID_CONVERSATION']!,
     conversationTtlMs: 12 * 60 * 60 * 1000,

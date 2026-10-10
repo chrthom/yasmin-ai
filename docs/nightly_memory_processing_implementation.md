@@ -1,6 +1,6 @@
 # Nightly Memory Processing — Implementation Concept
 
-**Status**: Implementation concept (developer-actionable)
+**Status**: Historical plan document — shipped. The build steps and cutover checklists below were executed; they are kept for design rationale only. `AGENTS.md` ("Nightly Memory Pipeline") and the code in `src/nightly/` describe the shipped system.
 **Design basis**: `nightly_memory_processing_concept_v3.md`
 **Review incorporated**: `feedback_v3_concept.md` (triaged in Appendix C)
 **Date**: 2026-07-06

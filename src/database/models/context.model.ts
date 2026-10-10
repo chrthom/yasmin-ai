@@ -155,3 +155,17 @@ export async function listContextEntries(): Promise<Array<{ title: string; conte
     return [];
   }
 }
+
+/**
+ * Checks whether a first name is a known person (or Yasmin herself), via the canonical
+ * "Profile of [name]" entry titles. People whose profile exists only in context_entries --
+ * e.g. a brand-new person file the nightly integrate agent created -- are recognized too.
+ */
+export async function isKnownPerson(name: string): Promise<boolean> {
+  const sought = name.trim().toLowerCase();
+  if (sought.length === 0) {
+    return false;
+  }
+  const titles = await getAllTitlesFromDb();
+  return titles.some(title => title.toLowerCase() === `profile of ${sought}`);
+}

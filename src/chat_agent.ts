@@ -1,6 +1,6 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
-import { dbProxy } from './database/db_proxy';
+import { getContentByTitleFromDb, isKnownPerson } from './database/models/context.model';
 import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
@@ -9,7 +9,12 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
-import { fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
+import {
+  conversationsUrl,
+  fetchWithTimeout,
+  MistralApiError,
+  withRetry
+} from './mistral/mistral_api';
 
 // The live agent is the only filter between sender and recipient (no nightly reviewer sits in
 // between), so the share_note tool validates as strictly as stage_update does on the nightly side.
@@ -74,7 +79,6 @@ interface CachedConversation {
 }
 
 export class ChatAgent {
-  private url: string;
   private apiKey: string;
   private agentId: string;
   private conversationCache = new Map<string, CachedConversation>();
@@ -89,8 +93,7 @@ export class ChatAgent {
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
   private chatRequestTimeoutMs = config.mistral.chatRequestTimeoutMs;
 
-  constructor(url: string, apiKey: string, agentId: string) {
-    this.url = url;
+  constructor(apiKey: string, agentId: string) {
     this.apiKey = apiKey;
     this.agentId = agentId;
   }
@@ -201,7 +204,7 @@ export class ChatAgent {
       });
     }
     for (const recipient of recipients) {
-      if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
+      if (recipient !== null && !(await isKnownPerson(recipient))) {
         return JSON.stringify({
           success: false,
           error: `Unknown recipient "${recipient}". Use "everyone" or a known person's first name.`
@@ -250,7 +253,7 @@ export class ChatAgent {
     // while the initial send only respawns on the stale 400/404 statuses.
     respawnOnAnyError: boolean = false
   ): Promise<MistralConversationResponse> {
-    const url = conversationId ? `${this.url}/${conversationId}` : this.url;
+    const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
     try {
       return await withRetry(
         async () => {
@@ -307,7 +310,7 @@ export class ChatAgent {
       // A GET is idempotent, so ambiguous network-style failures (timeout, socket reset)
       // may be retried as well -- no safeRetry restriction needed.
       const response = await withRetry(() =>
-        fetchWithTimeout(this.url, {
+        fetchWithTimeout(conversationsUrl(), {
           method: 'get',
           headers: authorizationHeader(this.apiKey)
         })
@@ -548,7 +551,7 @@ export class ChatAgent {
               // Entries already injected into this conversation are still in its history; return a
               // pointer instead of the full text to save tokens on every subsequent turn.
               const alreadyLoaded = cached.loadedContextTitles.includes(title);
-              const content = alreadyLoaded ? null : await dbProxy.getContentByTitle(title);
+              const content = alreadyLoaded ? null : await getContentByTitleFromDb(title);
               const resultStr = alreadyLoaded
                 ? JSON.stringify({
                     title,
