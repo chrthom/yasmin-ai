@@ -32,9 +32,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Hard ceiling for any single Mistral HTTP call. withRetry only engages on a *thrown* error, so
-// without this a hung TCP/TLS connection would never settle and would block a phase indefinitely
-// while holding processing_lock.
+// Hard ceiling for any single Mistral HTTP call in the nightly pipeline. withRetry only engages
+// on a *thrown* error, so without this a hung TCP/TLS connection would never settle and would
+// block a phase indefinitely while holding processing_lock.
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
@@ -48,15 +48,21 @@ export function conversationsUrl(): string {
 /**
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
+ * `timeoutMs` lets interactive callers (ChatAgent) set a longer ceiling: a live turn reprocesses
+ * the whole conversation history and can legitimately take minutes.
  */
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error('Mistral API request timed out after ' + REQUEST_TIMEOUT_MS + 'ms: ' + url);
+      throw new Error('Mistral API request timed out after ' + timeoutMs + 'ms: ' + url);
     }
     throw error;
   } finally {

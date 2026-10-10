@@ -24,7 +24,10 @@ jest.mock('../config', () => ({
     },
     rateLimit: { windowMs: 60 * 1000, max: 15 },
     validation: { maxTextLength: 10000, maxUsernameLength: 100 },
-    chunk: { maxLength: 1800 }
+    chunk: { maxLength: 1800 },
+    // Retries are disabled so withRetry's exponential backoff does not slow the suite;
+    // the retry behavior itself is covered by the mistral_api tests.
+    nightly: { maxRetries: 0 }
   }
 }));
 

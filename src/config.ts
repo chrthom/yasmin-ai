@@ -17,8 +17,14 @@ export const config = {
     libraryId: process.env['MISTRAL_LIBRARY_ID']!,
     nightlyAgentId: process.env['AGENT_ID_NIGHTLY']!,
     // Without this optional agent the handoff degrades to replaying just the last turns.
-    summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || ''
-  },
+    summarizerAgentId: process.env['AGENT_ID_SUMMARIZER'] || '',
+    // Hard timeout for one live (interactive) Mistral HTTP call; the nightly pipeline keeps
+    // its tighter 30s ceiling. Non-numeric or non-positive values fall back to the default
+    // (a NaN would abort every live request immediately, since setTimeout(abort, NaN) fires at once).
+    chatRequestTimeoutMs: (() => {
+      const parsed = parseInt(process.env['CHAT_REQUEST_TIMEOUT_MS'] || '120000', 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 120000;
+    })()  },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
     tokens: {
