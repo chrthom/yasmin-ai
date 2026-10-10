@@ -63,6 +63,18 @@ describe('SynologyClient', () => {
       expect(chunks[0].length).toBeLessThanOrEqual(1800);
     });
 
+    it('should send answers in natural order (first chunk first)', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as unknown as typeof fetch;
+      const answers = ['chunk1', 'chunk2', 'chunk3'];
+      await synologyClient.sendAnswersToChat(1, answers);
+      global.fetch = originalFetch;
+      const bodies = fetchMock.mock.calls.map(
+        call => JSON.parse((call[1].body as URLSearchParams).get('payload') as string).text
+      );
+      expect(bodies).toEqual(answers);
+    });
     it('should not mutate input array', () => {
       const answers = ['msg1', 'msg2', 'msg3'];
       const answersCopy = [...answers];

@@ -11,6 +11,10 @@ import { insertNextVersion, markSynced } from '../src/database/models/memory_arc
 import { uploadDocument } from '../src/mistral/mistral_api';
 import { titleToPath } from '../src/nightly/mapping';
 import { getDatabasePool, closeDatabasePool } from '../src/database/connection';
+import { validateEnv } from '../src/config';
+
+validateEnv({ requireDb: true });
+
 
 const PROFILE_TITLE_PATTERN = /^Profile of (.+)$/;
 

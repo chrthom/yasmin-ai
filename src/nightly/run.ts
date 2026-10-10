@@ -5,7 +5,7 @@ import { getDatabasePool, closeDatabasePool } from '../database/connection';
 import { listConversations, listDocuments } from '../mistral/mistral_api';
 import { computeSinceIso, LockHeldError, runNightlyPipeline } from './pipeline';
 
-validateEnv();
+validateEnv({ requireDb: true });
 
 // Initialize database pool
 getDatabasePool();

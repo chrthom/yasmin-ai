@@ -921,6 +921,40 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 13. Decay wiring: last_touched_at flows from memory_archive into the
+  //     integrate tool surface and the review prompt
+  // -------------------------------------------------------------------------
+  it('decay wiring: list_long_term_files exposes lastTouchedAt to the integrate loop, and runReview receives it with the current content', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    const seeded = await archive.seed('people/alice.md', 'Existing alice content');
+    let listed: { path: string; contentHash: string; lastTouchedAt: string }[] = [];
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      listed = JSON.parse(await executeTool('list_long_term_files', {}));
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile content',
+        isNew: false
+      });
+      return { finalText: 'staged 1 file', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'looks good' });
+    mockRunCompact.mockResolvedValue('compacted profile');
+    mockUpsertContextEntry.mockResolvedValue('inserted');
+    await runNightlyPipeline();
+    const aliceEntry = listed.find(entry => entry.path === 'people/alice.md');
+    expect(aliceEntry).toBeDefined();
+    expect(aliceEntry!.lastTouchedAt).toBe(seeded.createdAt.toISOString());
+    expect(mockRunReview).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'people/alice.md' }),
+      'Existing alice content',
+      seeded.createdAt.toISOString(),
+      expect.any(Array),
+      0
+    );
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
   // Pending-notes outbox (issue #46)
   // -------------------------------------------------------------------------
 
