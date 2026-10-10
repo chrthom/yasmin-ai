@@ -256,7 +256,9 @@ list_long_term_files(); // current versions from memory_archive: [{path, content
 // age primarily by the absolute dates written inside the file content, not by last_touched_at alone;
 // the shared bootstrap timestamp evens out as files gain per-file history over time.
 // Re-confirmation refreshes a fact's dating in place, so an old in-content date genuinely means
-// "not corroborated since then".
+// "not corroborated since then". Decay is deletion only: dated facts older than 180 days without
+// corroboration are deleted when the file is rewritten -- never annotated (the date alone carries
+// the age), and undated evergreen content only falls to contradicting evidence.
 get_long_term_file(path); // memory_archive current content (local, exact — no Mistral call)
 read_todays_journals(); // this run's Phase-2 journals (the evidence base)
 stage_update(path, content, isNew); // append to in-run staged list  ← the ONLY writer

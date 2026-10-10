@@ -279,11 +279,13 @@ export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[
     'Also apply the decay instruction: every file path from list_long_term_files carries a last_touched_at ' +
     'date -- when its content was last changed by new evidence. Today is ' +
     runDate +
-    '. A fact that has not been corroborated for a long time should age instead of being asserted as fresh ' +
-    'forever. Three states: FRESH (recently corroborated -- leave as is), AGING (no new corroboration for a ' +
-    'long time -- annotate the fact with a confidence marker such as "(veraltet? unsicher geworden?)" or ' +
-    '"(möglicherweise veraltet)"), DECAYED (no corroboration for a very long time -- ' +
-    'remove the fact from the file entirely). Note that last_touched_at ' +
+    '. Facts that stop being corroborated must not be asserted as fresh forever -- forgetting keeps the ' +
+    'files small. When you rewrite a file you have read, DELETE every dated fact that has not been ' +
+    'corroborated for more than 180 days (measured from its own in-content date or the last ' +
+    'confirmation refresh). Never mark or annotate anything -- no confidence markers, no "(veraltet?)" ' +
+    'hints: the date alone carries the age, and every reader can judge it. Undated evergreen content ' +
+    "(core facts, stable traits) does not decay by age; only today's contradicting evidence can " +
+    'remove it. Note that last_touched_at ' +
     'is a file-level signal: any content change bumps it, so a file touched today may still hold stale ' +
     'facts -- therefore lean primarily on the absolute dates written inside the content itself (e.g. Recent ' +
     'Happenings lines), not on last_touched_at alone, when judging how old a specific fact is. When you ' +
@@ -461,14 +463,15 @@ export function reviewPrompt(
     (lastTouchedAt === null
       ? 'never -- this would be its first version'
       : formatRunDate(new Date(lastTouchedAt))) +
-    '. A fact annotated as aging must genuinely lack recent corroboration, given that last_touched_at ' +
-    'date and the absolute dates in the current content -- reject a decay annotation on a fact that the ' +
-    'evidence actually re-corroborates, and also reject a proposal that rewords well-dated facts with ' +
-    'an incorrect or invented dating. Conversely, a correctly dated decay annotation (confidence ' +
-    'marker) is a valid, acceptable change. A proposal whose only change is refreshing the date or ' +
-    'wording of a fact that the evidence genuinely re-confirms is also valid -- confirmation ' +
-    "refreshes a fact's dating in place. Reject a proposal whose ONLY change is mechanical decay " +
-    'rewording without a substantive reason.\n' +
+    '. A fact the proposal DELETES as decayed must genuinely be older than 180 days without ' +
+    'corroboration, given that last_touched_at date and the absolute dates in the current content -- ' +
+    'reject a deletion of a fact the evidence actually re-corroborates or that is still within 180 ' +
+    'days of its own dating, and also reject a proposal that rewords well-dated facts with an ' +
+    'incorrect or invented dating. The proposal must not add aging annotations or confidence markers ' +
+    '(decay is deletion only; the date alone carries the age). A proposal whose only change is ' +
+    'refreshing the date or wording of a fact that the evidence genuinely re-confirms is valid -- ' +
+    "confirmation refreshes a fact's dating in place. Reject a proposal whose ONLY change is " +
+    'mechanical decay deletion or rewording without a substantive reason.\n' +
     'Reject reliably and in EVERY attempt for formal problems: wrong language (content must be ' +
     'German), broken file structure (the 7-section person template must stay intact and complete ' +
     'for people/<name>.md), markdown code fences around the content, non-first-person voice in ' +
