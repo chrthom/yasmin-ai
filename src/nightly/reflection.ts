@@ -2,6 +2,7 @@ import { config } from '../config';
 import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
 import { isOverCap, truncateToCap } from './privacy';
 import { StagedUpdate, JournalEntry } from './tools';
+import { PendingNote } from '../database/models/pending_notes.model';
 
 // ---------------------------------------------------------------------------
 // Shared transcript helpers
@@ -229,13 +230,24 @@ export function formatRunDate(date: Date): string {
 }
 
 /**
- * Builds the Phase-3 instruction that drives the tool-calling integrate loop
+ * Builds the Phase-3 instruction that drives the tool-calling integrate loop. Undelivered
+ * pending notes (the live agent's cross-person outbox) are appended as extra evidence so a
+ * message that never reached its recipient still survives in long-term memory.
  */
-export function integratePrompt(runDate: string): string {
+export function integratePrompt(runDate: string, undeliveredNotes: PendingNote[] = []): string {
+  const notesText = formatPendingNotesText(undeliveredNotes);
   return (
     "You are consolidating today's long-term memory for a family assistant.\n\n" +
     'First, call list_long_term_files and read_todays_journals to see what long-term files already exist ' +
     'and what happened today.\n\n' +
+    (notesText.length > 0
+      ? 'Apart from the journals, there are messages Yasmin wanted to pass along to people today ' +
+        'that were never delivered in the live chat. They are quoted below; treat them as evidence ' +
+        "too -- store what the sender wanted to tell the recipient as a fact in the recipient's " +
+        'profile ("Yasmin\'s Intentions" or "Recent Happenings"):\n\n' +
+        notesText +
+        '\n\n'
+      : '') +
     'For every long-term file that needs a new fact, an updated Recent Happenings, Open Topics, Ideas & ' +
     'Interests, or Communication Style section, or a brand-new person profile: if the file already ' +
     'exists, call get_long_term_file first to read its current content, then call stage_update with the ' +
@@ -317,11 +329,14 @@ export function integratePrompt(runDate: string): string {
  * returned conversationId once it is done.
  */
 export async function runIntegrate(
-  executeTool: (name: string, args: Record<string, unknown>) => Promise<string>
+  executeTool: (name: string, args: Record<string, unknown>) => Promise<string>,
+  undeliveredNotes: PendingNote[] = []
 ): Promise<{ finalText: string; iterations: number; conversationId: string }> {
   const result = await runAgentToolLoop({
     agentId: config.mistral.nightlyAgentId,
-    initialInputs: [{ role: 'user', content: integratePrompt(formatRunDate(new Date())) }],
+    initialInputs: [
+      { role: 'user', content: integratePrompt(formatRunDate(new Date()), undeliveredNotes) }
+    ],
     maxIterations: config.nightly.maxIterations,
     executeTool
   });
@@ -348,6 +363,23 @@ const CODE_FENCE_RE = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
 function stripCodeFence(text: string): string {
   const match = CODE_FENCE_RE.exec(text.trim());
   return match ? match[1] : text.trim();
+}
+
+/** Formats the still-undelivered pending notes into the integrate evidence block */
+function formatPendingNotesText(notes: PendingNote[]): string {
+  return notes
+    .map(
+      note =>
+        '--- Undelivered note #' +
+        note.id +
+        ' from ' +
+        note.fromUsername +
+        ' to ' +
+        (note.toUsername ?? 'everyone') +
+        ' ---\n' +
+        note.content
+    )
+    .join('\n\n');
 }
 
 /**
