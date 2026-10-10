@@ -14,13 +14,13 @@ const VALID_STAGE_PATH_RE =
 const TOPICS_PATH_PREFIX = 'topics/';
 
 /**
- * Same slug rule as the pipeline's sanitizeForPath / mapping's nameToStem: lowercase, every
- * non [a-z0-9-] char -> '-'. German umlauts are transliterated FIRST (the family converses in
- * German, so 'Ausflüge' must become 'ausfluege', not 'ausfl-ge'). Topic names are freely generated
- * by the agent, so the slug is normalized here instead of trusted -- this also neutralizes
- * traversal ('../' becomes '--').
+ * Generic path-slug sanitizer (same rule as the pipeline's sanitizeForPath / mapping's
+ * nameToStem): lowercase, every non [a-z0-9-] char -> '-'. German umlauts are transliterated
+ * FIRST (the family converses in German, so 'Ausflüge' must become 'ausfluege', not
+ * 'ausfl-ge'). Freely generated names are normalized here instead of trusted -- this also
+ * neutralizes traversal ('../' becomes '--').
  */
-function sanitizeTopicSlug(slug: string): string {
+function sanitizeSlug(slug: string): string {
   return slug
     .replace(/ä/g, 'ae')
     .replace(/ö/g, 'oe')
@@ -45,7 +45,7 @@ export function normalizeTopicPath(path: string): string | null {
     return path;
   }
   const stem = path.slice(TOPICS_PATH_PREFIX.length).replace(/\.md$/i, '');
-  const slug = sanitizeTopicSlug(stem);
+  const slug = sanitizeSlug(stem);
   if (slug.length === 0 || slug === '-') {
     return null;
   }
