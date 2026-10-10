@@ -9,6 +9,7 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
+import { conversationsUrl } from './mistral/mistral_api';
 
 // The live agent is the only filter between sender and recipient (no nightly reviewer sits in
 // between), so the share_note tool validates as strictly as stage_update does on the nightly side.
@@ -56,7 +57,6 @@ interface CachedConversation {
 }
 
 export class ChatAgent {
-  private url: string;
   private apiKey: string;
   private agentId: string;
   private conversationCache = new Map<string, CachedConversation>();
@@ -70,8 +70,7 @@ export class ChatAgent {
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
 
-  constructor(url: string, apiKey: string, agentId: string) {
-    this.url = url;
+  constructor(apiKey: string, agentId: string) {
     this.apiKey = apiKey;
     this.agentId = agentId;
   }
@@ -226,7 +225,7 @@ export class ChatAgent {
     }
 
     try {
-      const response = await fetch(this.url, {
+      const response = await fetch(conversationsUrl(), {
         method: 'get',
         headers: {
           Authorization: `Bearer ${this.apiKey}`
@@ -398,7 +397,7 @@ export class ChatAgent {
       };
       console.log(`INFO Sending prompt to LLM agent: ${JSON.stringify(body)}`);
 
-      const url = conversationId ? `${this.url}/${conversationId}` : this.url;
+      const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
       const response = await fetch(url, {
         method: 'post',
         body: JSON.stringify(body),
@@ -562,7 +561,7 @@ export class ChatAgent {
             const toolBody = {
               inputs: toolInputs
             };
-            const toolUrl = `${this.url}/${currentConversationId}`;
+            const toolUrl = `${conversationsUrl()}/${currentConversationId}`;
 
             console.log(`INFO Sending tool results to Mistral: ${JSON.stringify(toolBody)}`);
             const toolResponse = await fetch(toolUrl, {

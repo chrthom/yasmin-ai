@@ -1,3 +1,10 @@
+// ChatAgent builds its conversation URLs from the shared Mistral client helper; pin it to a
+// fixed value so fetch assertions stay deterministic regardless of config.
+jest.mock('../mistral/mistral_api', () => ({
+  ...jest.requireActual('../mistral/mistral_api'),
+  conversationsUrl: () => 'https://test.url'
+}));
+
 import { ChatAgent } from '../chat_agent';
 import { buildHandoff } from '../handoff';
 import {
@@ -52,7 +59,7 @@ describe('ChatAgent', () => {
   let chatAgent: ChatAgent;
 
   beforeEach(() => {
-    chatAgent = new ChatAgent('https://test.url', 'test-api-key', 'test-agent-id');
+    chatAgent = new ChatAgent('test-api-key', 'test-agent-id');
     mockFetch.mockClear();
     mockBuildHandoff.mockReset();
     mockGetUndeliveredNotesForUser.mockReset().mockResolvedValue([]);
