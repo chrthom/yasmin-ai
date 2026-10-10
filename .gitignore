@@ -8,7 +8,9 @@ Thumbs.db
 
 # Local agent/assistant state
 .claude/
-.openclaude/
+.openclaude/settings.local.json
+.openclaude/worktrees/
+.openclaude/dev-loop/
 
 # Vendors
 node_modules/
