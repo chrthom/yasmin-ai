@@ -38,6 +38,14 @@ function sleep(ms: number): Promise<void> {
 const REQUEST_TIMEOUT_MS = config.mistral.requestTimeoutMs;
 
 /**
+ * Canonical URL of the conversations endpoint, derived from the single configured API root so
+ * the host exists in exactly one place (config.mistral.apiRoot).
+ */
+export function conversationsUrl(): string {
+  return config.mistral.apiRoot + '/conversations';
+}
+
+/**
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
  */

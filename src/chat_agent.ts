@@ -1,6 +1,6 @@
 import { contextService } from './services/context.service';
 import { config } from './config';
-import { dbProxy } from './database/db_proxy';
+import { getContentByTitleFromDb, isKnownPerson } from './database/models/context.model';
 import {
   claimNoteDelivery,
   getUndeliveredNotesForUser,
@@ -9,6 +9,7 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
+import { conversationsUrl } from './mistral/mistral_api';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 
 interface MistralConversationResponseOutputPart {
@@ -52,7 +53,6 @@ interface CachedConversation {
 }
 
 export class ChatAgent {
-  private url: string;
   private apiKey: string;
   private agentId: string;
   private conversationCache = new Map<string, CachedConversation>();
@@ -66,8 +66,7 @@ export class ChatAgent {
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
 
-  constructor(url: string, apiKey: string, agentId: string) {
-    this.url = url;
+  constructor(apiKey: string, agentId: string) {
     this.apiKey = apiKey;
     this.agentId = agentId;
   }
@@ -179,7 +178,7 @@ export class ChatAgent {
       });
     }
     for (const recipient of recipients) {
-      if (recipient !== null && !(await dbProxy.isKnownPerson(recipient))) {
+      if (recipient !== null && !(await isKnownPerson(recipient))) {
         return JSON.stringify({
           success: false,
           error: `Unknown recipient "${recipient}". Use "everyone" or a known person's first name.`
@@ -223,7 +222,7 @@ export class ChatAgent {
     }
 
     try {
-      const response = await fetch(this.url, {
+      const response = await fetch(conversationsUrl(), {
         method: 'get',
         headers: {
           Authorization: `Bearer ${this.apiKey}`
@@ -395,7 +394,7 @@ export class ChatAgent {
       };
       console.log(`INFO Sending prompt to LLM agent: ${JSON.stringify(body)}`);
 
-      const url = conversationId ? `${this.url}/${conversationId}` : this.url;
+      const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
       const response = await fetch(url, {
         method: 'post',
         body: JSON.stringify(body),
@@ -502,7 +501,7 @@ export class ChatAgent {
               // Entries already injected into this conversation are still in its history; return a
               // pointer instead of the full text to save tokens on every subsequent turn.
               const alreadyLoaded = cached.loadedContextTitles.includes(title);
-              const content = alreadyLoaded ? null : await dbProxy.getContentByTitle(title);
+              const content = alreadyLoaded ? null : await getContentByTitleFromDb(title);
               const resultStr = alreadyLoaded
                 ? JSON.stringify({
                     title,
@@ -559,7 +558,7 @@ export class ChatAgent {
             const toolBody = {
               inputs: toolInputs
             };
-            const toolUrl = `${this.url}/${currentConversationId}`;
+            const toolUrl = `${conversationsUrl()}/${currentConversationId}`;
 
             console.log(`INFO Sending tool results to Mistral: ${JSON.stringify(toolBody)}`);
             const toolResponse = await fetch(toolUrl, {

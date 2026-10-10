@@ -1,5 +1,9 @@
 import { config } from '../config';
-import { dbProxy } from '../database/db_proxy';
+import {
+  getAllEntriesFromDb,
+  getAllTitlesFromDb,
+  getContentByTitleFromDb
+} from '../database/models/context.model';
 import { contextEntryBlock, xmlBlock } from '../protocol';
 
 export interface ContextRetrievalResult {
@@ -24,7 +28,7 @@ export class ContextService {
     loadedTitles: Set<string> | string[]
   ): Promise<ContextRetrievalResult> {
     const loadedSet = loadedTitles instanceof Set ? loadedTitles : new Set(loadedTitles);
-    const entries = await dbProxy.getAllEntries();
+    const entries = await getAllEntriesFromDb();
     const titles = entries.map(e => e.title);
 
     // 1. Mandatorily match eager-loaded entries for the first turn
@@ -54,7 +58,7 @@ export class ContextService {
     const newlyLoadedTitles: string[] = [];
 
     for (const title of candidateTitles) {
-      const content = await dbProxy.getContentByTitle(title);
+      const content = await getContentByTitleFromDb(title);
       if (content !== null && content !== undefined) {
         xmlBlocks.push(contextEntryBlock(title, content.trim()));
         newlyLoadedTitles.push(title);
@@ -68,7 +72,7 @@ export class ContextService {
 
     // 3. On the initial turn, inject the manifest of all other available titles
     if (loadedSet.size === 0) {
-      const allTitles = await dbProxy.getAllTitles();
+      const allTitles = await getAllTitlesFromDb();
       const eagerlyLoadedSet = new Set(candidateTitles.map(t => t.toLowerCase()));
       const availableTitles = allTitles.filter(t => !eagerlyLoadedSet.has(t.toLowerCase()));
 
