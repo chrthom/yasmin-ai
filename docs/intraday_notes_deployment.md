@@ -32,6 +32,19 @@ is dead until the table is in place.
 3. An "everyone" note must never be delivered back to its own sender (the delivery query
    filters `from_username != ?`).
 
+## Known gotcha: existing conversations keep the old toolset
+
+Mistral pins an agent's tools at conversation creation time. Conversations started **before**
+the `share_note` registration will never call the tool, no matter what the agent definition
+says now — and the server keeps routing to them for up to `conversationTtlMs` (12 h), or until
+the nightly job deletes them. The same applies to system-prompt changes.
+
+If the tool needs to work immediately after registration, delete the affected user's active
+conversation in Mistral Studio (the nightly job deletes consolidated conversations anyway, so
+this is a normal operation) or temporarily set `MAX_TURNS_PER_SESSION=1` and restart the server
+so the very next message starts a fresh conversation. Otherwise it self-heals within 12 h.
+Verify with a fresh conversation: the agent should emit a `share_note` tool call.
+
 ## Rollback
 
 Redeploying the previous code and restoring the previous agent definition (system prompt and
