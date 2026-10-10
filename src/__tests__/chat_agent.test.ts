@@ -1193,6 +1193,24 @@ describe('ChatAgent', () => {
       expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(3, 'zara');
     });
 
+    it('releases the delivery claims when a FRESH conversation create hits a stale 400/404 (no respawn possible)', async () => {
+      // Regression guard: a 400/404 on the conversation create itself can neither respawn
+      // (there is no old conversation) nor deliver -- the claimed notes must be released so
+      // they ride along with the next input instead of being orphaned.
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 6, fromUsername: 'anjali', content: 'Dinner at 7' }
+      ]);
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found'
+      });
+      await expect(chatAgent.processRequest('Hello', 'zara')).rejects.toThrow('no respawn possible');
+      expect(mockClaimNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(6, 'zara');
+    });
     it('releases the delivery claims on a network error too', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
       mockGetUndeliveredNotesForUser.mockResolvedValue([

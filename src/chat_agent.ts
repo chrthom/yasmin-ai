@@ -650,6 +650,12 @@ export class ChatAgent {
             claimedNoteIds
           );
         }
+        // No respawn possible (a fresh-conversation create already failed, or this WAS the
+        // respawn): the turn is dropped, so the notes injected above were never shown to the
+        // user -- release their delivery claims like any other non-recoverable failure.
+        if (!isRespawn && claimedNoteIds.length > 0) {
+          await this.releaseClaimedNotes(username, claimedNoteIds);
+        }
         throw new Error(
           `Mistral API request failed: stale conversation ${failedConversationId || '(new)'} and no respawn possible`
         );
