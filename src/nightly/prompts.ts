@@ -10,13 +10,16 @@ import * as path from 'node:path';
  * Resolution: today every entry point runs from source via ts-node (src/nightly/...), where the
  * templates sit at ../../mistral_config/nightly/prompts. tsc does not copy .txt files into dist/,
  * so a compiled run has no bundled templates; as a fallback it still finds the repo's source
- * templates relative to the compiled file (dist/nightly -> ../../mistral_config/...), which works
- * whenever dist/ lives inside the repository checkout.
+ * templates relative to the working directory (mistral_config/nightly/prompts), which works
+ * whenever dist/ lies inside the repository checkout.
  */
 const PROMPT_DIR_PRIMARY = path.resolve(__dirname, '../../mistral_config/nightly/prompts');
 const PROMPT_DIR_FALLBACK = path.resolve(process.cwd(), 'mistral_config/nightly/prompts');
 
-function promptDir(): string {
+/** One fs read per template; prompt builders call loadTemplate repeatedly within a nightly run. */
+const templateCache = new Map<string, string>();
+
+export function promptDir(): string {
   if (fs.existsSync(PROMPT_DIR_PRIMARY)) {
     return PROMPT_DIR_PRIMARY;
   }
@@ -24,7 +27,18 @@ function promptDir(): string {
 }
 
 export function loadTemplate(name: string): string {
-  return fs.readFileSync(path.join(promptDir(), name), 'utf8');
+  const cached = templateCache.get(name);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let template: string;
+  try {
+    template = fs.readFileSync(path.join(promptDir(), name), 'utf8');
+  } catch (error) {
+    throw new Error('Could not read prompt template ' + name + ' from ' + promptDir() + ': ' + error);
+  }
+  templateCache.set(name, template);
+  return template;
 }
 
 /** Renders a template, replacing every {{token}} occurrence with the given value. */

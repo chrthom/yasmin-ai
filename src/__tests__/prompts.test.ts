@@ -1,8 +1,5 @@
 import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { loadTemplate, renderPrompt } from '../nightly/prompts';
-
-const PROMPT_DIR = path.resolve(__dirname, '../../mistral_config/nightly/prompts');
+import { loadTemplate, promptDir, renderPrompt } from '../nightly/prompts';
 
 describe('nightly prompt templates', () => {
   it('renders every prompt variant used by the nightly pipeline without leaving tokens behind', () => {
@@ -62,7 +59,7 @@ describe('nightly prompt templates', () => {
   });
 
   it('ships a template file for every {{token}} the prompt builders interpolate', () => {
-    const templateNames = fs.readdirSync(PROMPT_DIR).filter(name => name.endsWith('.txt'));
+    const templateNames = fs.readdirSync(promptDir()).filter(name => name.endsWith('.txt'));
     expect(templateNames).toContain('journal_prompt.txt');
     expect(templateNames).toContain('integrate_prompt.txt');
     expect(templateNames).toContain('review_prompt.txt');
