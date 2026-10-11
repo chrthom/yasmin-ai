@@ -31,7 +31,7 @@ review id are in your task prompt. You run unattended: nobody answers questions.
    findings.
 5. Run `npm ci` if `node_modules` is missing, then `npm run build`, `npm test`, `npm run lint`. All must
    pass.
-6. Commit, `git pull --no-rebase`, `git push origin HEAD:<branch>`. Never rebase, never force-push.
+6. Commit, `git pull --no-rebase --no-edit`, `git push origin HEAD:<branch>`. Never rebase, never force-push.
 7. Reply to each inline comment you addressed with a short note on what changed:
    `gh api repos/chrthom/yasmin-ai/pulls/<N>/comments/<commentId>/replies -X POST -f body="..."`.
 8. If a finding cannot be resolved without a human decision, or fixing it would contradict the issue,

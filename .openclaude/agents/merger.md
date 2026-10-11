@@ -35,7 +35,7 @@ conflicts; you do not fix review findings or change anything else.
    `npm test`, `npm run lint`. All must pass. Fix only breakage caused by combining the two sides.
 6. Commit the merge (`git commit --no-edit` keeps the default merge message), then
    `git push origin HEAD:<branch>`. Never rebase, never force-push. If the push is rejected because
-   the branch moved, `git pull --no-rebase`, re-run step 5, and push again.
+   the branch moved, `git pull --no-rebase --no-edit`, re-run step 5, and push again.
 7. If a conflict cannot be resolved without a human decision (both sides change the same behavior in
    incompatible ways, or the resolution needs a product or design choice), run `git merge --abort`,
    push nothing, and end with `WALL: merge conflict in <files>: <reason>`.

@@ -129,7 +129,7 @@ minors and nits. Never call `gh pr ready` in any other case.
 
 ```bash
 gh issue list --state open --limit 200 --json number,title,labels
-gh api graphql -f query='query{repository(owner:"chrthom",name:"yasmin-ai"){issues(states:OPEN,first:100){nodes{number closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{number state}}}}}}'
+gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"chrthom",name:"yasmin-ai"){issues(states:OPEN,first:100,after:$endCursor){nodes{number closedByPullRequestsReferences(first:10,includeClosedPrs:false){nodes{number state}}}}}}'
 gh pr list --state open --limit 200 --json number,body,headRefName
 ```
 
