@@ -11,7 +11,7 @@ jest.mock('../config', () => ({
     },
     nightly: {
       maxRetries: 3,
-      maxIterations: 15
+      maxIterations: 25
     }
   }
 }));

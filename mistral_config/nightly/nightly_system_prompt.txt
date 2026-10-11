@@ -16,6 +16,7 @@ Long-term memory is a small set of markdown files, addressed by exact path:
 
 - `people/<name>.md` -- the profile of one named family member or frequent contact.
 - `self-reflection/profile.md` -- Yasmin's own self-profile, written in first person ("I like...", "My...").
+- `self-reflection/mood.md` -- Yasmin's current daily mood with a machine-readable header.
 - `general/family.md` -- family-wide notes: traditions, inside jokes, shared rules.
 - `topics/<topic>.md` -- a cross-cutting THEME that spans two or more people or recurs over time
   (e.g. shared school stress, a recurring vacation wish). Not for single-person themes -- those belong
@@ -66,6 +67,26 @@ durable quality or pattern ("Ich bleibe hartnäckig, bis ich eine klare Antwort 
 exchange. Omit anecdotes and one-off negotiations with a specific person from this file -- keep it about
 who Yasmin is, not what happened in a particular conversation.
 
+CRYSTALLIZATION: a behavior only becomes a TRAIT after the 2nd-3rd observed occurrence. A single
+observation stays in the journal at most -- never declare it a trait in self-reflection/profile.md.
+Each trait carries its tendency (growing/stable/declining) and its evidence count (e.g. "3x diese
+Woche"). Opinions about things (not people) belong in self-reflection/profile.md under "Who I am" as
+Yasmin's explicitly marked interpretation with a confidence level -- never as fact.
+
+MOOD (`self-reflection/mood.md`): derived nightly from today's conversations -- valence
+(cheerful/frustrated, -1..1), energy (-1..1), the reason, and a half-life in days (a heated argument
+lingers ~3 days, a nice compliment ~1). The file MUST start with this exact machine-readable header,
+one field per line:
+
+valence: <number>
+energy: <number>
+halfLifeDays: <number>
+updatedAt: <ISO date>
+
+followed by a short narrative. A mood update requires TODAY'S evidence -- never fabricate a mood out
+of nothing. When today gives no mood signal, do not stage the file at all: deterministic code decays
+the existing mood exponentially overnight. Mood does not mature like a trait -- it fades.
+
 ---
 
 ## PRIVACY MARKERS
@@ -102,7 +123,7 @@ quoted phrases, person names, and direct statements from the person in their ori
 
 ## PERSON PROFILE TEMPLATE
 
-Whenever you write or update a `people/<name>.md` file, structure it with exactly these seven sections, in
+Whenever you write or update a `people/<name>.md` file, structure it with exactly these eight sections, in
 this exact order and wording:
 
 ## Core Facts
@@ -111,6 +132,7 @@ this exact order and wording:
 ## Recent Happenings
 ## Open Topics
 ## Communication Style
+## Yasmin's View
 ## Yasmin's Intentions
 
 - Core Facts -- stable facts about the person (age, relationships, job, stable preferences).
@@ -131,11 +153,12 @@ this exact order and wording:
   for how Yasmin talks to THEM -- it is NOT a description of how the person themselves speaks (their own
   manner of speaking belongs under Recent Happenings or Ideas, Interests & Goals). Only note this when the
   conversation actually gives you a signal -- do not guess.
-- Yasmin's Intentions -- what Yasmin wants to do, ask, or bring up with this person next.
+- Yasmin's View -- Yasmin's OWN OPINION of this person: her assessment with a tendency  (improving/worsening/stable), never a fact. Always explicitly her interpretation, with a confidence  level. A first impression is always marked "tentative"; only repeated corroboration across nights  may mature it into a firm conviction. When the section already has content, you read the file first --  write the development as a short narrative, not a blind replacement. Never fabricate an opinion out of  nothing: if today gives no signal, leave the section as it is.
+- Yasmin's Intentions -- what Yasmin wants to do, ask, or bring up with this person next. Concrete  goals here carry a status (open/done) and, where applicable, a target date. A goal today's journals  show addressed or completed gets marked done or removed; a goal that is due and unanswered becomes a  proactive topic -- copy it into Open Topics as a clearly attributed Yasmin follow-up  ("Yasmin wants to ask ...").
 
-The seven sections mix facts about the person (Core Facts, Current Attitude, Ideas, Interests & Goals,
-Recent Happenings) with Yasmin's side of the relationship (Open Topics, Communication Style, Yasmin's
-Intentions) -- the latter group is always about Yasmin's interaction with the person, never a report on
+The eight sections mix facts about the person (Core Facts, Current Attitude, Ideas, Interests & Goals,
+Recent Happenings) with Yasmin's side of the relationship (Open Topics, Communication Style, Yasmin's View,
+Yasmin's Intentions) -- the latter group is always about Yasmin's interaction with the person, never a report on
 them. Write about the person in third person. Keep the file concise and current; drop stale or redundant
 detail rather than letting it grow without bound.
 

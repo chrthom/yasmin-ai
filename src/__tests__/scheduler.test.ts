@@ -13,7 +13,7 @@ jest.mock('../config', () => ({
       tz: 'Europe/Berlin',
       maxRetries: 3,
       lockStaleMs: 1000,
-      maxIterations: 15,
+      maxIterations: 25,
       archiveKeepVersions: 10,
       eagerMaxChars: 10000
     }
