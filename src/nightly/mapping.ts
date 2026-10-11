@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { capitalizeLowerRest, personNameFromTitle, profileTitle, sanitizeForPath } from '../strings';
 
 /**
  * Table-driven mapping between long-term verbose file paths (memory_archive.file_path)
@@ -17,26 +18,10 @@ const FIXED_MAPPINGS: FixedMapping[] = [
 ];
 
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;
-const PEOPLE_TITLE_PATTERN = /^Profile of (.+)$/;
-
-/** Capitalizes a single hyphen/underscore-separated part: "mary" -> "Mary" */
-function capitalizePart(part: string): string {
-  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-}
 
 /** Converts a people/<stem>.md stem into a "Name" title, e.g. "mary-jane" -> "Mary Jane" */
 function stemToName(stem: string): string {
-  return stem.split(/[-_]/).map(capitalizePart).join(' ');
-}
-
-/**
- * Converts a "Name" title back into a people/<stem>.md stem, e.g. "Mary Jane" -> "mary-jane".
- * Mirrors the pipeline's sanitizeForPath (lowercase, every non [a-z0-9-] char -> '-'): without this,
- * apostrophe/punctuation names (e.g. "O'Brien" -> "o-brien") would produce invalid people/ stems and
- * silently fail to map in both directions.
- */
-function nameToStem(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  return stem.split(/[-_]/).map(capitalizeLowerRest).join(' ');
 }
 
 /**
@@ -58,7 +43,7 @@ export function pathToTitle(path: string): string | null {
     if (name.toLowerCase() === 'yasmin') {
       return null;
     }
-    return `Profile of ${name}`;
+    return profileTitle(name);
   }
 
   return null;
@@ -73,9 +58,11 @@ export function titleToPath(title: string): string | null {
     return fixed.path;
   }
 
-  const peopleMatch = PEOPLE_TITLE_PATTERN.exec(title);
-  if (peopleMatch) {
-    return `people/${nameToStem(peopleMatch[1])}.md`;
+  const personName = personNameFromTitle(title);
+  if (personName !== null) {
+    // The same stem function the pipeline uses for journal paths -- the title<->path round-trip
+    // (see __tests__/mapping.test.ts) depends on both directions going through it.
+    return `people/${sanitizeForPath(personName)}.md`;
   }
 
   return null;

@@ -1,4 +1,5 @@
 import { pathToTitle, titleToPath } from '../nightly/mapping';
+import { sanitizeForPath } from '../strings';
 
 describe('nightly/mapping', () => {
   describe('pathToTitle', () => {
@@ -86,6 +87,29 @@ describe('nightly/mapping', () => {
     it('round-trips people/o-brien.md <-> Profile of O Brien', () => {
       const title = pathToTitle('people/o-brien.md');
       expect(titleToPath(title as string)).toBe('people/o-brien.md');
+    });
+  });
+
+  describe('round-trip over every people/ stem the pipeline can produce', () => {
+    // The nightly pipeline builds journal paths with sanitizeForPath, and the mapping reverses
+    // titles with the same shared function. This pins the invariant the sharing exists for:
+    // every stem sanitizeForPath can produce round-trips through the title mapping and back,
+    // including names whose punctuation/accents the stem function collapses.
+    const names = [
+      'Christopher',
+      'Mary Jane',
+      "O'Brien",
+      'Jean-Luc',
+      'ana maría',
+      'Zoë',
+      'McNeal',
+      'User 42',
+      'Mary  Jane' // double space -> double hyphen
+    ];
+
+    it.each(names)('round-trips the people/ path generated from "%s"', name => {
+      const path = `people/${sanitizeForPath(name)}.md`;
+      expect(titleToPath(pathToTitle(path) as string)).toBe(path);
     });
   });
 });
