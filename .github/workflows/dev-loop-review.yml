@@ -2,7 +2,7 @@ name: Dev Loop Review
 
 on:
   pull_request:
-    types: [ready_for_review, synchronize, unlabeled]
+    types: [opened, ready_for_review, synchronize, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -72,8 +72,8 @@ jobs:
             --description "dev-loop: human decision required" 2>/dev/null || true
           pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
           if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ] \
-            && [ "$EVENT_ACTION" = "synchronize" ]; then
-            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review. Skipping."
+            && { [ "$EVENT_ACTION" = "synchronize" ] || [ "$EVENT_ACTION" = "opened" ]; }; then
+            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review, and a draft open waits for ready_for_review. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

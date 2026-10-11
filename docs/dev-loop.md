@@ -33,6 +33,7 @@ workflow post-step, auditable in the run log, enforceable in code.
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
 | `issues: [opened, reopened]` | implementer | skip if `needs-human` or a `vibe/issue-<N>-*` branch exists |
+| `pull_request: [opened]` | reviewer | **only if PR is not draft** (a PR created ready never fires `ready_for_review`); draft opens wait for ready_for_review; marker-dedupe on head SHA |
 | `pull_request: [ready_for_review]` | reviewer | primary review trigger; marker-dedupe on head SHA |
 | `pull_request: [synchronize]` | reviewer | **only if PR is not draft** (push to a ready PR invalidates its CLEAN verdict); drafts stay push-silent |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
