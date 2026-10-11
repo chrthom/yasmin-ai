@@ -170,10 +170,12 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          # Read-only environment: the reviewer agent never writes to GitHub;
-          # the post-step posts the review with the PAT. GH_TOKEN is only for
-          # read access to the PR, diff, linked issue and prior reviews.
-          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          # The reviewer agent only reads GitHub (PR, diff, linked issue, prior
+          # reviews); the post-step posts the review. It uses the read-only
+          # DEV_LOOP_TOKEN_READONLY secret when defined and falls back to the
+          # write PAT until that secret is created (create it to complete the
+          # docs' read-only-environment claim).
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN_READONLY || secrets.DEV_LOOP_TOKEN }}
           DEV_LOOP_PR: ${{ steps.gate.outputs.pr_number }}
           DEV_LOOP_HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
         run: |
@@ -379,7 +381,7 @@ jobs:
             # GitHub rejects inline comments outside the diff: retry once with
             # every finding in the body (PR #80 behavior) before escalating.
             all_findings="$(printf '%s' "$findings_json" \
-              | jq -r '.[] | "- **[" + (.severity // "minor") + "]** " + ((.path // "?") + ":" + ((.line // 0) | tostring) + " ") + (.message // .body // (. | tostring))' 2>/dev/null || true)"
+              | jq -r '.[] | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + ((.path // "?") + ":" + ((.line // 0) | tostring) + " ") + (.message // .body // (. | tostring))' 2>/dev/null || true)"
             fallback_body="<!-- dev-loop-review -->
           Verdict: $verdict
 
