@@ -18,8 +18,8 @@ GitHub event (or previous post-step)
 role workflow (reviewer / fixer / merger / implementer)
   pre-step: gate + dedupe (head SHA, verdict, iteration cap)
   job:      checkout → Node 22 → npm ci → render prompt (budget injected) →
-            vibe -p --trust --output json --max-price --max-turns
-            --enabled-tools <role> < out/<role>.rendered.md > out/messages.json
+            vibe -p "$(cat out/<role>.rendered.md)" --trust --output json
+            --max-price --max-turns --enabled-tools <role> > out/messages.json
   post-step: deterministic state machine from out/messages.json
              (ready/draft, labels, escalation, next dispatch)
 ```
