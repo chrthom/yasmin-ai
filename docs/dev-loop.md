@@ -32,10 +32,10 @@ workflow post-step, auditable in the run log, enforceable in code.
 
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
-| `issues: [opened, reopened]` | implementer | skip if `needs-human` or a `vibe/issue-<N>-*` branch exists |
-| `pull_request: [opened]` | reviewer | **only if PR is not draft** (a PR created ready never fires `ready_for_review`); draft opens wait for ready_for_review; marker-dedupe on head SHA |
-| `pull_request: [ready_for_review]` | reviewer | primary review trigger; marker-dedupe on head SHA |
-| `pull_request: [synchronize]` | reviewer | **only if PR is not draft** (push to a ready PR invalidates its CLEAN verdict); drafts stay push-silent |
+| `issues: [opened, reopened]` | implementer | skip if `needs-human`, `skip-dev-loop`, or a `vibe/issue-<N>-*` branch exists |
+| `pull_request: [opened]` | reviewer | **only if PR is not draft** and not labeled `skip-dev-loop` (a PR created ready never fires `ready_for_review`); draft opens wait for ready_for_review; marker-dedupe on head SHA |
+| `pull_request: [ready_for_review]` | reviewer | primary review trigger; skip if `skip-dev-loop`; marker-dedupe on head SHA |
+| `pull_request: [synchronize]` | reviewer | **only if PR is not draft** and not labeled `skip-dev-loop` (push to a ready PR invalidates its CLEAN verdict); drafts stay push-silent |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
 | fixer post-step, outcome `finished` | reviewer | **direct workflow chain** (no GitHub event; recursion guard irrelevant) |
 | `workflow_run` (`ci.yml` completed) + `mergeable == CONFLICTING` | merger | covers both conflict origins: PR diverges, or `main` moved under it |

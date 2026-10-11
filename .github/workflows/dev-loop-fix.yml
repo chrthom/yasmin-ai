@@ -102,8 +102,8 @@ jobs:
             fi
           fi
           if gh pr view "$PR_NUMBER" --json labels \
-            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-            echo "PR #$PR_NUMBER is labeled needs-human; skipping."
+            | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
+            echo "PR #$PR_NUMBER is labeled needs-human or skip-dev-loop; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
