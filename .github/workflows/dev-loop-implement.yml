@@ -181,7 +181,7 @@ jobs:
                     ;;
                   tokens)
                     tt="$(printf '%s' "$entry" | jq -r '.t')"
-                    tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b')
+                    tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b | floor')
                     if [ "$tokens" -ge "$MAX_TOKENS" ]; then
                       echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
                       pkill -TERM -f 'opencode run' || true

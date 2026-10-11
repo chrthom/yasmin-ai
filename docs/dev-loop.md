@@ -76,7 +76,6 @@ no-op.
 - **Per-run budgets**: step cap / token cap on every role run, enforced by the stream
   watchdog (plus the job `timeout-minutes` and `timeout(1)` as the wall-clock caps); a budget
   stop escalates instead of chaining.
-  `timeout-minutes` as the wall-clock cap); a budget stop escalates instead of chaining.
 - **Fixer chains only on `finished`**: `WALL:` or a limit-stop breaks the cycle.
 - **One review per head SHA**: pre-step skips if a marker review with `commit_id == headRefOid`
   exists; a push landing mid-review re-dispatches after the stale review completes.
