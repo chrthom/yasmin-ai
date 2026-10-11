@@ -1,0 +1,361 @@
+name: Dev Loop Fix
+
+on:
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to fix findings on (manual backstop / retry / reviewer chain)
+        required: true
+        type: string
+      review_id:
+        description: Review id whose findings to fix; empty = latest marker review
+        required: false
+        default: ''
+        type: string
+      retry:
+        description: Internal retry counter for infrastructure failures (do not edit)
+        required: false
+        default: '0'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Fixer (review findings -> fix commits -> chain reviewer)
+    runs-on: ubuntu-latest
+    # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
+    timeout-minutes: 75
+    env:
+      GH_REPO: ${{ github.repository }}
+      MAX_TURNS: '60'
+      MAX_TOKENS: '4000000'
+      TIME_LIMIT_SEC: '3600'
+      TIME_LIMIT_MIN: '60'
+      VIBE_VERSION: '2.26.1'
+      MAX_DENIED_STREAK: '6'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEV_LOOP_TOKEN }}
+
+      - name: Gate and dedupe
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
+          OWNER_ID: ${{ github.event.repository.owner.id }}
+          REVIEW_ID_INPUT: ${{ inputs.review_id }}
+        run: |
+          set -eu
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number in event; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fork PRs: never touch them (pull_request_review events carry the PR too).
+          if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$OWNER_ID" ]; then
+            echo "PR #$PR_NUMBER is from a fork; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create needs-human --color B60205 \
+            --description "dev-loop: human decision required" 2>/dev/null || true
+          # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
+          # starts the fixer. CLEAN and human reviews start nothing.
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            if ! printf '%s' "$REVIEW_BODY" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
+              echo "Review is not a dev-loop marker review; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! printf '%s' "$REVIEW_BODY" | grep -q '^Verdict: CHANGES_NEEDED$'; then
+              echo "Marker review verdict is not CHANGES_NEEDED; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          if gh pr view "$PR_NUMBER" --json labels \
+            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
+            echo "PR #$PR_NUMBER is labeled needs-human; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Resolve the review to act on: the event's review, the explicit input,
+          # or the latest marker review on the PR.
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | last | .id // empty')"
+          elif [ -n "$REVIEW_ID_INPUT" ]; then
+            review_id="$REVIEW_ID_INPUT"
+          else
+            review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | last | .id // empty')"
+          fi
+          if [ -z "$review_id" ]; then
+            echo "No marker review found on PR #$PR_NUMBER; nothing to fix. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
+          if ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
+            echo "Review $review_id is not a CHANGES_NEEDED review; nothing to fix. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One fixer per review: skip if a fix for this review already ran.
+          already="$(gh api repos/${GH_REPO}/issues/$PR_NUMBER/comments --paginate \
+            | jq -r --argjson rid "$review_id" \
+              '[.[] | select(.body | startswith("<!-- dev-loop-fix ")) | select(.body | contains("review " + ($rid | tostring) + " "))] | length')"
+          if [ "$already" != "0" ]; then
+            echo "A fix for review $review_id already ran; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="$(gh pr view "$PR_NUMBER" --json headRefName | jq -r '.headRefName')"
+          head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "review_id=$review_id" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha_before=$head_sha_before" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Render role prompt with budget
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          mkdir -p out
+          sed -e "s/\${MAX_TURNS}/${MAX_TURNS}/g" \
+              -e "s/\${TIME_LIMIT_MIN}/${TIME_LIMIT_MIN}/g" \
+              .github/dev-loop/prompts/fixer.md > out/fixer.rendered.md
+          echo "--- rendered prompt ---"
+          cat out/fixer.rendered.md
+
+      - name: Install vibe
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          curl -LsSf https://mistral.ai/vibe/install.sh | bash
+          command -v vibe
+          # The invocation below is verified against this exact version; the CLI
+          # surface moved substantially between minor versions (2.9 vs 2.26).
+          vibe --version | grep -F "vibe $VIBE_VERSION" || {
+            echo "::error::Installed vibe version does not match the expected $VIBE_VERSION - verify the invocation against the new CLI surface before rerunning"
+            exit 1
+          }
+
+      - name: Run vibe fixer
+        id: vibe
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          DEV_LOOP_PR: ${{ steps.gate.outputs.pr_number }}
+          DEV_LOOP_BRANCH: ${{ steps.gate.outputs.branch }}
+          DEV_LOOP_REVIEW_ID: ${{ steps.gate.outputs.review_id }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # Watchdog: consume the streaming NDJSON transcript, tee it to a file,
+          # and kill vibe when the agent hits MAX_DENIED_STREAK consecutive tool
+          # denials - a denial loop burns the whole turn budget for nothing.
+          kill_on_denial_streak() {
+            streak=0
+            jq -c '
+              select(.type == "effect")
+              | {
+                  toolName: .detail.toolName,
+                  status: .detail.state.status,
+                  code: .detail.state.error.code
+                }' 2>/dev/null \
+            | while IFS= read -r entry; do
+                status="$(printf '%s' "$entry" | jq -r '.status // empty')"
+                code="$(printf '%s' "$entry" | jq -r '.code // empty')"
+                if [ "$status" = "failed" ] && [ "$code" = "tool_denied" ]; then
+                  streak=$((streak + 1))
+                  echo "watchdog: denied tool call streak = $streak"
+                  if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
+                    echo "watchdog: $streak consecutive denials - killing vibe"
+                    pkill -TERM -f 'vibe --prompt-file' || true
+                    exit 99
+                  fi
+                else
+                  streak=0
+                fi
+              done
+          }
+
+          set -o pipefail
+          set +e
+          vibe --prompt-file out/fixer.rendered.md \
+            --auto-approve \
+            --trust \
+            --output streaming \
+            --max-turns "$MAX_TURNS" \
+            --max-tokens "$MAX_TOKENS" \
+            --time-limit "$TIME_LIMIT_SEC" \
+            --output-dir out/ \
+            2> out/vibe.stderr \
+            | tee out/stream.ndjson \
+            | kill_on_denial_streak
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "--- vibe stderr ---"
+          cat out/vibe.stderr || true
+          if [ "$rc" = "99" ]; then
+            echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Upload vibe output artifact
+        if: always() && steps.gate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-fixer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/export.json
+            out/stream.ndjson
+            out/vibe.stderr
+            out/fixer.rendered.md
+            out/session/
+          if-no-files-found: warn
+
+      - name: Post-step state machine
+        if: always() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          REVIEW_ID: ${{ steps.gate.outputs.review_id }}
+          BRANCH: ${{ steps.gate.outputs.branch }}
+          HEAD_SHA_BEFORE: ${{ steps.gate.outputs.head_sha_before }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          escalate() {
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop fixer escalation: $1
+
+          PR: #${PR_NUMBER}
+          Review: ${REVIEW_ID}
+          Run: ${RUN_URL}
+          EOF
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+          }
+
+          rc="${{ steps.vibe.outputs.rc }}"
+
+          if [ -z "$rc" ]; then
+            if [ "$RUN_ATTEMPT" = "1" ]; then
+              echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
+              exit 1
+            fi
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Fix -> Run workflow) or remove the needs-human label"
+            exit 0
+          fi
+
+          if [ "${{ steps.vibe.outputs.stopped_by_watchdog }}" = "true" ]; then
+            escalate "fixer killed by the denial-streak watchdog ($MAX_DENIED_STREAK consecutive denied tool calls, rc=$rc) - the agent could not use its tools; see the vibe output artifact"
+            exit 0
+          fi
+
+          outcome="$(jq -r '.outcome // "unknown"' out/export.json 2>/dev/null || echo unknown)"
+          cost="$(jq -r '.cost_usd // "n/a"' out/export.json 2>/dev/null || echo "n/a")"
+          stderr_tail="$(tail -1 out/vibe.stderr 2>/dev/null || true)"
+
+          if [ "$rc" = "2" ]; then
+            if [ "$RETRY_COUNT" = "0" ]; then
+              echo "Vibe infrastructure failure (exit 2, $stderr_tail); re-dispatching once with retry=1."
+              if gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1; then
+                exit 0
+              fi
+              echo "re-dispatch failed; leaving this run red for manual retry"
+              exit 0
+            fi
+            escalate "infrastructure failure persisted after one retry (exit 2, $stderr_tail)"
+            exit 0
+          fi
+
+          if [ "$rc" = "3" ]; then
+            escalate "fixer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" = "1" ]; then
+            escalate "vibe usage/config error (exit 1, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" != "0" ]; then
+            escalate "unexpected vibe exit code $rc (outcome: $outcome, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          # exit 0: parse the outcome contract from the final assistant message.
+          final_msg="$(jq -rs '[ .[] | select(.type == "message" and .role == "assistant") \
+              | [.content[]? | select(.type == "text") | .text] | join("\n") ] | last // ""' \
+            out/stream.ndjson 2>/dev/null || true)"
+          outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
+
+          # Record that a fix ran for this review (dedupe marker for the gate).
+          cat > /tmp/dev-loop-fix.md <<EOF
+          <!-- dev-loop-fix review $REVIEW_ID -->
+          dev-loop fixer finished for review $REVIEW_ID: $outcome_line (cost: \$$cost).
+          EOF
+
+          case "$outcome_line" in
+            CONFLICTING)
+              echo "PR is conflicting; the merger role handles it. No fix ran."
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-fix.md >/dev/null
+              exit 0
+              ;;
+            WALL:*)
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-fix.md >/dev/null
+              escalate "fixer stopped early with ${outcome_line} (cost: \$$cost)"
+              exit 0
+              ;;
+            FIXED:*)
+              echo "Fixer finished: $outcome_line (cost: \$$cost)"
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-fix.md >/dev/null
+              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+              if [ "$head_sha_now" = "$HEAD_SHA_BEFORE" ]; then
+                escalate "fixer reported FIXED but the head SHA is unchanged ($head_sha_now) - the fixer made no change; see the vibe output artifact"
+                exit 0
+              fi
+              echo "Chaining the reviewer for the new head $head_sha_now."
+              gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"
+              exit 0
+              ;;
+            *)
+              escalate "unparseable outcome (exit 0, final message does not match the contract); transcript artifact preserved for diagnosis"
+              exit 0
+              ;;
+          esac
