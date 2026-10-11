@@ -9,10 +9,32 @@ export const CHANNEL_HISTORY_BLOCK_RE = new RegExp(
   'g'
 );
 
-export const escapeChannelHistory = (text: string): string =>
-  text
-    .replaceAll(`<${CHANNEL_HISTORY_TAG}>`, `<${CHANNEL_HISTORY_TAG} >`)
-    .replaceAll(`</${CHANNEL_HISTORY_TAG}>`, `< /${CHANNEL_HISTORY_TAG}>`);
+// Every XML protocol tag the harness itself can inject into a prompt (src/protocol.ts's TAG object, plus
+// this block's own tag). A <channel_history> transcript is untrusted third-party chatter, so each tag shape
+// is neutralized when it is embedded: otherwise a channel member could smuggle a fake
+// <previous_conversation> (or <context_entry>, <nachrichten_fuer_dich>, ...) into the prompt, which the
+// handoff's extractTurns would capture as trusted prior context. Keep this list in sync with protocol.ts's
+// TAG. It lives here rather than being imported from protocol.ts because protocol.ts already imports
+// stripChannelHistoryBlock from this module (that would be a circular dependency).
+const PROTOCOL_TAGS: readonly string[] = [
+  CHANNEL_HISTORY_TAG,
+  'previous_conversation',
+  'context_entry',
+  'nachrichten_fuer_dich',
+  'available_context_entries',
+  'summary',
+  'recent_messages'
+];
+
+export const escapeChannelHistory = (text: string): string => {
+  let escaped = text;
+  for (const tag of PROTOCOL_TAGS) {
+    escaped = escaped
+      .replaceAll(`<${tag}>`, `<${tag} >`)
+      .replaceAll(`</${tag}`, `< /${tag}`);
+  }
+  return escaped;
+};
 
 export const buildChannelHistoryBlock = (transcript: string): string =>
   `<${CHANNEL_HISTORY_TAG}>\n` +
