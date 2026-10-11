@@ -96,9 +96,13 @@ gh pr list --state open --draft --limit 200 --json number,title,headRefName,head
 ```
 
 Skip a PR when it has the `needs-human` label, is cross-repository, has a running agent in the state
-file (this includes a merger started in step 2), its `mergeable` is not `MERGEABLE`, or any entry of
-`statusCheckRollup` has a `status` other than `COMPLETED` (CI may still push a `chore: auto-format`
-commit, which would make a review stale). For each remaining PR, load the reviews and escalation
+file (this includes a merger started in step 2), its `mergeable` is not `MERGEABLE`, `statusCheckRollup`
+is empty (no checks have run/registered yet), or any entry of `statusCheckRollup` has a `status` other
+than `COMPLETED` (CI may still push a `chore: auto-format` commit, which would make a review stale, and
+an empty rollup must not be read as "CI done"). We gate on `status`, deliberately ignoring each check's
+`conclusion`: this step only waits for CI to finish so a review does not race an auto-format push. A
+check that completed with a failing `conclusion` is left for the reviewer to surface as a finding, not
+skipped here. For each remaining PR, load the reviews and escalation
 comments this loop posted (one JSON object per line; `--paginate` with a per-item `--jq` works across
 pages):
 
@@ -113,17 +117,19 @@ Let `last` be the newest review, `esc` the newest escalation comment, and `count
 submitted after `esc` (all reviews if there is no `esc`). Removing `needs-human` after an escalation
 therefore starts a fresh budget of `MAX_ITERATIONS` reviews. Then:
 
-| Situation                                                                                  | Action                                                                           |
-| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| no `last`, or `last.commit_id != headRefOid`                                               | `count >= MAX_ITERATIONS`? escalate. Else start **reviewer**                     |
-| `last.commit_id == headRefOid`, verdict `MISSING` (malformed review)                       | escalate with reason "review without a verdict line"                             |
-| `last.commit_id == headRefOid`, `Verdict: CLEAN`                                           | run `gh pr ready <N>` (the reviewer should already have)                         |
-| `last.commit_id == headRefOid`, `Verdict: CHANGES_NEEDED`                                  | start **fixer** with review id `last.id`                                         |
-| `last.commit_id == headRefOid`, `Verdict: NEEDS_HUMAN`, `esc` older than `last` or missing | escalate                                                                         |
-| `last.commit_id == headRefOid`, `Verdict: NEEDS_HUMAN`, `esc` newer than `last`            | a human answered and removed the label: start **fixer** with review id `last.id` |
+| Situation                                                                                  | Action                                                                                                    |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| no `last`, or `last.commit_id != headRefOid`                                               | `count >= MAX_ITERATIONS`? escalate. Else start **reviewer**                                              |
+| `last.commit_id == headRefOid`, verdict `MISSING` (malformed review)                       | escalate with reason "review without a verdict line"                                                      |
+| `last.commit_id == headRefOid`, `Verdict: CLEAN`                                           | escalate with reason "CLEAN review but PR still draft" (the reviewer should already have marked it ready) |
+| `last.commit_id == headRefOid`, `Verdict: CHANGES_NEEDED`                                  | start **fixer** with review id `last.id`                                                                  |
+| `last.commit_id == headRefOid`, `Verdict: NEEDS_HUMAN`, `esc` older than `last` or missing | escalate                                                                                                  |
+| `last.commit_id == headRefOid`, `Verdict: NEEDS_HUMAN`, `esc` newer than `last`            | a human answered and removed the label: start **fixer** with review id `last.id`                          |
 
 A PR only leaves draft through a `Verdict: CLEAN` review: zero findings of any severity, including
-minors and nits. Never call `gh pr ready` in any other case.
+minors and nits. Only the reviewer ever calls `gh pr ready` (its step 7, on a CLEAN review at the
+unchanged head); the orchestrator never re-issues it — if a CLEAN review at the current head is left
+in draft, it escalates. Never call `gh pr ready` in any other case.
 
 ### 4. Issues without a PR
 

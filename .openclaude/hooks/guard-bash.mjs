@@ -503,6 +503,15 @@ function gitRules(role, cmd, block) {
   ) {
     block('git reset onto another commit is forbidden for dev-loop agents; add new commits instead.');
   }
+  // Rewriting remotes would let an agent point origin elsewhere (or add a trusted remote) and then push
+  // to an arbitrary repository, so the whole modifying surface of `git remote` is off-limits. Bare
+  // `git remote` / `git remote -v` (listing) stays allowed.
+  if (sub === 'remote') {
+    const verb = positionals(rest)[0];
+    if (['add', 'set-url', 'remove', 'rename'].includes(verb)) {
+      block('Changing git remotes (git remote add/set-url/remove/rename) is forbidden for dev-loop agents.');
+    }
+  }
 
   if (sub === 'commit' && rest.includes('--amend')) block('Amending commits is forbidden; add a new commit.');
   if (sub === 'commit' && (rest.includes('--no-verify') || commitSkipsHooks(rest))) {
@@ -626,6 +635,7 @@ function reviewNpxPackage(args) {
     if (t === '--package' || t === '-p') pkg = args[i + 1];
     else if (t.startsWith('--package=')) pkg = t.slice('--package='.length);
     else if (t.startsWith('-p=')) pkg = t.slice(3);
+    else if (/^-p.+/.test(t)) pkg = t.slice(2); // attached short value (`-p<pkg>`), like `-p=...`
     if (pkg !== undefined && pkg !== bin) return false;
   }
   return true;

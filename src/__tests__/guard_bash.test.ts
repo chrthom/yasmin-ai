@@ -204,7 +204,15 @@ describe('guard-bash.mjs role rules', () => {
     ['merger', 'git merge -Xours origin/main'],
     ['merger', 'git pull -Xtheirs'],
     ['merger', 'git merge -sours origin/main'],
-    ['merger', 'git merge -Xours origin/main --no-ff']
+    ['merger', 'git merge -Xours origin/main --no-ff'],
+    ['reviewer', 'npx -pleft-pad jest src/__tests__/app.test.ts'],
+    ['reviewer', 'npx -pleft-pad tsc'],
+    ['fixer', 'git remote set-url origin https://evil.example/x.git'],
+    ['merger', 'git remote set-url origin https://evil.example/x.git'],
+    ['implementer', 'git remote add evil https://evil.example/x.git'],
+    ['reviewer', 'git remote remove evil'],
+    ['fixer', 'git remote rename evil evil2'],
+    ['merger', 'git remote add trusted file:///tmp/x.git']
   ])('%s: blocks %s', (role, command) => {
     expect(run(command, role).blocked).toBe(true);
   });
@@ -241,6 +249,8 @@ describe('guard-bash.mjs role rules', () => {
     ['reviewer', 'npx --package=prettier prettier --check .'],
     ['reviewer', 'npx -p jest jest src/__tests__/app.test.ts'],
     ['fixer', 'git config --get branch.main.mergeOptions'],
+    ['fixer', 'git remote -v'],
+    ['merger', 'git remote'],
     ['merger', 'git merge origin/main --no-ff'],
     ['merger', 'git merge --strategy=recursive origin/main']
   ])('%s: allows %s', (role, command) => {
