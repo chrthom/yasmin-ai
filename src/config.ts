@@ -18,6 +18,19 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/** Parses an env var as an integer, clamped to [min, max]; absent or unparseable values use the default. */
+function parseClampedEnvInt(key: string, defaultValue: number, min: number, max: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultValue;
+  }
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    return defaultValue;
+  }
+  return Math.min(Math.max(parsed, min), max);
+}
+
 export const config = {
   server: {
     port: process.env['PORT'] || 5000
@@ -42,8 +55,31 @@ export const config = {
     get nightlyAgentId(): string {
       return requiredEnv('AGENT_ID_NIGHTLY');
     },
+    // Hard ceiling for any single Mistral HTTP call made through mistral_api.ts (live turns
+    // reprocess the full conversation history and can legitimately exceed 30s).
+    requestTimeoutMs: parseClampedEnvInt('REQUEST_TIMEOUT_MS', 120_000, 1, 600_000),
+    // Cap on the sequential tool-calling loop in the live agent; a warning is logged when hit.
+    maxToolCalls: 5,
     // Without this optional agent the handoff degrades to replaying just the last turns.
     summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', '')
+  },
+  context: {
+    familyNotesTitle: 'Family notes',
+    profileOfYasminTitle: 'Profile of Yasmin'
+  },
+  chat: {
+    // Hard cap on the content of a share_note staged for another person.
+    noteContentMaxChars: 500,
+    noteToEveryone: 'everyone',
+    // Upper bound enforced by the shortAnswer request flag. The prompt string built from it and
+    // the matching cleanup regex live in src/protocol.ts, so they cannot drift apart.
+    shortAnswerMaxChars: 1500
+  },
+  handoff: {
+    recentMessageMaxChars: 600,
+    summaryMaxChars: 2500,
+    summarizerInputMaxChars: 30000,
+    summarizerTurnMaxChars: 1500
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
@@ -80,6 +116,13 @@ export const config = {
   },
   nightly: {
     tz: process.env['MEMORY_TZ'] || 'Europe/Berlin',
+    // Scheduled start time of the nightly run (local time in tz). An unparseable or out-of-range
+    // value falls back to the default instead of silently rescheduling the nightly run.
+    hour: parseClampedEnvInt('NIGHTLY_HOUR', 23, 0, 23),
+    minute: parseClampedEnvInt('NIGHTLY_MINUTE', 0, 0, 59),
+    transcriptMaxChars: 20000,
+    journalSoftCapChars: 4000,
+    shutdownTimeoutMs: 30_000,
     maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
     maxRevisions: 3,
     lockStaleMs: 2 * 60 * 60 * 1000,

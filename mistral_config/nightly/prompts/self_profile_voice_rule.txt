@@ -1,0 +1,1 @@
+self-reflection/profile.md is Yasmin's OWN self-profile. It must be written entirely in first person ('I'/'Ich', 'my') describing Yasmin herself -- never in third person ('Yasmin is ...'). If a correction or revision is for self-reflection/profile.md, its content MUST be first person.

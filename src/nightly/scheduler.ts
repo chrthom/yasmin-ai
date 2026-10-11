@@ -1,9 +1,6 @@
 import { config } from '../config';
 import { LockHeldError, runNightlyPipeline } from './pipeline';
 
-const NIGHTLY_HOUR = 23;
-const NIGHTLY_MINUTE = 0;
-
 interface DateParts {
   year: number;
   month: number;
@@ -92,7 +89,8 @@ async function runAndReschedule(): Promise<void> {
 
 function scheduleNext(): void {
   const delayMs =
-    nextRunAt(new Date(), config.nightly.tz, NIGHTLY_HOUR, NIGHTLY_MINUTE).getTime() - Date.now();
+    nextRunAt(new Date(), config.nightly.tz, config.nightly.hour, config.nightly.minute).getTime() -
+    Date.now();
   timer = setTimeout(() => {
     inFlight = runAndReschedule().catch(error => {
       console.error('ERROR Nightly scheduler tick crashed: ' + error);
@@ -110,9 +108,9 @@ export function startNightlyScheduler(): void {
     'INFO Nightly scheduler started (tz=' +
       config.nightly.tz +
       ', target ' +
-      String(NIGHTLY_HOUR).padStart(2, '0') +
+      String(config.nightly.hour).padStart(2, '0') +
       ':' +
-      String(NIGHTLY_MINUTE).padStart(2, '0') +
+      String(config.nightly.minute).padStart(2, '0') +
       ')'
   );
   stopped = false;

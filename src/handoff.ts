@@ -6,17 +6,12 @@ import {
   ConversationMessage
 } from './mistral/mistral_api';
 import { extractMessageText, isDialogueMessage } from './nightly/reflection';
+import { PREVIOUS_CONVERSATION_CAPTURE_RE, SUMMARY_CAPTURE_RE, cleanStoredText, xmlBlock } from './protocol';
 
 // When a live conversation is restarted (turn limit or poisoned-conversation respawn) the new one has no
 // history. The handoff replays a summary of the old conversation plus its last few turns inside a
 // <previous_conversation> block on the new conversation's first prompt. The nightly journal strips this
 // block (stripHandoffBlock) because the old conversation is journaled on its own.
-
-const RECENT_MESSAGE_MAX_CHARS = 600;
-const SUMMARY_MAX_CHARS = 2500;
-const SUMMARIZER_INPUT_MAX_CHARS = 30000;
-
-const BLOCK_RE = /<previous_conversation>([\s\S]*?)<\/previous_conversation>/;
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -25,14 +20,7 @@ interface Turn {
 
 // User messages are stored with the injected context (entries, manifest, "You are talking to", answer-length
 // hint) in front of what the user actually wrote; only the latter is dialogue.
-export const cleanStoredText = (text: string): string =>
-  text
-    .replace(/<previous_conversation>[\s\S]*?<\/previous_conversation>/g, '')
-    .replace(/<available_context_entries>[\s\S]*?<\/available_context_entries>/g, '')
-    .replace(/<context_entry\b[^>]*>[\s\S]*?<\/context_entry>/g, '')
-    .replace(/^You are talking to .*\.$/m, '')
-    .replace(/Your answer must be shorter than \d+ characters\./g, '')
-    .trim();
+export { cleanStoredText };
 
 const truncate = (text: string, max: number): string => (text.length > max ? text.slice(0, max) + '…' : text);
 
@@ -48,7 +36,7 @@ export const extractTurns = (messages: ConversationMessage[]): { turns: Turn[]; 
       message.role === 'user' || (!message.role && !message.type.includes('output')) ? 'user' : 'assistant';
     const raw = extractMessageText(message.content);
     if (role === 'user' && priorContext === undefined) {
-      priorContext = BLOCK_RE.exec(raw)?.[1]?.trim();
+      priorContext = PREVIOUS_CONVERSATION_CAPTURE_RE.exec(raw)?.[1]?.trim();
     }
     const text = role === 'user' ? cleanStoredText(raw) : raw.trim();
     if (text.length > 0) {
@@ -71,14 +59,12 @@ const renderTurns = (turns: Turn[], maxChars: number): string =>
 const formatBlock = (summary: string | undefined, recent: Turn[]): string | undefined => {
   const parts: string[] = [];
   if (summary) {
-    parts.push(`<summary>\n${truncate(summary.trim(), SUMMARY_MAX_CHARS)}\n</summary>`);
+    parts.push(xmlBlock('summary', truncate(summary.trim(), config.handoff.summaryMaxChars)));
   }
   if (recent.length > 0) {
-    parts.push(`<recent_messages>\n${renderTurns(recent, RECENT_MESSAGE_MAX_CHARS)}\n</recent_messages>`);
+    parts.push(xmlBlock('recent_messages', renderTurns(recent, config.handoff.recentMessageMaxChars)));
   }
-  return parts.length > 0
-    ? `<previous_conversation>\n${parts.join('\n')}\n</previous_conversation>`
-    : undefined;
+  return parts.length > 0 ? xmlBlock('previous_conversation', parts.join('\n')) : undefined;
 };
 
 /** One-shot call to the summarizer agent; the throwaway conversation is never kept */
@@ -90,7 +76,7 @@ const summarize = async (input: string): Promise<string | undefined> => {
   const result = await askAgent({
     agentId,
     name: 'handoff-summary',
-    inputs: [{ role: 'user', content: truncate(input, SUMMARIZER_INPUT_MAX_CHARS) }],
+    inputs: [{ role: 'user', content: truncate(input, config.handoff.summarizerInputMaxChars) }],
     store: false
   });
   // store:false should already prevent persistence; delete anyway so nothing can accumulate.
@@ -121,7 +107,7 @@ export const buildHandoff = async (
   if (options.withSummary && (older.length > 0 || priorContext)) {
     const input =
       (priorContext ? `Earlier context (from before this conversation started):\n${priorContext}\n\n` : '') +
-      `Conversation to summarize:\n${renderTurns(older, 1500)}`;
+      `Conversation to summarize:\n${renderTurns(older, config.handoff.summarizerTurnMaxChars)}`;
     try {
       summary = await summarize(input);
     } catch (error) {
@@ -130,7 +116,7 @@ export const buildHandoff = async (
   }
   // Without a fresh summary keep the previous one so a chained restart does not lose the thread.
   if (!summary && priorContext) {
-    summary = /<summary>([\s\S]*?)<\/summary>/.exec(priorContext)?.[1]?.trim();
+    summary = SUMMARY_CAPTURE_RE.exec(priorContext)?.[1]?.trim();
   }
   return formatBlock(summary, recent);
 };
