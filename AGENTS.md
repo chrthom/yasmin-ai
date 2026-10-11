@@ -43,6 +43,9 @@ src/
 ├── app.ts              # Express server entry point with route handlers
 ├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
 ├── handoff.ts          # Summary + last turns handed to a fresh conversation after a restart
+├── strings.ts          # Shared string utilities (name slugs, capitalize variants, profile-title
+│                       #   builder) - single source of truth for the people/<stem>.md <-> "Profile
+│                       #   of X" mapping, used by both the live agent and the nightly pipeline
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
@@ -76,6 +79,7 @@ src/
     ├── intraday_notes.model.test.ts
     ├── context.test.ts
     ├── handoff.test.ts
+    ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
                             #   pipeline.integration, context.model, bootstrap-memory
@@ -156,7 +160,7 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
-- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back -- `topics/` files and `general/topic-index.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
+- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files and `general/topic-index.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
 
