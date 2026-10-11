@@ -80,9 +80,81 @@ describe('nightly/tools', () => {
       expect(asUndefined.success).toBe(false);
       expect(getStagedUpdates()).toHaveLength(0);
     });
+
+    it('stages general/topic-index.md', () => {
+      const result = stage_update(
+        'general/topic-index.md',
+        'topics/urlaub-planung.md - Urlaubsplanung - Christopher, Samira',
+        true
+      );
+      expect(result).toEqual({ success: true, path: 'general/topic-index.md' });
+      expect(getStagedUpdates()).toEqual([
+        {
+          path: 'general/topic-index.md',
+          content: 'topics/urlaub-planung.md - Urlaubsplanung - Christopher, Samira',
+          isNew: true
+        }
+      ]);
+    });
+
+    it('sanitizes a topics/ slug: casing, spaces, and a traversal fragment are normalized', () => {
+      const result = stage_update('topics/Urlaub Planung.md', 'Aliases: Urlaub', true);
+      expect(result).toEqual({ success: true, path: 'topics/urlaub-planung.md' });
+      const traversal = stage_update('topics/../secrets/x.md', 'evil', true);
+      expect(traversal).toEqual({ success: true, path: 'topics/secrets-x.md' });
+    });
+
+    it('transliterates German umlauts in topics/ slugs (Ausflüge -> ausfluege, not ausfl-ge)', () => {
+      const result = stage_update('topics/Ausflüge.md', 'Aliases: Ausflüge', true);
+      expect(result).toEqual({ success: true, path: 'topics/ausfluege.md' });
+      const sz = stage_update('topics/Schwarzwälder Straße.md', 'content', true);
+      expect(sz).toEqual({ success: true, path: 'topics/schwarzwaelder-strasse.md' });
+    });
+
+    it('rejects a topics/ path with an empty slug', () => {
+      const result = stage_update('topics/.md', 'content', true);
+      expect(result.success).toBe(false);
+      expect(getStagedUpdates()).toHaveLength(0);
+    });
+    it('normalizes non-canonical casing of fixed paths to the canonical lowercase form', () => {
+      const result = stage_update(
+        'General/Topic-Index.md',
+        'topics/urlaub-planung.md - Urlaubsplanung',
+        true
+      );
+      expect(result).toEqual({ success: true, path: 'general/topic-index.md' });
+      const profile = stage_update('Self-Reflection/Profile.md', 'content', false);
+      expect(profile).toEqual({ success: true, path: 'self-reflection/profile.md' });
+      expect(getStagedUpdates()[0]).toEqual({
+        path: 'general/topic-index.md',
+        content: 'topics/urlaub-planung.md - Urlaubsplanung',
+        isNew: true
+      });
+    });
   });
 
   describe('get_long_term_file', () => {
+    it('normalizes topics/ paths like stage_update, so a differently-written path still finds the file', async () => {
+      mockGetCurrentVersion.mockImplementation(async (path: string) =>
+        path === 'topics/urlaub-planung.md'
+          ? {
+              id: 7,
+              filePath: path,
+              content: 'topic content',
+              contentHash: 'hash',
+              version: 1,
+              mistralDocId: null,
+              syncedAt: null,
+              createdAt: new Date()
+            }
+          : null
+      );
+      const result = await get_long_term_file('topics/Urlaub Planung.md');
+      expect(result).toEqual({ path: 'topics/urlaub-planung.md', content: 'topic content', found: true });
+      const missing = await get_long_term_file('topics/.md');
+      expect(missing.found).toBe(false);
+    });
+
     it('reads through to the mocked model and returns the content when found', async () => {
       mockGetCurrentVersion.mockResolvedValueOnce({
         id: 1,

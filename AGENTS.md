@@ -28,6 +28,8 @@ mistral_config/
 │   └── system_prompt.txt
 └── nightly/                            # Nightly memory-consolidation agent
     ├── nightly_system_prompt.txt
+    ├── prompts/                          # Phase prompt templates (journal, integrate, review, compact);
+    │                                     #   rendered by src/nightly/prompts.ts with {{token}} interpolation
     └── functions/
         ├── get_long_term_file.json     # Read one verbose memory file
         ├── list_long_term_files.json   # List verbose memory files
@@ -154,7 +156,7 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
-- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the prompts/agent calls for journaling, integrating, reviewing, and compacting; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back; `run.ts` is the CLI entry point (run via ts-node from source).
+- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back -- `topics/` files and `general/topic-index.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
 
@@ -170,7 +172,7 @@ At a high level, each run:
 1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
 2. **Journals** each conversation into a per-conversation markdown summary.
 3. **Integrates** today's journals into proposed updates to a small set of verbose long-term memory files
-   (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`), using a dedicated nightly Mistral
+   (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`, `topics/<topic>.md`, `general/topic-index.md`), using a dedicated nightly Mistral
    agent (`AGENT_ID_NIGHTLY`) and its own tool-calling surface (`src/nightly/tools.ts`).
 4. **Reviews** each proposed update against the day's evidence, then **archives** accepted versions as new
    rows in MariaDB's `memory_archive` table — a versioned, verbose local backup (may contain
@@ -179,7 +181,10 @@ At a high level, each run:
    library (`MISTRAL_LIBRARY_ID`) that the live conversation agent can search via RAG for deeper facts and
    history, and deletes any orphaned library documents. Sensitive passages never leave local storage —
    `memory_archive` keeps the full content for versioning/audit, but nothing marked sensitive is ever sent
-   to the third-party Mistral API.
+   to the third-party Mistral API for RAG. (Exception: the nightly agent's own review/revision calls do
+   see the unstripped archive content — privacy stripping applies to the library upload, not to the
+   pipeline-internal LLM calls; those run with `store: false` and their scratch conversations are
+   deleted.)
 6. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
    so the small, fast, sensitive-free eager set always reflects the latest long-term memory.
@@ -204,7 +209,7 @@ regenerates the eager cache. See `docs/nightly_memory_processing_implementation.
 | `npm run format`                           | Format all files with Prettier                                                                        |
 | `npm run check`                            | Run both format and lint                                                                              |
 | `npm run manage-context <command>`         | Run context administration commands (list, create...)                                                 |
-| `npm run nightly`                          | Run the nightly memory-consolidation job once (requires `npm run build` first)                        |
+| `npm run nightly`                          | Run the nightly memory-consolidation job once (via ts-node, no build needed)                          |
 | `npm run nightly:dry-run`                  | Preflight the nightly job: checks DB + Mistral connectivity and logs what it would do, writes nothing |
 | `npm run bootstrap-memory`                 | One-time migration: seed `memory_archive` + the Mistral library from existing `context_entries`       |
 
@@ -233,6 +238,7 @@ Required for runtime:
 - `AGENT_ID_CONVERSATION` - Mistral agent identifier for the live conversation agent
 - `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the live agent RAGs against
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the nightly memory-consolidation agent
+- `NIGHTLY_MAX_ITERATIONS` - Optional: max tool-loop iterations for the nightly integrate agent (default 25; malformed values fall back to the default)
 - `DB_PASSWORD` - Database password (host/user/name are hardcoded in `src/config.ts`)
 
 Required once the nightly job is deployed (see Nightly Memory Pipeline above):
@@ -243,6 +249,7 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - `AGENT_ID_SUMMARIZER` - Optional: Mistral agent that summarizes a conversation for the restart handoff (see above). Without it the handoff carries only the last turns
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
 - `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The fresh conversation is seeded with a summary and the last 3 turns of the old one (see Conversation restarts and the handoff).
+- `REQUEST_TIMEOUT_MS` - Hard timeout for any single Mistral HTTP call made through `mistral_api.ts` (live turns and the nightly pipeline alike; default `120000`, clamped to [1, 600000], unparseable values fall back to the default).
 
 ## API Endpoints
 

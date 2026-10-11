@@ -18,7 +18,13 @@ jest.mock('../config', () => ({
   config: {
     mistral: {
       agentId: 'family-agent-1',
-      nightlyAgentId: 'nightly-agent-1'
+      nightlyAgentId: 'nightly-agent-1',
+      requestTimeoutMs: 30_000,
+      maxToolCalls: 5
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
     },
     nightly: {
       lockStaleMs: 2 * 60 * 60 * 1000,
@@ -854,6 +860,170 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 9b. Topics layer wiring
+  // -------------------------------------------------------------------------
+
+  it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed(
+      'topics/urlaub-planung.md',
+      'Aliases: Urlaub Planung, Sommerreise\nFamilie will ans Meer.'
+    );
+    await archive.seed('people/bob.md', 'Bob profile'); // non-topic seed must not reach the barrier
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Aliases: Ausflüge\nWas die Familie am Urlaubsort tun will.',
+        isNew: true
+      });
+      return { finalText: 'staged a topic', iterations: 1 };
+    });
+    const seenTopics: any[][] = [];
+    mockRunReview.mockImplementation(
+      async (
+        _update: any,
+        _current: any,
+        _lastTouchedAt: any,
+        _journals: any,
+        _attempt: any,
+        existingTopics: any
+      ) => {
+        seenTopics.push(existingTopics);
+        return { approved: true, reason: 'ok' };
+      }
+    );
+    await runNightlyPipeline();
+    // Every review attempt saw exactly the archived topics -- the people/ seed excluded, the
+    // proposal's own path excluded, the other archived topic present with its content.
+    expect(seenTopics.length).toBeGreaterThan(0);
+    for (const topics of seenTopics) {
+      expect(topics.map((t: any) => t.path)).toEqual(['topics/urlaub-planung.md']);
+    }
+    expect(seenTopics[0][0].content).toContain('Sommerreise');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('same-run duplicate barrier: a topic approved earlier in the run is part of the next review barrier', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Aliases: Urlaub Aktivitäten',
+        isNew: true
+      });
+      return { finalText: 'staged two topics', iterations: 1 };
+    });
+    const seenTopics: any[][] = [];
+    mockRunReview.mockImplementation(
+      async (
+        update: any,
+        _current: any,
+        _lastTouchedAt: any,
+        _journals: any,
+        _attempt: any,
+        existingTopics: any
+      ) => {
+        seenTopics.push(existingTopics);
+        return { approved: true, reason: 'ok' };
+      }
+    );
+    await runNightlyPipeline();
+    // First topic review starts from the (empty) archive; the second must already see the first.
+    expect(seenTopics[0]).toEqual([]);
+    expect(seenTopics[1].map((t: any) => t.path)).toEqual(['topics/urlaub-planung.md']);
+    // Both were archived (the reviewer approved both) -- the barrier's job is visibility, not rejection.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'topics/urlaub-planung.md',
+      'Aliases: Sommerreise',
+      expect.any(Date)
+    );
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'topics/urlaub-aktivitaeten.md',
+      'Aliases: Urlaub Aktivitäten',
+      expect.any(Date)
+    );
+  });
+
+  it('topic index is advisory: archived last, as staged, without line-level validation', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'general/topic-index.md',
+        content:
+          'Index:\n' +
+          'topics/urlaub-planung.md - Familienurlaub - Alice, Bob\n' +
+          'topics/abgelehntes-thema.md - nie archiviert - Alice',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      return { finalText: 'staged index and topic', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+    const result = await runNightlyPipeline();
+    const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
+    expect(indexCall).toBeDefined();
+    // Advisory: the index is archived exactly as staged -- no line dropping against the archive
+    // set. A stale line (e.g. for a rejected topic) is cosmetic and fixed by the next rewrite.
+    expect(indexCall![1]).toContain('topics/urlaub-planung.md - Familienurlaub - Alice, Bob');
+    expect(indexCall![1]).toContain('abgelehntes-thema');
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(true);
+    const paths = mockInsertNextVersion.mock.calls
+      .map(call => call[0])
+      .filter(p => p !== 'journals/alice/conv-1.md');
+    expect(paths.indexOf('general/topic-index.md')).toBeGreaterThan(
+      paths.indexOf('topics/urlaub-planung.md')
+    );
+    expect(result.status).toBe('completed');
+  });
+
+  it('topics load failure: run is partial, topics/ proposals skipped before review, advisory index archived as staged', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
+    mockListCurrentVersions
+      .mockRejectedValueOnce(new Error('db boom listing current versions'))
+      .mockImplementation(archive.listCurrentVersions);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'topics/urlaub-planung.md',
+        content: 'Aliases: Sommerreise',
+        isNew: true
+      });
+      await executeTool('stage_update', {
+        path: 'general/topic-index.md',
+        content: 'topics/urlaub-planung.md - Familienurlaub - Alice, Bob',
+        isNew: true
+      });
+      return { finalText: 'staged topic and index', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+    const result = await runNightlyPipeline();
+    // The load failure marks the run partial so the next invocation retries with healthy data.
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+    // Without barrier data topics/ proposals are skipped BEFORE any review is spent on them --
+    // no review call for the topic, and no archive call (it could be a duplicate).
+    const topicReviewCall = mockRunReview.mock.calls.find(
+      call => call[0]?.path === 'topics/urlaub-planung.md'
+    );
+    expect(topicReviewCall).toBeUndefined();
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(false);
+    // The advisory index is archived as staged, without line-level validation.
+    const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
+    expect(indexCall).toBeDefined();
+    expect(indexCall![1]).toContain('urlaub-planung');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
   // 10. Phase 6 privacy wiring
   // -------------------------------------------------------------------------
   it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
@@ -949,7 +1119,8 @@ describe('nightly pipeline integration', () => {
       'Existing alice content',
       seeded.createdAt.toISOString(),
       expect.any(Array),
-      0
+      0,
+      []
     );
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });

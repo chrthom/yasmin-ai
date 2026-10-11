@@ -17,9 +17,22 @@ Long-term memory is a small set of markdown files, addressed by exact path:
 - `people/<name>.md` -- the profile of one named family member or frequent contact.
 - `self-reflection/profile.md` -- Yasmin's own self-profile, written in first person ("I like...", "My...").
 - `general/family.md` -- family-wide notes: traditions, inside jokes, shared rules.
+- `topics/<topic>.md` -- a cross-cutting THEME that spans two or more people or recurs over time
+  (e.g. shared school stress, a recurring vacation wish). Not for single-person themes -- those belong
+  in the person's profile. Every topic file must START with an `Aliases:` line listing other names the
+  theme is known by ("Aliases: Urlaub Planung, Sommerreise") -- it is the matching anchor against
+  duplicates. The rest of the file describes the theme, what is known about it, and cross-references
+  the involved people. Write it in third person.
+- `general/topic-index.md` -- the topic registry. Whenever you create or change a topic file, you MUST
+  also stage an update to this index so it lists EVERY topic with its path, a one-line semantic
+  description, and the involved people.
+
+Before creating a new topic file, ALWAYS check the existing topics -- including `general/topic-index.md`
+-- even if the name sounds different. If an existing topic fits content-wise (by title, aliases, or
+content), extend THAT file instead of creating a new one. A reviewer rejects duplicate topics.
 
 When a task gives you a path to read or write, use that exact path -- do not invent new paths or rename
-existing ones.
+existing ones. Topic slugs use lowercase words joined by hyphens, e.g. `topics/urlaub-planung.md`.
 
 ---
 

@@ -2,12 +2,15 @@
 jest.mock('../config', () => ({
   config: {
     mistral: {
-      nightlyAgentId: 'nightly-agent-1'
+      nightlyAgentId: 'nightly-agent-1',
+      requestTimeoutMs: 30_000
     },
     nightly: {
       tz: 'Europe/Berlin',
       maxIterations: 15,
-      eagerMaxChars: 10000
+      eagerMaxChars: 10000,
+      transcriptMaxChars: 20000,
+      journalSoftCapChars: 4000
     }
   }
 }));
@@ -21,7 +24,6 @@ import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';
 import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
-  compactPrompt,
   formatRunDate,
   integratePrompt,
   journalPrompt,
@@ -31,7 +33,8 @@ import {
   runIntegrate,
   runReview,
   reviseProposal,
-  runCompact
+  runCompact,
+  StagedUpdate
 } from '../nightly/reflection';
 
 const mockAskAgent = askAgent as jest.Mock;
@@ -325,6 +328,74 @@ describe('reflection', () => {
       expect(later).toContain('Review attempt 2');
     });
 
+    it('instructs the reviewer to reject a duplicate topics/ proposal and propose a merge', () => {
+      const update: StagedUpdate = {
+        path: 'topics/urlaub-aktivitaeten.md',
+        content: 'Ausflüge',
+        isNew: true
+      };
+      const existing = [
+        { path: 'topics/urlaub-planung.md', content: 'Aliases: Urlaub Planung, Sommerreise' }
+      ];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain('urlaub-planung.md');
+      expect(prompt).toContain('DUPLICATE');
+      expect(prompt).toContain('merging');
+    });
+    it('embeds every existing topic with its full content for the duplicate check', () => {
+      const update: StagedUpdate = {
+        path: 'topics/school-stress.md',
+        content: 'Aliases: Schulstress',
+        isNew: true
+      };
+      const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain('--- topics/urlaub-planung.md ---');
+      expect(prompt).toContain('Aliases: Sommerreise');
+      expect(prompt).toContain('EXCLUDING topics/school-stress.md');
+      expect(prompt).not.toContain('--- topics/school-stress.md ---');
+    });
+    it('topic excerpt: short content is embedded verbatim', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const existing = [{ path: 'topics/kurz.md', content: 'Aliases: Kurz\nThema A.' }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain('Aliases: Kurz\nThema A.');
+      expect(prompt).not.toContain('truncated for review');
+    });
+    it('topic excerpt: long content is truncated but the Aliases line survives intact', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const longContent = 'Aliases: Sommerreise, Urlaub Planung\n' + 'x'.repeat(1000);
+      const existing = [{ path: 'topics/alt.md', content: longContent }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain('Aliases: Sommerreise, Urlaub Planung');
+      expect(prompt).toContain('truncated for review');
+      expect(prompt).not.toContain('get_long_term_file');
+      // The truncation marker appears exactly once -- the Aliases line was not cut mid-way.
+      expect(prompt.split('truncated for review').length - 1).toBe(1);
+    });
+
+    it('topic excerpt: an Aliases line longer than the cap survives intact', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const longAliases = 'Aliases: ' + 'a'.repeat(700) + '\n' + 'x'.repeat(1000);
+      const existing = [{ path: 'topics/alt.md', content: longAliases }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain(longAliases.split('\n')[0]);
+      expect(prompt).toContain('truncated for review');
+    });
+    it('topic excerpt: single-line content longer than the cap is truncated with the marker', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const singleLine = 'x'.repeat(1000);
+      const existing = [{ path: 'topics/alt.md', content: singleLine }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain('truncated for review');
+    });
+    it('adds no topics context for a non-topic update even when topics exist', () => {
+      const update: StagedUpdate = { path: 'people/christopher.md', content: 'x', isNew: false };
+      const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];
+      const prompt = reviewPrompt(update, 'old', null, [], 0, existing);
+      expect(prompt).not.toContain('urlaub-planung.md');
+      expect(prompt).not.toContain('DUPLICATE');
+    });
     it('names self-profile personality synthesis specifically on later attempts for the self profile', () => {
       const later = reviewPrompt(
         { path: 'self-reflection/profile.md', content: 'new content', isNew: false },
@@ -458,6 +529,17 @@ describe('reflection', () => {
     });
     it('uses UTC faithfully for a UTC instant near midnight in the other direction', () => {
       expect(formatRunDate(new Date('2026-01-01T00:00:00Z'))).toBe('2026-01-01');
+    });
+  });
+
+  describe('integratePrompt (topics layer)', () => {
+    it('instructs the agent to MOVE a theme out of the person profiles when a topic file is created', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('MOVE the theme out of the individual profiles');
+      expect(prompt).toContain('with the theme REMOVED');
+      expect(prompt).toContain('never keep the full theme in BOTH');
+      expect(prompt).toContain('topics/<topic>.md');
+      expect(prompt).toContain('general/topic-index.md');
     });
   });
 

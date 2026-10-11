@@ -8,7 +8,7 @@
   "properties": {
     "path": {
       "type": "string",
-      "description": "The exact path of the memory file to create or revise. Examples: 'people/christopher.md', 'people/samira.md'."
+      "description": "The exact path of the memory file to create or revise. Examples: 'people/christopher.md', 'people/samira.md', 'topics/urlaub-planung.md', 'general/topic-index.md'."
     },
     "content": {
       "type": "string",

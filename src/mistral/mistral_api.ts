@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { config } from '../config';
+import { extractContentText } from './content';
 
 // ---------------------------------------------------------------------------
 // Errors + retry
@@ -32,10 +33,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Hard ceiling for any single Mistral HTTP call. withRetry only engages on a *thrown* error, so
-// without this a hung TCP/TLS connection would never settle and would block a phase indefinitely
-// while holding processing_lock.
-const REQUEST_TIMEOUT_MS = 30_000;
+// Hard ceiling for any single Mistral HTTP call. withRetry only engages on a *thrown* error,
+// so without this a hung TCP/TLS connection would never settle and would block a phase
+// indefinitely while holding processing_lock.
+const REQUEST_TIMEOUT_MS = config.mistral.requestTimeoutMs;
 
 /**
  * Canonical URL of the conversations endpoint, derived from the single configured API root so
@@ -48,15 +49,20 @@ export function conversationsUrl(): string {
 /**
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
+ * `timeoutMs` lets callers override the default REQUEST_TIMEOUT_MS ceiling.
  */
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error('Mistral API request timed out after ' + REQUEST_TIMEOUT_MS + 'ms: ' + url);
+      throw new Error('Mistral API request timed out after ' + timeoutMs + 'ms: ' + url);
     }
     throw error;
   } finally {
@@ -361,18 +367,8 @@ const AgentCallResponseSchema = z.object({
 
 // Joins the text parts of a single message.output's content (string, or array of {type, text} parts)
 function extractOutputText(content: z.infer<typeof OutputContentResponseSchema> | undefined): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .filter(p => p.type === 'text' && typeof p.text === 'string')
-      .map(p => p.text as string)
-      .join(' ');
-  }
-  return '';
+  return extractContentText(content);
 }
-
 /**
  * Sends inputs to the agent (starting or continuing a conversation) and parses text + tool calls from the reply
  */

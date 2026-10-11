@@ -1,3 +1,37 @@
+// Mock config for tests - MUST be before any imports that use config. Retries are disabled
+// (maxRetries: 0) so withRetry's exponential-backoff does not slow the suite down; the retry
+// behavior itself is covered by the dedicated mistral_api tests.
+jest.mock('../config', () => ({
+  config: {
+    mistral: {
+      apiKey: 'test-api-key',
+      agentId: 'test-agent-id',
+      conversationTtlMs: 12 * 60 * 60 * 1000,
+      maxTurnsPerSession: 50,
+      handoffRecentTurns: 3,
+      handoffWaitMs: 5000,
+      apiRoot: 'https://api.test/v1',
+      libraryId: 'lib-1',
+      nightlyAgentId: 'nightly-agent-1',
+      summarizerAgentId: 'summarizer-agent-1',
+      requestTimeoutMs: 120000,
+      maxToolCalls: 5
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    },
+    chat: {
+      noteContentMaxChars: 500,
+      noteToEveryone: 'everyone',
+      shortAnswerMaxChars: 1500
+    },
+    nightly: {
+      maxRetries: 0
+    }
+  }
+}));
+
 // ChatAgent builds its conversation URLs from the shared Mistral client helper; pin it to a
 // fixed value so fetch assertions stay deterministic regardless of config.
 jest.mock('../mistral/mistral_api', () => ({
@@ -6,6 +40,7 @@ jest.mock('../mistral/mistral_api', () => ({
 }));
 
 import { ChatAgent } from '../chat_agent';
+import { config } from '../config';
 import { buildHandoff } from '../handoff';
 import {
   claimNoteDelivery,
@@ -245,7 +280,8 @@ describe('ChatAgent', () => {
     });
 
     it('should handle network errors gracefully', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+      // The GET list request retries network-style failures, so reject every attempt
+      mockFetch.mockRejectedValue(new Error('Network error'));
 
       await expect(chatAgent['getActiveConversationId']('testuser')).rejects.toThrow('Network error');
     });
@@ -429,9 +465,8 @@ describe('ChatAgent', () => {
         statusText: 'OK',
         json: () => Promise.resolve({ outputs: [{ content: 'ok', type: 'message.output' }] })
       });
-      const { config } = jest.requireActual('../config');
       const original = config.mistral.handoffWaitMs;
-      config.mistral.handoffWaitMs = 20;
+      (config.mistral as { handoffWaitMs: number }).handoffWaitMs = 20;
       mockBuildHandoff.mockImplementation((_id: string, opts?: { withSummary: boolean }) =>
         opts?.withSummary === false
           ? Promise.resolve('<previous_conversation>\nRECENT ONLY\n</previous_conversation>')
@@ -446,7 +481,7 @@ describe('ChatAgent', () => {
       try {
         await chatAgent.processRequest('Hello', 'testuser');
       } finally {
-        config.mistral.handoffWaitMs = original;
+        (config.mistral as { handoffWaitMs: number }).handoffWaitMs = original;
       }
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.inputs[0].content).toContain('RECENT ONLY');
@@ -559,7 +594,9 @@ describe('ChatAgent', () => {
     });
 
     it('should handle network errors', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+      // Network-style failures are NOT retried for the non-idempotent POST (safeRetry in
+      // postToConversation): the turn fails fast with the original error.
+      mockFetch.mockRejectedValue(new Error('Network error'));
 
       await expect(chatAgent.processRequest('Hello', 'testuser')).rejects.toThrow('Network error');
     });
@@ -568,7 +605,7 @@ describe('ChatAgent', () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
 
       const order: string[] = [];
-      mockFetch.mockImplementation(async () => {
+      mockFetch.mockReset().mockImplementation(async () => {
         order.push('start');
         await new Promise(resolve => setTimeout(resolve, 20));
         order.push('end');
@@ -886,7 +923,7 @@ describe('ChatAgent', () => {
         .mockResolvedValueOnce('conv-poisoned')
         .mockResolvedValue(undefined);
 
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockImplementationOnce(async () => ({
         ok: true,
         status: 200,
         statusText: 'OK',
@@ -901,15 +938,15 @@ describe('ChatAgent', () => {
             }
           ]
         })
-      });
+      }));
       // Tool result submission fails with HTTP 500, poisoning the conversation
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockImplementationOnce(async () => ({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error'
-      });
+      }));
       // Respawn in a fresh conversation succeeds
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockImplementationOnce(async () => ({
         ok: true,
         status: 200,
         statusText: 'OK',
@@ -917,7 +954,7 @@ describe('ChatAgent', () => {
           conversation_id: 'conv-fresh',
           outputs: [{ type: 'message.output', content: 'Fresh answer' }]
         })
-      });
+      }));
 
       const result = await chatAgent.processRequest('Hello', 'christopher');
 
@@ -970,9 +1007,7 @@ describe('ChatAgent', () => {
         statusText: 'Not Found'
       });
 
-      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow(
-        'Mistral API request failed: HTTP 404'
-      );
+      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow('no respawn possible');
       // Only one request was made -- a fresh-conversation 404 must not trigger a respawn loop
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect((chatAgent as any).conversationCache.has('christopher')).toBe(false);
@@ -1153,8 +1188,9 @@ describe('ChatAgent', () => {
       mockGetUndeliveredNotesForUser.mockResolvedValue([
         { id: 3, fromUsername: 'anjali', content: 'Dinner at 7' }
       ]);
-      // Non-stale failure: no respawn, the notes were never shown to the user
-      mockFetch.mockResolvedValueOnce({
+      // Non-stale failure: no respawn, the notes were never shown to the user. The 500 is
+      // retried (safeRetry) with the default backoff before the turn finally fails.
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error'
@@ -1167,6 +1203,24 @@ describe('ChatAgent', () => {
       expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(3, 'zara');
     });
 
+    it('releases the delivery claims when a FRESH conversation create hits a stale 400/404 (no respawn possible)', async () => {
+      // Regression guard: a 400/404 on the conversation create itself can neither respawn
+      // (there is no old conversation) nor deliver -- the claimed notes must be released so
+      // they ride along with the next input instead of being orphaned.
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
+      mockGetUndeliveredNotesForUser.mockResolvedValue([
+        { id: 6, fromUsername: 'anjali', content: 'Dinner at 7' }
+      ]);
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found'
+      });
+      await expect(chatAgent.processRequest('Hello', 'zara')).rejects.toThrow('no respawn possible');
+      expect(mockClaimNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledTimes(1);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(6, 'zara');
+    });
     it('releases the delivery claims on a network error too', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue(undefined);
       mockGetUndeliveredNotesForUser.mockResolvedValue([
