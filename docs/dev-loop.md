@@ -134,7 +134,7 @@ steps:
   - run: npm ci
   - run: curl -LsSf https://mistral.ai/vibe/install.sh | bash
   - run: vibe --prompt-file .github/dev-loop/prompts/<role>.md --auto-approve
-        --max-turns 40 --max-price 3 --time-limit 3300
+        --max-turns <per role> --max-price <per role> --time-limit <per role>
         --enabled-tools <role allowlist>
         --output-dir out/
     env:
@@ -161,19 +161,21 @@ the agent never needs review-writing API access.
 ## Budgets and parameters
 
 Calibrate from `export.json` artifacts after the first real runs; these are the starting caps
-(all enforced by vibe itself — a cap hit is exit code 3 with a parseable outcome, not a hang):
+(all enforced by vibe itself — a cap hit is exit code 3 with a parseable outcome, not a hang; `--max-tokens` deliberately unset, see table):
 
-| Role | `--max-turns` | `--max-price` | `--max-tokens` | `--time-limit` | Rationale |
-| --- | --- | --- | --- | --- | --- |
-| implementer | 60 | 5.00 | 800k | 3600 (60 min) | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint; 60 turns ≈ 25–30 tool calls of headroom above typical |
-| reviewer | 40 | 2.00 | 400k | 2400 (40 min) | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once |
-| fixer | 40 | 2.00 | 400k | 2400 | scoped to one review's findings; usually well under |
-| merger | 30 | 1.00 | 200k | 1800 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
+| Role | `--max-turns` | `--max-price` | `--time-limit` | Rationale |
+| --- | --- | --- | --- | --- |
+| implementer | 90 | 7.50 | 5400 (90 min) | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint; 90 turns ≈ 40 tool calls of headroom above typical |
+| reviewer | 60 | 3.00 | 3600 (60 min) | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once |
+| fixer | 60 | 3.00 | 3600 | scoped to one review's findings; usually well under |
+| merger | 45 | 1.50 | 2700 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
 
-Hard ceiling independent of vibe: the GitHub job timeout (`timeout-minutes`) set 10–15 min
-above each `--time-limit`, so a wedged process cannot burn the 6-hour job limit. Expected
-real-world spend per happy-path PR (implement + 1–2 reviews + 1 fix + occasional merge):
-roughly $5–15 total at these caps; the caps bound the worst case at ~$10 per role run.
+`--max-price` is the cost brake; `--max-tokens` is deliberately **not set** (price already
+bounds cumulative token spend, and a separate token cap adds a failure mode without adding
+protection). Hard ceiling independent of vibe: the GitHub job timeout (`timeout-minutes`)
+set 15 min above each `--time-limit`, so a wedged process cannot burn the 6-hour job limit.
+Expected real-world spend per happy-path PR (implement + 1–2 reviews + 1 fix + occasional
+merge): roughly $5–15 total; the caps bound the worst case at ~$15 per role run.
 
 ## Failure handling
 
