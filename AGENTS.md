@@ -245,6 +245,7 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - `AGENT_ID_SUMMARIZER` - Optional: Mistral agent that summarizes a conversation for the restart handoff (see above). Without it the handoff carries only the last turns
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
 - `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The fresh conversation is seeded with a summary and the last 3 turns of the old one (see Conversation restarts and the handoff).
+- `REQUEST_TIMEOUT_MS` - Hard timeout for any single Mistral HTTP call made through `mistral_api.ts` (live turns and the nightly pipeline alike; default `120000`, clamped to [1, 600000], unparseable values fall back to the default).
 
 ## API Endpoints
 

@@ -36,7 +36,8 @@ jest.mock('../config', () => ({
       minute: 0,
       transcriptMaxChars: 20000,
       journalSoftCapChars: 4000,
-      shutdownTimeoutMs: 30_000
+      shutdownTimeoutMs: 30_000,
+      maxRetries: 0
     },
     synology: {
       chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',

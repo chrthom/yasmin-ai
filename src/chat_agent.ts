@@ -9,7 +9,7 @@ import {
   IntradayNoteForDelivery
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
-import { conversationsUrl } from './mistral/mistral_api';
+import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 
 interface MistralConversationResponseOutputPart {
@@ -36,6 +36,22 @@ interface MistralConversationResponse {
   id?: string;
   conversation_id?: string;
   outputs: MistralConversationResponseOutput[];
+}
+
+// A stale conversation (HTTP 400/404) that must poison the cache and respawn once in a fresh
+// conversation; thrown by postToConversation and handled by processRequestInternal's catch so the
+// poison + cache-delete + respawn logic exists exactly once.
+class RespawnRequestedException extends Error {
+  public readonly failedConversationId: string | undefined;
+  constructor(failedConversationId: string | undefined) {
+    super('Stale Mistral conversation, a respawn in a fresh conversation is required');
+    this.name = 'RespawnRequestedException';
+    this.failedConversationId = failedConversationId;
+  }
+}
+
+function authorizationHeader(apiKey: string): Record<string, string> {
+  return { Authorization: `Bearer ${apiKey}` };
 }
 
 interface MistralConversationMeta {
@@ -65,6 +81,7 @@ export class ChatAgent {
   >();
   private conversationTtlMs = config.mistral.conversationTtlMs;
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
+  private chatRequestTimeoutMs = config.mistral.requestTimeoutMs;
 
   constructor(apiKey: string, agentId: string) {
     this.apiKey = apiKey;
@@ -212,6 +229,64 @@ export class ChatAgent {
     }
   }
 
+  /**
+   * POSTs `body` to the conversation endpoint with a hard timeout and safeRetry: only typed
+   * 429/5xx responses are retried, network-style failures fail fast (the POST is not idempotent).
+   * A stale 400/404 is converted to RespawnRequestedException for the caller's shared
+   * poison + cache-clear + respawn handling.
+   */
+  private async postToConversation(
+    conversationId: string | undefined,
+    body: unknown,
+    // A failed tool-result send may leave the conversation broken even on a non-stale status
+    // (e.g. a persistent 5xx after retries), so the tool path respawns on any typed API error,
+    // while the initial send only respawns on the stale 400/404 statuses.
+    // true  -> non-stale typed API errors (e.g. a persistent 5xx after retries) also trigger a respawn
+    // false -> only stale 400/404 responses trigger a respawn; other errors just fail the turn
+    respawnOnAnyError: boolean = false
+  ): Promise<MistralConversationResponse> {
+    const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
+    try {
+      return await withRetry(
+        async () => {
+          const response = await fetchWithTimeout(
+            url,
+            {
+              method: 'post',
+              body: JSON.stringify(body),
+              headers: {
+                'Content-Type': 'application/json',
+                ...authorizationHeader(this.apiKey)
+              }
+            },
+            this.chatRequestTimeoutMs
+          );
+          if (!response.ok) {
+            console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
+            throw new MistralApiError(`Mistral API request failed: HTTP ${response.status}`, response.status);
+          }
+          return <MistralConversationResponse>await response.json();
+        },
+        // safeRetry heuristic: a typed 429/5xx response PROBABLY means the server rejected the
+        // request without committing it -- but that is not airtight (a proxy 502 after an
+        // upstream commit, or a post-commit serialization crash, would duplicate the message).
+        // The small duplication window is accepted in exchange for surviving transient 5xx.
+        { safeRetry: true }
+      );
+    } catch (error) {
+      // A stale conversation (deleted by the nightly job, or left broken by a pending function
+      // call) rejects further turns with HTTP 400/404. Only these typed, non-retryable statuses
+      // lead to a respawn -- everything else stays a MistralApiError and just fails the turn.
+      if (
+        error instanceof MistralApiError &&
+        (respawnOnAnyError || error.status === 400 || error.status === 404)
+      ) {
+        throw new RespawnRequestedException(conversationId);
+      }
+      throw error;
+    }
+  }
+
   private async getActiveConversationId(username: string): Promise<string | undefined> {
     // Check cache first
     const cached = this.conversationCache.get(username);
@@ -221,12 +296,15 @@ export class ChatAgent {
     }
 
     try {
-      const response = await fetch(conversationsUrl(), {
-        method: 'get',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`
-        }
-      });
+      // A GET is idempotent, so ambiguous network-style failures (timeout, socket reset)
+      // may be retried as well -- no safeRetry restriction needed. It keeps fetchWithTimeout's
+      // default ceiling (a lightweight list call) while the POSTs use chatRequestTimeoutMs.
+      const response = await withRetry(() =>
+        fetchWithTimeout(conversationsUrl(), {
+          method: 'get',
+          headers: authorizationHeader(this.apiKey)
+        })
+      );
 
       if (!response.ok) {
         console.error(
@@ -294,6 +372,9 @@ export class ChatAgent {
     // Ids of the notes claimed for this input; released if the request fails (they were never shown).
     claimedNoteIds: number[] = []
   ): Promise<MistralConversationResponseOutput[]> {
+    // Declared outside the try so the shared respawn handling in the catch block can pass the
+    // notes block of this input on to the respawned conversation.
+    let notesBlock = claimedNotesBlock;
     try {
       let conversationId = await this.getActiveConversationId(username);
       console.log(`DEBUG Existing conversation ${conversationId}`);
@@ -342,7 +423,6 @@ export class ChatAgent {
 
       // Notes travel with the next input so old sessions still receive them; a respawn reuses the
       // already-claimed block instead of re-claiming.
-      let notesBlock = claimedNotesBlock;
       if (!isRespawn) {
         const delivery = await this.deliverIntradayNotes(username);
         if (delivery) {
@@ -385,44 +465,7 @@ export class ChatAgent {
         ]
       };
       console.log(`INFO Sending prompt to LLM agent: ${JSON.stringify(body)}`);
-
-      const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
-      const response = await fetch(url, {
-        method: 'post',
-        body: JSON.stringify(body),
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`
-        }
-      });
-
-      if (!response.ok) {
-        console.error(`ERROR Mistral API request failed: HTTP ${response.status} ${response.statusText}`);
-        const isStale = response.status === 400 || response.status === 404;
-        if (isStale) {
-          if (conversationId) {
-            this.markConversationPoisoned(username, conversationId);
-          }
-          this.conversationCache.delete(username);
-          console.log(`INFO Cleared cached conversation for ${username} due to HTTP ${response.status}`);
-        }
-        // Respawn a stale (deleted/poisoned) conversation once so the user's message isn't dropped.
-        if (isStale && conversationId && !isRespawn) {
-          console.log(`INFO Respawning a fresh conversation for ${username}`);
-          return this.processRequestInternal(
-            userText,
-            username,
-            shortAnswer,
-            true,
-            conversationId,
-            notesBlock,
-            claimedNoteIds
-          );
-        }
-        throw new Error(`Mistral API request failed: HTTP ${response.status}`);
-      }
-
-      const data = <MistralConversationResponse>await response.json();
+      const data = await this.postToConversation(conversationId, body);
       console.log(`DEBUG Received raw answer from mistral: ${JSON.stringify(data)}`);
 
       const returnedId = data.conversation_id || data.id;
@@ -548,44 +591,11 @@ export class ChatAgent {
             const toolBody = {
               inputs: toolInputs
             };
-            const toolUrl = `${conversationsUrl()}/${currentConversationId}`;
 
             console.log(`INFO Sending tool results to Mistral: ${JSON.stringify(toolBody)}`);
-            const toolResponse = await fetch(toolUrl, {
-              method: 'post',
-              body: JSON.stringify(toolBody),
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.apiKey}`
-              }
-            });
-
-            if (!toolResponse.ok) {
-              console.error(
-                `ERROR Mistral API request for tool failed: HTTP ${toolResponse.status} ${toolResponse.statusText}`
-              );
-              // A failed tool-result request can poison the conversation; respawn in a fresh one.
-              this.markConversationPoisoned(username, currentConversationId);
-              this.conversationCache.delete(username);
-              console.log(
-                `INFO Cleared cached conversation for ${username} due to tool request HTTP ${toolResponse.status}`
-              );
-              if (!isRespawn) {
-                console.log(`INFO Respawning a fresh conversation for ${username}`);
-                return this.processRequestInternal(
-                  userText,
-                  username,
-                  shortAnswer,
-                  true,
-                  currentConversationId,
-                  notesBlock,
-                  claimedNoteIds
-                );
-              }
-              throw new Error(`Mistral API request for tool failed: HTTP ${toolResponse.status}`);
-            }
-
-            const toolData = <MistralConversationResponse>await toolResponse.json();
+            // A failed tool-result request can poison the conversation; postToConversation
+            // turns the failure into RespawnRequestedException for the shared respawn handling.
+            const toolData = await this.postToConversation(currentConversationId, toolBody, true);
             console.log(`DEBUG Received raw answer after tool execution: ${JSON.stringify(toolData)}`);
 
             responseOutputs = toolData.outputs;
@@ -605,6 +615,36 @@ export class ChatAgent {
       this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {
+      // A stale conversation (HTTP 400/404, from postToConversation): poison it, clear the
+      // cache, and respawn once so the user's message isn't dropped (isRespawn guards against
+      // looping). Without a respawn the turn is dropped, so the notes were never shown -- their
+      // claims are released like any other non-recoverable failure.
+      if (error instanceof RespawnRequestedException) {
+        const failedConversationId = error.failedConversationId;
+        if (failedConversationId) {
+          this.markConversationPoisoned(username, failedConversationId);
+        }
+        this.conversationCache.delete(username);
+        console.log(`INFO Cleared cached conversation for ${username} due to a stale Mistral conversation`);
+        if (failedConversationId && !isRespawn) {
+          console.log(`INFO Respawning a fresh conversation for ${username}`);
+          return this.processRequestInternal(
+            userText,
+            username,
+            shortAnswer,
+            true,
+            failedConversationId,
+            notesBlock,
+            claimedNoteIds
+          );
+        }
+        if (!isRespawn && claimedNoteIds.length > 0) {
+          await this.releaseClaimedNotes(username, claimedNoteIds);
+        }
+        throw new Error(
+          `Mistral API request failed: stale conversation ${failedConversationId || '(new)'} and no respawn possible`
+        );
+      }
       // The notes were never shown, so release their claims (respawn paths own them now).
       if (!isRespawn && claimedNoteIds.length > 0) {
         await this.releaseClaimedNotes(username, claimedNoteIds);
