@@ -85,7 +85,7 @@ process.on('unhandledRejection', (reason, promise) => {
   server.close(() => process.exit(1));
 });
 
-const NIGHTLY_SHUTDOWN_TIMEOUT_MS = 30_000;
+const NIGHTLY_SHUTDOWN_TIMEOUT_MS = config.nightly.shutdownTimeoutMs;
 
 /**
  * Stop scheduling new nightly runs and let an in-flight pipeline drain within a bounded timeout,

@@ -1,6 +1,15 @@
 jest.mock('../config', () => ({
   config: {
+    mistral: {
+      requestTimeoutMs: 30_000
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    },
     nightly: {
+      hour: 23,
+      minute: 0,
       tz: 'Europe/Berlin',
       maxRetries: 3,
       lockStaleMs: 1000,

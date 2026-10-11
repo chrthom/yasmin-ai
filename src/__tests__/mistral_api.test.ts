@@ -5,7 +5,9 @@ jest.mock('../config', () => ({
       apiRoot: 'https://api.test/v1',
       apiKey: 'test-key',
       libraryId: 'lib-1',
-      nightlyAgentId: 'nightly-agent-1'
+      nightlyAgentId: 'nightly-agent-1',
+      requestTimeoutMs: 30_000,
+      maxToolCalls: 5
     },
     nightly: {
       maxRetries: 3,

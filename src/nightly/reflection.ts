@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
 import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
@@ -31,16 +32,13 @@ export function extractMessageText(content: unknown): string {
 // The live agent seeds a fresh conversation (turn-limit reset or respawn) with a replayed summary and the
 // last few messages of the previous one, wrapped in this block. It is context, not something the user said,
 // and the previous conversation is journaled on its own -- so it must never reach the journal transcript.
-const HANDOFF_BLOCK_RE = /<previous_conversation>[\s\S]*?<\/previous_conversation>\s*/g;
-
 export function stripHandoffBlock(text: string): string {
-  return text.replace(HANDOFF_BLOCK_RE, '').trim();
+  return text.replace(PREVIOUS_CONVERSATION_STRIP_RE, '').trim();
 }
 
 // Hard ceiling for the journal transcript. The live conversation can carry large internal tool results
 // (e.g. a web_search read of a whole web page), which are low-information for memory yet, if allowed
 // through, would balloon the journal prompt and can cause the journal agent to misbehave or emit nothing.
-const TRANSCRIPT_MAX_CHARS = 20000;
 
 // Internal plumbing isn't conversation content: tool calls, function calls/results (including giant
 // web_search reads), system/service rows and errors should never reach the transcript that feeds memory.
@@ -75,12 +73,13 @@ export function buildTranscript(messages: ConversationMessage[]): string {
     lines.push(label + ': ' + text);
   }
 
+  const transcriptMaxChars = config.nightly.transcriptMaxChars;
   let transcript = lines.join('\n');
-  if (transcript.length > TRANSCRIPT_MAX_CHARS) {
+  if (transcript.length > transcriptMaxChars) {
     transcript =
-      transcript.slice(0, TRANSCRIPT_MAX_CHARS) +
+      transcript.slice(0, transcriptMaxChars) +
       '\n…[transcript truncated by nightly harness; kept first ' +
-      TRANSCRIPT_MAX_CHARS +
+      transcriptMaxChars +
       ' chars]';
   }
   return transcript;
@@ -90,8 +89,10 @@ export function buildTranscript(messages: ConversationMessage[]): string {
 // Phase 2 -- Journal
 // ---------------------------------------------------------------------------
 
-/** Soft cap on journal length -- keeps the archive from bloating with runaway output, not a hard limit */
-export const JOURNAL_SOFT_CAP_CHARS = 4000;
+/** Soft cap on journal length -- keeps the archive from bloating with runaway output, not a hard limit.
+ * Named alias for config.nightly.journalSoftCapChars, kept as the domain term used by this module's
+ * prompts and tests. */
+export const JOURNAL_SOFT_CAP_CHARS: number = config.nightly.journalSoftCapChars;
 
 /**
  * Builds the Phase-2 prompt asking the nightly agent to journal a conversation with userName,
