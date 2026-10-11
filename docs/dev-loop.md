@@ -19,7 +19,7 @@ role workflow (reviewer / fixer / merger / implementer)
   pre-step: gate + dedupe (head SHA, verdict, iteration cap)
   job:      checkout → Node 22 → npm ci → render prompt (budget injected) →
             vibe --prompt-file out/<role>.rendered.md --auto-approve --trust
-            --output streaming --max-turns --max-price --time-limit
+            --output streaming --max-turns --max-tokens --time-limit
             --output-dir out/ (with a denial-streak watchdog on the stream)
   post-step: deterministic state machine from out/export.json + out/stream.ndjson
              (ready/draft, labels, escalation, next dispatch)
@@ -73,7 +73,7 @@ no-op.
   since the last escalation comment (per escalation epoch). At `MAX_ITERATIONS` (8), it
   deterministically labels `needs-human`, posts the escalation, dispatches nothing. Agents
   cannot see or negotiate the cap.
-- **Per-run budgets**: `--max-price` / `--max-turns` on every role run (plus the job
+- **Per-run budgets**: `--max-turns` / `--max-tokens` on every role run (plus the job
   `timeout-minutes` as the wall-clock cap); a budget stop escalates instead of chaining.
 - **Fixer chains only on `finished`**: `WALL:` or a limit-stop breaks the cycle.
 - **One review per head SHA**: pre-step skips if a marker review with `commit_id == headRefOid`
@@ -136,7 +136,7 @@ steps:
   - run: curl -LsSf https://mistral.ai/vibe/install.sh | bash
   - run: render .github/dev-loop/prompts/<role>.md with the budget values, then:
         vibe --prompt-file out/<role>.rendered.md --auto-approve --trust
-        --output streaming --max-turns <per role> --max-price <per role>
+        --output streaming --max-turns <per role> --max-tokens <per role>
         --time-limit <per role> --output-dir out/
         2> out/vibe.stderr | tee out/stream.ndjson | <denial-streak watchdog>
         env:
@@ -175,19 +175,24 @@ review-writing API access.
 
 Calibrate from the `out/export.json` artifacts after the first real runs; these are the starting caps
 (all enforced by vibe itself — a cap hit stops the session with `Stopped: <outcome>` on
-stderr and a parseable `export.json`, exit code 3, not a hang; `--max-tokens` deliberately
-unset, see table):
+stderr and a parseable `export.json`, exit code 3, not a hang):
 
-| Role | `--max-turns` | `--max-price` | `--time-limit` | job `timeout-minutes` | Rationale |
+| Role | `--max-turns` | `--max-tokens` | `--time-limit` | job `timeout-minutes` | Rationale |
 | --- | --- | --- | --- | --- |
-| implementer | 90 | 7.50 | 5400 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint; 90 turns ≈ 40 tool calls of headroom above typical |
-| reviewer | 60 | 3.00 | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once |
-| fixer | 60 | 3.00 | 3600 | 75 | scoped to one review's findings; usually well under |
-| merger | 45 | 1.50 | 2700 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
+| implementer | 120 | 6M | 5400 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint. First live run used 71 steps / 3.03M tokens / $4.63 on a modest issue; 120 turns and 6M tokens give ~2x headroom over that observation |
+| reviewer | 60 | 4M | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate in Phase 2 from its first artifacts |
+| fixer | 60 | 4M | 3600 | 75 | scoped to one review's findings; usually well under |
+| merger | 45 | 2M | 2700 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
 
-`--max-price` is the cost brake; `--max-tokens` is deliberately **not set** (price already
-bounds cumulative token spend, and a separate token cap adds a failure mode without adding
-protection). Hard ceiling independent of vibe: the GitHub job timeout (`timeout-minutes`)
+`--max-tokens` is the resource brake, and `--max-price` is deliberately **not set**: the
+first live run showed 0 cached input tokens (3.02M input at the uncached rate), so dollar
+price tracks caching behavior we do not control rather than work done — a price cap would
+escalate with a misleading "too expensive" diagnosis when the billing is anomalous. Token
+spend, by contrast, is a direct measure of work: sessions always start fresh, the model and
+temperature are fixed, and each step resends the accumulated context, so turns and tokens
+correlate tightly. A `token_limit` hit is a truthful "this run consumed excessive tokens"
+(≈ $9–10 worst case uncached at 6M, ≈ $1 if caching ever engages); a `turn_limit` hit means
+the planning budget was too small or the agent looped. Hard ceiling independent of vibe: the GitHub job timeout (`timeout-minutes`)
 set 15 min above each `--time-limit`, so a wedged process cannot burn the 6-hour job limit.
 A `--time-limit` hit is a parseable exit-3 `deadline` outcome with a complete export.
 Expected real-world spend per happy-path PR (implement + 1–2 reviews + 1 fix + occasional
@@ -213,12 +218,12 @@ GitHub trace. No silent stuck states. Every failure path ends in exactly one of:
 
 The vibe exit code and `out/export.json` are the discriminators (`out/stream.ndjson` has the
 full transcript). Vibe 2.26.1 exit codes: 0 finished, 1 usage/config error, 2 infrastructure
-failure, 3 limit hit or refusal (`turn_limit`/`token_limit`/`price_limit`/`deadline`/`refusal`), 4 aborted:
+failure, 3 limit hit or refusal (`turn_limit`/`token_limit`/`deadline`/`refusal`), 4 aborted:
 
 | What failed | Detection | Handling (post-step, in code) |
 | --- | --- | --- |
 | model API outage / runner infra | exit 2 (`infrastructure_failure`) | **retry once** by re-dispatching the workflow via `gh workflow run` with a retry input (the re-run API cannot touch a run that is still in progress — it 403s — and fine-grained PATs cannot hold Actions permissions, so the dispatch uses the workflow's own `actions: write` token); on second failure: escalate with reason + run link. Transient by nature |
-| budget hit (turns/price/tokens/time) | exit 3 (`turn_limit`/`price_limit`/`token_limit`/`deadline` in `export.json`) | escalate: label `needs-human`, comment the outcome + cost from `export.json` ("likely a rabbit hole or the issue is too large"), link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem |
+| budget hit (turns/tokens/time) | exit 3 (`turn_limit`/`token_limit`/`deadline` in `export.json`) | escalate: label `needs-human`, comment the outcome + cost from `export.json`, link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem. `turn_limit` = planning budget too small or agent looped; `token_limit` = run consumed excessive tokens (do not interpret as "too expensive" — billing varies with caching) |
 | wall-clock timeout (belt above `--time-limit`) | job killed by `timeout-minutes` (no vibe exit code) | red run; the re-run backstop covers it |
 | model refusal | exit 3 (`refusal` in `export.json`) | escalate with the refusal; a human decides whether the task is genuinely unsafe |
 | usage/config error (bad flag, missing API key) | exit 1 (`usage_error`/`config_error`) | escalate; deterministic, a retry fails the same way |
@@ -270,5 +275,5 @@ which is also the recovery path if a webhook event was ever missed.
   success; the cycle escalates at 8 iterations, in code.
 - A conflicted PR gets a merge commit resolving both sides, returns to draft, and is re-reviewed.
 - `needs-human` parks an item; removing the label resumes it with a fresh budget.
-- Every role run is bounded by `--max-turns`/`--max-price` and the job timeout; the transcript
+- Every role run is bounded by `--max-turns`/`--max-tokens` and the job timeout; the transcript
   artifact preserves what happened within those bounds.
