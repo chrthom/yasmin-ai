@@ -949,7 +949,7 @@ describe('nightly pipeline integration', () => {
     );
   });
 
-  it('topic index is archived last with lines dropped for topics that were not archived', async () => {
+  it('topic index is advisory: archived last, as staged, without line-level validation', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
       await executeTool('stage_update', {
@@ -967,15 +967,14 @@ describe('nightly pipeline integration', () => {
       });
       return { finalText: 'staged index and topic', iterations: 1 };
     });
-    // Reject the 'abgelehntes-thema' topic (not staged at all), approve the rest -- the index line
-    // for the never-archived topic must be dropped, the line for the approved topic must survive.
     mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
     const result = await runNightlyPipeline();
     const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
     expect(indexCall).toBeDefined();
+    // Advisory: the index is archived exactly as staged -- no line dropping against the archive
+    // set. A stale line (e.g. for a rejected topic) is cosmetic and fixed by the next rewrite.
     expect(indexCall![1]).toContain('topics/urlaub-planung.md - Familienurlaub - Alice, Bob');
-    expect(indexCall![1]).not.toContain('abgelehntes-thema');
-    // The approved topic WAS archived and the index was archived AFTER it (index call comes last).
+    expect(indexCall![1]).toContain('abgelehntes-thema');
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(true);
     const paths = mockInsertNextVersion.mock.calls
       .map(call => call[0])
@@ -986,7 +985,7 @@ describe('nightly pipeline integration', () => {
     expect(result.status).toBe('completed');
   });
 
-  it('topics load failure: run is partial, topic dropped (not re-reviewed), index archived without the skipped topic line', async () => {
+  it('topics load failure: run is partial, topics/ proposals skipped before review, advisory index archived as staged', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
     mockListCurrentVersions
@@ -1010,14 +1009,17 @@ describe('nightly pipeline integration', () => {
     // The load failure marks the run partial so the next invocation retries with healthy data.
     expect(result.status).toBe('partial');
     expect(mockSetWatermark).not.toHaveBeenCalled();
-    // Without barrier data no topic may be archived (it could be a duplicate)...
+    // Without barrier data topics/ proposals are skipped BEFORE any review is spent on them --
+    // no review call for the topic, and no archive call (it could be a duplicate).
+    const topicReviewCall = mockRunReview.mock.calls.find(
+      call => call[0]?.path === 'topics/urlaub-planung.md'
+    );
+    expect(topicReviewCall).toBeUndefined();
     expect(mockInsertNextVersion.mock.calls.some(call => call[0] === 'topics/urlaub-planung.md')).toBe(false);
-    // ...and the index is archived, but WITHOUT the line for the skipped topic (known locally,
-    // never archived) -- so no dangling registry entry. Entries for PRE-EXISTING archived topics
-    // survive, because the archive-set validation is skipped on a broken load.
+    // The advisory index is archived as staged, without line-level validation.
     const indexCall = mockInsertNextVersion.mock.calls.find(call => call[0] === 'general/topic-index.md');
     expect(indexCall).toBeDefined();
-    expect(indexCall![1]).not.toContain('urlaub-planung');
+    expect(indexCall![1]).toContain('urlaub-planung');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 

@@ -12,12 +12,6 @@ const requiredEnv = (key: string): string => {
   return value;
 };
 
-/** parseInt with a fallback: a missing or malformed env value must never become NaN */
-function parsePositiveInt(raw: string | undefined, fallback: number): number {
-  const parsed = parseInt(raw || '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 /** Parses an env var as an integer, clamped to [min, max]; absent or unparseable values use the default. */
 function parseClampedEnvInt(key: string, defaultValue: number, min: number, max: number): number {
   const raw = process.env[key];
@@ -126,7 +120,7 @@ export const config = {
     maxRetries: parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3', 10),
     maxRevisions: 3,
     lockStaleMs: 2 * 60 * 60 * 1000,
-    maxIterations: parsePositiveInt(process.env['NIGHTLY_MAX_ITERATIONS'], 25),
+    maxIterations: parseClampedEnvInt('NIGHTLY_MAX_ITERATIONS', 25, 1, 200),
     archiveKeepVersions: 10,
     eagerMaxChars: 10000,
     watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000
