@@ -77,6 +77,7 @@ describe('guard.ts global rules', () => {
     'git push origin HEAD:feature',
     "git commit -m 'fix -n handling'",
     'git commit -m "mention --no-verify"',
+    'git commit -m"fix the nit in parser"',
     'git commit -am wip',
     'git log --oneline main',
     'git merge origin/main',
@@ -228,6 +229,10 @@ describe('guard.ts role rules', () => {
     ['reviewer', 'npm run build -- --pretty'],
     ['reviewer', 'npx prettier --check .'],
     ['reviewer', 'npx jest src/__tests__/app.test.ts'],
+    ['reviewer', 'npx tsc -p tsconfig.json'],
+    ['reviewer', 'npx tsc --package left-pad'],
+    ['reviewer', 'npx prettier@3 --check .'],
+    ['reviewer', 'npx --package prettier@3.3.3 prettier --check .'],
     ['fixer', 'git config --get user.name'],
     ['fixer', 'git config user.email'],
     ['fixer', 'git reset src/app.ts'],
@@ -347,12 +352,25 @@ describe('guard.ts role rules', () => {
   });
 
   describe('role rules block hook-skipping commits', () => {
-    it('blocks git commit -amn msg (n hidden in a short-flag cluster)', () => {
-      expect(run('git commit -amn msg', 'fixer').blocked).toBe(true);
-    });
-
     it('blocks git commit --no-verify', () => {
       expect(run('git commit --no-verify -m msg', 'fixer').blocked).toBe(true);
+    });
+
+    it('blocks a real -n hidden in a short-flag cluster', () => {
+      expect(run('git commit -nm msg', 'fixer').blocked).toBe(true);
+      expect(run('git commit -anm msg', 'fixer').blocked).toBe(true);
+    });
+
+    it('allows git commit -amn msg: git takes the rest of the cluster as the -m value, not flags', () => {
+      // Verified against git itself: `git commit -amn x` is parsed as `-a -m n` (with `x` a
+      // pathspec error), never as --no-verify. Scanning past a value-taking flag would block any
+      // commit message containing the letter n.
+      expect(run('git commit -amn msg', 'fixer').blocked).toBe(false);
+    });
+
+    it('allows a message containing the letter n attached to -m', () => {
+      expect(run('git commit -m"fix the nit in parser"', 'fixer').blocked).toBe(false);
+      expect(run('git commit -m "mention --no-verify"', 'fixer').blocked).toBe(false);
     });
 
     it('allows a normal commit', () => {

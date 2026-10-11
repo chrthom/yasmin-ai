@@ -32,7 +32,9 @@ The invocation text tells you what to do:
 - `tick`: run one tick (this is what the dev-loop plugin's timer message asks for).
 - `status`: print the state file and the current GitHub picture, change nothing.
 - `stop`: set `"enabled": false` in `STATE_FILE`, report, done. Running agents are not killed. The
-  plugin stops ticking within a minute.
+  plugin stops ticking within a minute but keeps reaping orphaned worktrees, so leftover agent
+  worktrees disappear once their entries are gone or past the 180-minute dead-agent window (the
+  same happens after this session ends — the reap runs on the plugin's timer, not in this session).
 
 ## Setup (`start` only)
 
@@ -41,11 +43,12 @@ The invocation text tells you what to do:
    `gh label create needs-human --color B60205 --description "dev-loop: human decision required" 2>/dev/null || true`
 3. Arm the timer by writing `STATE_FILE`. If it does not exist yet, create it as
    `{"enabled": true, "startedAt": "<now, ISO-8601>", "agents": {}}`. If it already exists, update
-   `enabled` to `true`, refresh `startedAt` to now, and leave the `agents` map as it is — unless
-   `enabled` was already `true`, in which case the timer is already armed: do not touch anything and
-   just run one tick immediately. `"enabled": true` is what the plugin's timer keys on; `startedAt`
-   starts the 7-day run budget (the plugin stops the loop and sends an expiry message when it is
-   exhausted, mirroring the 7-day auto-expiry of a recurring cron).
+   `enabled` to `true`, refresh `startedAt` to now, reset `expired` to `false` (the plugin sets it
+   when the 7-day budget ran out), and leave the `agents` map as it is — unless `enabled` was already
+   `true`, in which case the timer is already armed: do not touch anything and just run one tick
+   immediately. `"enabled": true` is what the plugin's timer keys on; `startedAt` starts the 7-day
+   run budget (the plugin stops the loop and sends an expiry message when it is exhausted, mirroring
+   the 7-day auto-expiry of a recurring cron).
 4. Tell the user that ticks arrive as `[dev-loop] Timer tick` messages in this session, one per minute
    while the session is idle, and that the loop stops itself after 7 days or on `/dev-loop stop`.
 
@@ -64,7 +67,10 @@ The invocation text tells you what to do:
 - `headSha` is the PR head when a fixer or merger was started (empty for implementers).
 - An entry older than 180 minutes without a notification counts as dead: remove it and let the tick
   re-evaluate that item from GitHub state (step 4 also treats a pushed `vibe/issue-<N>-*` branch as
-  work in progress, so a slow implementer is not started twice).
+  work in progress, so a slow implementer is not started twice). The plugin applies the same window
+  when reaping worktrees: once an entry is gone or older than 180 minutes, the agent's worktree is
+  removed (after a 30-minute grace for freshly created ones), so stopped or abandoned loops do not
+  leave worktrees and their `node_modules` behind.
 - GitHub is the source of truth for everything else (iteration counts, findings, review status). Never
   store those in the state file.
 

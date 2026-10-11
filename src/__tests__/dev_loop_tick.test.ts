@@ -1,4 +1,5 @@
 import {
+  DEAD_ENTRY_MS,
   LOOP_BUDGET_MS,
   WORKTREE_GRACE_MS,
   expireState,
@@ -130,6 +131,23 @@ describe('nextTickAction', () => {
       nextTickAction({ state: expired, now: at(0), orchestratorKnown: true, orchestratorIdle: true })
     ).toBe('none');
   });
+
+  it('ticks again after a restart re-arms an expired loop', () => {
+    // /dev-loop start sets enabled: true, refreshes startedAt, and clears expired (SKILL.md step 3).
+    const restarted = parseState(state({ expired: false, startedAt: new Date(at(0)).toISOString() }));
+    expect(
+      nextTickAction({ state: restarted, now: at(60_000), orchestratorKnown: true, orchestratorIdle: true })
+    ).toBe('tick');
+  });
+
+  it('still ticks when a stale expired marker was left behind by an old expiry', () => {
+    // The expired marker must never gate the decision: a fresh startedAt re-arms the budget even if
+    // the orchestrator forgot to clear the marker on restart.
+    const staleMarker = parseState(state({ expired: true }));
+    expect(
+      nextTickAction({ state: staleMarker, now: at(0), orchestratorKnown: true, orchestratorIdle: true })
+    ).toBe('tick');
+  });
 });
 
 describe('expireState', () => {
@@ -157,17 +175,46 @@ describe('orphanedWorktrees', () => {
   const old = now - WORKTREE_GRACE_MS - 1;
   const fresh = now - 1_000;
 
-  it('reaps a dev-loop worktree whose state key has no running agent', () => {
-    const stateParsed = parseState(
-      state({ agents: { 'pr-80': { role: 'fixer', sessionID: 'ses_f', startedAt: 'x' } } })
-    );
+  it('reaps a dev-loop worktree whose state key has no live agent entry', () => {
+    const agents = {
+      'pr-80': { role: 'fixer', sessionID: 'ses_f', startedAt: new Date(now).toISOString() }
+    };
     expect(
       orphanedWorktrees(
         [dir(`issue-12-implementer-${old}`), dir(`pr-80-fixer-${old}`), dir(`pr-81-reviewer-${old}`)],
-        stateParsed,
+        parseState(state({ agents })),
         now
       )
     ).toEqual([dir(`issue-12-implementer-${old}`).directory, dir(`pr-81-reviewer-${old}`).directory]);
+  });
+
+  it('reaps a worktree whose entry is past the 180-minute dead-agent window', () => {
+    // A stopped loop never processes completion notifications, so its entries are never removed by a
+    // tick; the reaper must treat entries older than the dead-agent window like absent ones.
+    const agents = {
+      'issue-12': {
+        role: 'implementer',
+        sessionID: 'ses_i',
+        startedAt: new Date(now - DEAD_ENTRY_MS - 1).toISOString()
+      }
+    };
+    expect(
+      orphanedWorktrees([dir(`issue-12-implementer-${old}`)], parseState(state({ agents })), now)
+    ).toEqual([dir(`issue-12-implementer-${old}`).directory]);
+  });
+
+  it('reaps a worktree whose entry has a corrupt startedAt', () => {
+    const agents = { 'issue-12': { role: 'implementer', sessionID: 'ses_i', startedAt: 'not-a-date' } };
+    expect(
+      orphanedWorktrees([dir(`issue-12-implementer-${old}`)], parseState(state({ agents })), now)
+    ).toEqual([dir(`issue-12-implementer-${old}`).directory]);
+  });
+
+  it('keeps a worktree whose entry is alive', () => {
+    const agents = {
+      'pr-80': { role: 'fixer', sessionID: 'ses_f', startedAt: new Date(now - 60_000).toISOString() }
+    };
+    expect(orphanedWorktrees([dir(`pr-80-fixer-${old}`)], parseState(state({ agents })), now)).toEqual([]);
   });
 
   it('keeps fresh worktrees even without an agent entry (grace period)', () => {

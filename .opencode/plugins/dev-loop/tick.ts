@@ -72,10 +72,15 @@ export interface TickContext {
 // - `tick`: send one tick to the orchestrator session.
 // - `expire`: the 7-day budget is exhausted; stop the loop and tell the orchestrator.
 // - `none`: not armed, nobody to tick, or the orchestrator is busy.
+//
+// The `expired` marker written by expireState is informational only (it lets `status` tell "expired"
+// from "stopped"): it must never gate this decision, or a restarted loop (/dev-loop start sets
+// enabled + a fresh startedAt but cannot know about the marker) would never tick again. After the
+// expiry write, `enabled` is already false, which is what silences the loop; a fresh `startedAt`
+// alone re-arms the budget, and an unrefreshed one simply expires again.
 export function nextTickAction(ctx: TickContext): TickAction {
   const { state, now, orchestratorKnown, orchestratorIdle } = ctx;
   if (!state || state.enabled !== true) return 'none';
-  if (state.expired === true) return 'none';
   if (state.startedAt !== undefined) {
     const startedAt = Date.parse(state.startedAt);
     if (!Number.isNaN(startedAt) && now - startedAt > LOOP_BUDGET_MS) return 'expire';
@@ -85,8 +90,8 @@ export function nextTickAction(ctx: TickContext): TickAction {
 }
 
 // The state the plugin writes back when the budget is exhausted. The agents map is preserved so the
-// orchestrator's bookkeeping survives; only the switch is flipped (plus the marker, so a restart of
-// the loop with /dev-loop start resets it via a fresh startedAt).
+// orchestrator's bookkeeping survives. The `expired` marker is informational (see nextTickAction):
+// `/dev-loop start` clears it again, and a fresh `startedAt` re-arms the 7-day budget.
 export function expireState(state: DevLoopState): DevLoopState {
   return { ...state, enabled: false, expired: true };
 }
@@ -95,9 +100,22 @@ export interface WorktreeRecord {
   directory: string;
 }
 
+// An in-flight agent entry counts as dead after 180 minutes without a completion notification — the
+// same dead-agent rule the skill's tick applies to its bookkeeping. The reaper uses it too, so a
+// stopped or abandoned loop (whose entries are never removed by a tick) still gets its leftover
+// worktrees reaped eventually. A missing or corrupt startedAt also counts as dead.
+export const DEAD_ENTRY_MS = 180 * 60 * 1000;
+
+export function entryIsDead(entry: AgentEntry | undefined, now: number): boolean {
+  if (entry === undefined) return true;
+  const startedAt = Date.parse(entry.startedAt);
+  if (Number.isNaN(startedAt)) return true;
+  return now - startedAt > DEAD_ENTRY_MS;
+}
+
 // Directories of dev-loop worktrees that can be reaped: their name matches the dev-loop pattern,
-// their state key has no running agent entry, and they were created more than WORKTREE_GRACE_MS ago.
-// `now` is epoch milliseconds.
+// they were created more than WORKTREE_GRACE_MS ago, and their state key has no live agent entry
+// (absent, or older than the 180-minute dead-agent window). `now` is epoch milliseconds.
 export function orphanedWorktrees(
   worktrees: readonly WorktreeRecord[],
   state: DevLoopState | null,
@@ -113,7 +131,7 @@ export function orphanedWorktrees(
     const stateKey = match[1]; // <stateKey>-<role>-<unix-millis>
     const created = Number(match[2]);
     if (Number.isNaN(created) || now - created < graceMs) continue;
-    if (agents[stateKey] !== undefined) continue;
+    if (!entryIsDead(agents[stateKey], now)) continue;
     dirs.push(worktree.directory);
   }
   return dirs;

@@ -283,17 +283,17 @@ function commitSkipsHooks(rest: string[]): boolean {
     }
     if (/^-[a-zA-Z]/.test(t) && !t.startsWith('--')) {
       // Scan the whole short-option cluster, not just the first char: `-n` can appear anywhere in it
-      // (e.g. `-amn`, `-anm`). A value-taking flag consumes the *rest of the token* as its value when
-      // it is not the entire token, so we keep scanning for `n` instead of breaking out.
+      // after a value-less flag (e.g. `-anm` = -a --no-verify -m). A value-taking flag is different:
+      // git consumes the *rest of the token* as its value when it is not the entire token (verified:
+      // `git commit -amn x` is parsed as `-a -m n` with `x` a pathspec, never as --no-verify), so
+      // scanning must stop there — the remainder is the message, not flags. Otherwise any message
+      // containing the letter n (`-m"fix the nit"`) would be a false positive.
       for (let j = 1; j < t.length; j++) {
         const ch = t[j];
         if (ch === 'n') return true;
         if (COMMIT_SHORT_WITH_VALUE.includes(ch)) {
-          if (t.length === 2) {
-            i++; // value is the next separate token
-            break;
-          }
-          // attached value in this same token; keep scanning the remainder of the cluster
+          if (t.length === 2) i++; // value is the next separate token; never scan it as flags
+          break; // attached value: the rest of this token is the value
         }
       }
     }
@@ -683,31 +683,59 @@ const REVIEWER_NPM_INSTALL = new Set(['install', 'i']); // only without package 
 // npx `--package <pkg>` / `-p <pkg>` / `--package=<pkg>` can install and run a package the reviewer is not
 // allowed to invoke (its install lifecycle scripts run locally). Explicitly naming the *allowlisted* binary
 // itself (e.g. `--package=prettier`) is harmless, so only a package other than the allowlisted binary is
-// smuggled in. The allowlisted binaries: prettier, eslint, jest, tsc.
+// smuggled in. The allowlisted binaries: prettier, eslint, jest, tsc. A `@version` suffix on either side
+// is ignored (`prettier@3` is still prettier), but a scoped `@scope/name` never matches an allowlisted
+// (unscoped) binary.
+//
+// Parsing mirrors npx's own (verified with npx 10): npx stops parsing its options at the first true
+// positional — the command — and everything after it belongs to the command (so `npx -p typescript tsc
+// -p tsconfig.json` passes the second -p to tsc). Crucially, a package name that is merely the VALUE of
+// -p/--package is not the command: in `npx -p prettier --call "cmd"` npx runs the shell command. So the
+// walker consumes option values, treats the first unconsumed positional as the bin, and rejects the
+// shell-escape flags --call/--shell/-c anywhere in npx's own option region.
 const NPX_BIN_ALLOWLIST = ['prettier', 'eslint', 'jest', 'tsc'];
 
+const packageName = (spec: string): string => (spec.startsWith('@') ? spec : spec.split('@')[0]);
+
 function reviewNpxPackage(args: string[]): boolean {
-  const bin = args.find(a => !a.startsWith('-'));
-  if (!NPX_BIN_ALLOWLIST.includes(bin ?? '')) return false;
-  // `--call`, `--shell` and `-c` make npx execute an arbitrary command string (potentially a shell),
-  // which would bypass the allowlisted binary: reject them outright.
-  if (
-    args.some(
-      a => ['--call', '--shell', '-c'].includes(a) || a.startsWith('--call=') || a.startsWith('--shell=')
-    )
-  ) {
-    return false;
-  }
+  let bin: string | undefined;
+  let shellEscape = false;
+  const packages: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
-    let pkg: string | undefined;
-    if (t === '--package' || t === '-p') pkg = args[i + 1];
-    else if (t.startsWith('--package=')) pkg = t.slice('--package='.length);
-    else if (t.startsWith('-p=')) pkg = t.slice(3);
-    else if (/^-p.+/.test(t)) pkg = t.slice(2); // attached short value (`-p<pkg>`), like `-p=...`
-    if (pkg !== undefined && pkg !== bin) return false;
+    if (!t.startsWith('-')) {
+      bin = t;
+      break; // the command: everything after it belongs to the binary, not npx
+    }
+    if (t === '--package' || t === '-p') {
+      packages.push(args[++i] ?? '');
+      continue;
+    }
+    if (t.startsWith('--package=') || t.startsWith('-p=')) {
+      packages.push(t.slice(t.indexOf('=') + 1));
+      continue;
+    }
+    if (/^-p.+/.test(t)) {
+      packages.push(t.slice(2)); // attached short value (`-p<pkg>`), like `-p=...`
+      continue;
+    }
+    // `--call`, `--shell` and `-c` make npx execute an arbitrary command string (potentially a
+    // shell), which would bypass the allowlisted binary: reject them outright.
+    if (t === '--call' || t === '--shell' || t === '-c') {
+      shellEscape = true;
+      i++; // the command string is the flag's value
+      continue;
+    }
+    if (t.startsWith('--call=') || t.startsWith('--shell=') || /^-c./.test(t)) {
+      shellEscape = true; // attached value (`--call=...`, `-c<cmd>`)
+      continue;
+    }
   }
-  return true;
+  if (shellEscape) return false;
+  if (bin === undefined) return false; // no command: package-install or shell mode, never needed here
+  const binName = packageName(bin);
+  if (!NPX_BIN_ALLOWLIST.includes(binName)) return false;
+  return packages.every(pkg => packageName(pkg) === binName);
 }
 
 function reviewerPackageRules(name: string, args: string[], block: Block): void {
