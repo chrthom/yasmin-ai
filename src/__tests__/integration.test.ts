@@ -12,7 +12,32 @@ jest.mock('../config', () => ({
     mistral: {
       apiKey: 'test-api-key',
       agentId: 'test-agent-id',
-      conversationTtlMs: 12 * 60 * 60 * 1000
+      conversationTtlMs: 12 * 60 * 60 * 1000,
+      requestTimeoutMs: 30_000,
+      maxToolCalls: 5
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    },
+    chat: {
+      noteContentMaxChars: 500,
+      noteToEveryone: 'everyone',
+      shortAnswerMaxChars: 1500
+    },
+    handoff: {
+      recentMessageMaxChars: 600,
+      summaryMaxChars: 2500,
+      summarizerInputMaxChars: 30000,
+      summarizerTurnMaxChars: 1500
+    },
+    nightly: {
+      hour: 23,
+      minute: 0,
+      transcriptMaxChars: 20000,
+      journalSoftCapChars: 4000,
+      shutdownTimeoutMs: 30_000,
+      maxRetries: 0
     },
     synology: {
       chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
@@ -24,10 +49,7 @@ jest.mock('../config', () => ({
     },
     rateLimit: { windowMs: 60 * 1000, max: 15 },
     validation: { maxTextLength: 10000, maxUsernameLength: 100 },
-    chunk: { maxLength: 1800 },
-    // Retries are disabled so withRetry's exponential backoff does not slow the suite;
-    // the retry behavior itself is covered by the mistral_api tests.
-    nightly: { maxRetries: 0 }
+    chunk: { maxLength: 1800 }
   }
 }));
 

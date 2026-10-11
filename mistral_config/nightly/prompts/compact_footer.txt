@@ -1,0 +1,7 @@
+
+The character limit is a ceiling, not a target -- never pad or add filler to get closer to it. Stay as concise as the content allows.
+
+Reply with ONLY the compacted content -- no preamble, no explanation of what you did. Write the compacted content in German.
+
+Content to compact:
+{{content}}

@@ -15,7 +15,6 @@ import { validateEnv } from '../src/config';
 
 validateEnv({ requireDb: true });
 
-
 const PROFILE_TITLE_PATTERN = /^Profile of (.+)$/;
 
 interface SeedFile {

@@ -34,9 +34,8 @@ function sleep(ms: number): Promise<void> {
 
 // Hard ceiling for any single Mistral HTTP call. withRetry only engages on a *thrown* error,
 // so without this a hung TCP/TLS connection would never settle and would block a phase
-// indefinitely while holding processing_lock. Applies to the nightly pipeline as well as to
-// interactive callers that do not pass their own timeoutMs.
-const REQUEST_TIMEOUT_MS = 120_000;
+// indefinitely while holding processing_lock.
+const REQUEST_TIMEOUT_MS = config.mistral.requestTimeoutMs;
 
 /**
  * Canonical URL of the conversations endpoint, derived from the single configured API root so

@@ -14,7 +14,17 @@ jest.mock('../config', () => ({
       libraryId: 'lib-1',
       nightlyAgentId: 'nightly-agent-1',
       summarizerAgentId: 'summarizer-agent-1',
-      chatRequestTimeoutMs: 120000
+      requestTimeoutMs: 120000,
+      maxToolCalls: 5
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    },
+    chat: {
+      noteContentMaxChars: 500,
+      noteToEveryone: 'everyone',
+      shortAnswerMaxChars: 1500
     },
     nightly: {
       maxRetries: 0

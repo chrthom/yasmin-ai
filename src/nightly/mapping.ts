@@ -1,3 +1,5 @@
+import { config } from '../config';
+
 /**
  * Table-driven mapping between long-term verbose file paths (memory_archive.file_path)
  * and MariaDB context_entries titles. Paths/titles with no matching rule map to null --
@@ -10,8 +12,8 @@ interface FixedMapping {
 }
 
 const FIXED_MAPPINGS: FixedMapping[] = [
-  { path: 'self-reflection/profile.md', title: 'Profile of Yasmin' },
-  { path: 'general/family.md', title: 'Family notes' }
+  { path: 'self-reflection/profile.md', title: config.context.profileOfYasminTitle },
+  { path: 'general/family.md', title: config.context.familyNotesTitle }
 ];
 
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;
