@@ -2,7 +2,7 @@
 name: reviewer
 description: dev-loop agent. Adversarially reviews one draft PR of chrthom/yasmin-ai, posts one GitHub review with inline comments, and marks the PR ready only when there are zero findings. The prompt must contain the PR number and head commit SHA.
 tools: Read, Grep, Glob, Bash
-model: zai-glm-5-3
+model: deepseek-v4-flash-sovereign
 isolation: worktree
 background: true
 hooks:

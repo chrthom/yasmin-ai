@@ -2,7 +2,7 @@
 name: merger
 description: dev-loop agent. Resolves merge conflicts between one PR of chrthom/yasmin-ai and main by merging main into the PR branch. Puts ready PRs back to draft so they get re-reviewed. The prompt must contain the PR number and branch name.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: zai-glm-5-3
+model: deepseek-v4-flash-sovereign
 isolation: worktree
 background: true
 permissionMode: acceptEdits
