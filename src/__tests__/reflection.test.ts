@@ -24,7 +24,6 @@ import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';
 import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
-  compactPrompt,
   formatRunDate,
   integratePrompt,
   journalPrompt,
