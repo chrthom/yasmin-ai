@@ -110,7 +110,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           vibe --version
           set +e
-          vibe -p --trust --output json \
+          vibe -p "$(cat out/implementer.rendered.md)" --trust --output json \
             --max-turns "$MAX_TURNS" \
             --max-price "$MAX_PRICE" \
             --enabled-tools bash \
@@ -118,7 +118,6 @@ jobs:
             --enabled-tools grep \
             --enabled-tools write_file \
             --enabled-tools search_replace \
-            < out/implementer.rendered.md \
             > out/messages.json \
             2> out/vibe.stderr
           rc=$?
@@ -170,7 +169,7 @@ jobs:
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
             fi
-            escalate "a workflow step failed before the agent ran (twice); remove the needs-human label to retry with a fresh budget"
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or remove the needs-human label"
             exit 0
           fi
 
@@ -210,8 +209,11 @@ jobs:
 
           if [ "$RUN_ATTEMPT" = "1" ]; then
             echo "Vibe failed without a budget stop (exit $rc); likely transient, retrying this run once."
-            GH_TOKEN="$RETRY_TOKEN" gh api -X POST \
-              "repos/$REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" >/dev/null
+            if GH_TOKEN="$RETRY_TOKEN" gh api -X POST \
+              "repos/$REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" >/dev/null; then
+              exit 0
+            fi
+            echo "rerun request failed; leaving this run red for manual re-run"
             exit 0
           fi
 

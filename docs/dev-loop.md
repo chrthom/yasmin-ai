@@ -134,18 +134,20 @@ steps:
   - run: npm ci
   - run: curl -LsSf https://mistral.ai/vibe/install.sh | bash
   - run: render .github/dev-loop/prompts/<role>.md with the budget values, then:
-        vibe -p --trust --output json --max-turns <per role> --max-price <per role>
-        --enabled-tools bash --enabled-tools read_file --enabled-tools grep
-        --enabled-tools write_file --enabled-tools search_replace
-        < out/<role>.rendered.md > out/messages.json
+        vibe -p "$(cat out/<role>.rendered.md)" --trust --output json --max-turns <per role>
+        --max-price <per role> --enabled-tools bash --enabled-tools read_file
+        --enabled-tools grep --enabled-tools write_file --enabled-tools search_replace
+        > out/messages.json
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           DEV_LOOP_ARGS: <pr/issue number, branch, review id>
-            (vibe has no --prompt-file: the rendered prompt is piped to -p via stdin;
-            programmatic mode auto-approves all tools, --trust skips the trust prompt;
-            --max-turns/--max-price apply only in programmatic mode; there is no
-            --time-limit — the job timeout-minutes is the only wall-clock cap)
+            (vibe has no --prompt-file: the rendered prompt is passed as the -p argument —
+            never via stdin: get_prompt_from_stdin() opens /dev/tty after reading, which
+            fails on a tty-less runner and silently discards the prompt; programmatic mode
+            auto-approves all tools, --trust skips the trust prompt; --max-turns/--max-price
+            apply only in programmatic mode; there is no --time-limit — the job
+            timeout-minutes is the only wall-clock cap)
   - uses: actions/upload-artifact@v4     # out/messages.json (full transcript) + vibe stderr:
                                          # final message, stop reason on budget hits
   - run: <post-step: state machine per table above, using the PAT>
