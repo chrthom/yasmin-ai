@@ -112,11 +112,11 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 .github/workflows/dev-loop-review.yml      ready PR / fixer chain -> one marker review -> state post-step
 .github/workflows/dev-loop-fix.yml        CHANGES_NEEDED review -> fix commits -> chain reviewer
 .github/workflows/dev-loop-merge.yml      CI completed + CONFLICTING -> merge commit -> back to draft
-.dev-loop/prompts/implementer.md          role prompts (ported from PR #80's agent definitions,
-.dev-loop/prompts/reviewer.md              minus gh-guard boilerplate; final line is a parseable
-.dev-loop/prompts/fixer.md                  outcome: PR_URL|NO_PR:, VERDICT|CONFLICTING,
-.dev-loop/prompts/merger.md                FIXED|CONFLICTING|WALL:, MERGED|NO_CONFLICT|WALL:)
-.dev-loop/README.md                        this plan / runbook
+.github/dev-loop/prompts/implementer.md   role prompts (ported from PR #80's agent definitions,
+.github/dev-loop/prompts/reviewer.md       minus gh-guard boilerplate; final line is a parseable
+.github/dev-loop/prompts/fixer.md           outcome: PR_URL|NO_PR:, VERDICT|CONFLICTING,
+.github/dev-loop/prompts/merger.md         FIXED|CONFLICTING|WALL:, MERGED|NO_CONFLICT|WALL:)
+docs/dev-loop.md                           this plan / runbook
 ```
 
 Role job skeleton (shared):
@@ -133,7 +133,7 @@ steps:
   - uses: actions/setup-node@v4         # node 22, npm cache (mirrors ci.yml)
   - run: npm ci
   - run: curl -LsSf https://mistral.ai/vibe/install.sh | bash
-  - run: vibe --prompt-file .dev-loop/prompts/<role>.md --auto-approve
+  - run: vibe --prompt-file .github/dev-loop/prompts/<role>.md --auto-approve
         --max-turns 40 --max-price 3 --time-limit 3300
         --enabled-tools <role allowlist>
         --output-dir out/
@@ -160,7 +160,7 @@ the agent never needs review-writing API access.
 
 ## Implementation phases
 
-1. **Branch `vibe/dev-loop-actions`** (this PR): plan document only.
+1. **Branch `vibe/dev-loop-actions`** (this PR): plan document only (`docs/dev-loop.md`).
 2. **Phase 1**: role prompts + `dev-loop-review.yml` + `dev-loop-implement.yml`. Validate on a
    scratch issue: issue → draft PR → manual ready → review → verdict → state post-step.
 3. **Phase 2**: `dev-loop-fix.yml` + fixer chain + iteration cap. Validate the full
