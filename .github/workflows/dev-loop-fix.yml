@@ -58,7 +58,7 @@ jobs:
           EVENT_REVIEW_ID: ${{ github.event.review.id }}
           REVIEW_BODY: ${{ github.event.review.body }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
-          OWNER_ID: ${{ github.event.repository.owner.id }}
+          REPO_ID: ${{ github.event.repository.id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
         run: |
           set -eu
@@ -74,7 +74,9 @@ jobs:
             exit 0
           fi
           # Fork PRs: never touch them (pull_request_review events carry the PR too).
-          if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$OWNER_ID" ]; then
+          # Compare repository IDs: head.repo.id and repository.id share the
+          # repository ID space; the owner is a user/org ID and never matches.
+          if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$REPO_ID" ]; then
             echo "PR #$PR_NUMBER is from a fork; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
