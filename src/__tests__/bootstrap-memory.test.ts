@@ -11,7 +11,13 @@ jest.mock('../mistral/mistral_api', () => ({
   uploadDocument: jest.fn()
 }));
 jest.mock('../config', () => ({
-  validateEnv: jest.fn()
+  validateEnv: jest.fn(),
+  config: {
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
+    }
+  }
 }));
 
 import { listContextEntries } from '../database/models/context.model';

@@ -2,12 +2,15 @@
 jest.mock('../config', () => ({
   config: {
     mistral: {
-      nightlyAgentId: 'nightly-agent-1'
+      nightlyAgentId: 'nightly-agent-1',
+      requestTimeoutMs: 30_000
     },
     nightly: {
       tz: 'Europe/Berlin',
       maxIterations: 15,
-      eagerMaxChars: 10000
+      eagerMaxChars: 10000,
+      transcriptMaxChars: 20000,
+      journalSoftCapChars: 4000
     }
   }
 }));
@@ -21,7 +24,6 @@ import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';
 import { truncateToCap } from '../nightly/privacy';
 import {
   buildTranscript,
-  compactPrompt,
   formatRunDate,
   integratePrompt,
   journalPrompt,

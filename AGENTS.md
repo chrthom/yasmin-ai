@@ -28,6 +28,8 @@ mistral_config/
 │   └── system_prompt.txt
 └── nightly/                            # Nightly memory-consolidation agent
     ├── nightly_system_prompt.txt
+    ├── prompts/                          # Phase prompt templates (journal, integrate, review, compact);
+    │                                     #   rendered by src/nightly/prompts.ts with {{token}} interpolation
     └── functions/
         ├── get_long_term_file.json     # Read one verbose memory file
         ├── list_long_term_files.json   # List verbose memory files
@@ -159,7 +161,7 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
-- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the prompts/agent calls for journaling, integrating, reviewing, and compacting; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back; `run.ts` is the CLI entry point (run via ts-node from source).
+- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back; `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
 
@@ -209,7 +211,7 @@ regenerates the eager cache. See `docs/nightly_memory_processing_implementation.
 | `npm run format`                           | Format all files with Prettier                                                                        |
 | `npm run check`                            | Run both format and lint                                                                              |
 | `npm run manage-context <command>`         | Run context administration commands (list, create...)                                                 |
-| `npm run nightly`                          | Run the nightly memory-consolidation job once (requires `npm run build` first)                        |
+| `npm run nightly`                          | Run the nightly memory-consolidation job once (via ts-node, no build needed)                          |
 | `npm run nightly:dry-run`                  | Preflight the nightly job: checks DB + Mistral connectivity and logs what it would do, writes nothing |
 | `npm run bootstrap-memory`                 | One-time migration: seed `memory_archive` + the Mistral library from existing `context_entries`       |
 
@@ -249,6 +251,7 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - `AGENT_ID_SUMMARIZER` - Optional: Mistral agent that summarizes a conversation for the restart handoff (see above). Without it the handoff carries only the last turns
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
 - `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The fresh conversation is seeded with a summary and the last 3 turns of the old one (see Conversation restarts and the handoff).
+- `REQUEST_TIMEOUT_MS` - Hard timeout for any single Mistral HTTP call made through `mistral_api.ts` (live turns and the nightly pipeline alike; default `120000`, clamped to [1, 600000], unparseable values fall back to the default).
 
 ## API Endpoints
 

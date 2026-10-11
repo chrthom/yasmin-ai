@@ -18,7 +18,13 @@ jest.mock('../config', () => ({
   config: {
     mistral: {
       agentId: 'family-agent-1',
-      nightlyAgentId: 'nightly-agent-1'
+      nightlyAgentId: 'nightly-agent-1',
+      requestTimeoutMs: 30_000,
+      maxToolCalls: 5
+    },
+    context: {
+      familyNotesTitle: 'Family notes',
+      profileOfYasminTitle: 'Profile of Yasmin'
     },
     nightly: {
       lockStaleMs: 2 * 60 * 60 * 1000,
