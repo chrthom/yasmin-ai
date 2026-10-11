@@ -2,7 +2,6 @@
 name: fixer
 description: dev-loop agent. Fixes all findings of one dev-loop review on a draft PR of chrthom/yasmin-ai and pushes to the PR branch. The prompt must contain the PR number, branch name and review id.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: deepseek-v4-flash-sovereign
 isolation: worktree
 background: true
 permissionMode: acceptEdits

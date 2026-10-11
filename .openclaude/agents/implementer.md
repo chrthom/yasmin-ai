@@ -2,7 +2,6 @@
 name: implementer
 description: dev-loop agent. Implements one GitHub issue of chrthom/yasmin-ai on a fresh branch and opens a draft PR. The prompt must contain the issue number.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: deepseek-v4-flash-sovereign
 isolation: worktree
 background: true
 permissionMode: acceptEdits
