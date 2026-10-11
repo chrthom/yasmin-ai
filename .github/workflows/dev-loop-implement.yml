@@ -33,8 +33,8 @@ jobs:
     timeout-minutes: 105
     env:
       GH_REPO: ${{ github.repository }}
-      MAX_TURNS: '90'
-      MAX_PRICE: '7.50'
+      MAX_TURNS: '120'
+      MAX_TOKENS: '6000000'
       TIME_LIMIT_SEC: '5400'
       TIME_LIMIT_MIN: '90'
       VIBE_VERSION: '2.26.1'
@@ -159,7 +159,7 @@ jobs:
             --trust \
             --output streaming \
             --max-turns "$MAX_TURNS" \
-            --max-price "$MAX_PRICE" \
+            --max-tokens "$MAX_TOKENS" \
             --time-limit "$TIME_LIMIT_SEC" \
             --output-dir out/ \
             2> out/vibe.stderr \
@@ -280,9 +280,12 @@ jobs:
           fi
 
           if [ "$rc" = "3" ]; then
-            # budget hit (turn_limit/token_limit/price_limit/deadline) or refusal:
-            # never auto-retry; the task, not the run, is the problem.
-            escalate "implementer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail) - likely a rabbit hole or the issue is too large; see the vibe output artifact"
+            # budget hit (turn_limit/token_limit/deadline) or refusal: never
+            # auto-retry. turn_limit = the planning budget was too small or the
+            # agent looped; token_limit = the run consumed excessive tokens
+            # (input-dominated; immune to billing/caching variance, unlike a
+            # price cap). Either way the task, not the run, is the problem.
+            escalate "implementer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail); see the vibe output artifact"
             exit 0
           fi
 
