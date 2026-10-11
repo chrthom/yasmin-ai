@@ -7,6 +7,8 @@ import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
 import { IntradayNote } from '../database/models/intraday_notes.model';
 
+export type { StagedUpdate };
+
 // ---------------------------------------------------------------------------
 // Shared transcript helpers
 // ---------------------------------------------------------------------------
@@ -165,6 +167,13 @@ export async function runJournal(userName: string, transcript: string): Promise<
 const SELF_PROFILE_VOICE_RULE_TEMPLATE = 'self_profile_voice_rule.txt';
 
 /**
+ * The topics-layer rules that integrate and review share: cross-person themes live in topics/<topic>.md,
+ * every topic file carries an Aliases line as a duplicate-matching anchor, and general/topic-index.md
+ * is the mandatory registry a new topic must be written into.
+ */
+const TOPICS_RULE_TEMPLATE = 'topics_rule.txt';
+
+/**
  * Formats a Date as YYYY-MM-DD in the configured memory timezone (MEMORY_TZ) -- the run date the
  * decay instruction tells the agent to judge file ages against.
  */
@@ -189,7 +198,8 @@ export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[
   return renderPrompt('integrate_prompt.txt', {
     runDate,
     undeliveredNotes: undeliveredNotesBlock,
-    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE)
+    selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE),
+    topicsRule: loadTemplate(TOPICS_RULE_TEMPLATE)
   });
 }
 
@@ -260,6 +270,36 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
     .join('\n\n');
 }
 
+export interface ExistingTopic {
+  path: string;
+  content: string;
+}
+
+/** Per-topic excerpt cap for the duplicate barrier: the Aliases line plus the leading content is
+ * plenty to judge semantic duplication; without a cap the review prompt grows unboundedly with the
+ * number and size of topic files. */
+const TOPIC_EXCERPT_MAX_CHARS = 600;
+
+/** Truncates a topic's content for the review prompt. The leading line (the Aliases line is the
+ * duplicate-matching anchor) is always kept intact, even when it alone exceeds the cap; only the
+ * remainder is truncated to the cap. */
+function topicExcerpt(content: string): string {
+  if (content.length <= TOPIC_EXCERPT_MAX_CHARS) {
+    return content;
+  }
+  const aliased = content.replace(/\r/g, '');
+  const firstLineBreak = aliased.indexOf('\n');
+  if (firstLineBreak === -1) {
+    return aliased + '\n...[truncated for review]';
+  }
+  const head = aliased.slice(0, firstLineBreak + 1);
+  return (
+    head +
+    aliased.slice(head.length, head.length + TOPIC_EXCERPT_MAX_CHARS).trim() +
+    '\n...[truncated for review]'
+  );
+}
+
 /**
  * Builds the Phase-4 review prompt for a single staged update, given the evidence base. The attempt
  * number (0 for the initial review, 1+ for re-reviews after a revision) relaxes the grounding bar: the
@@ -272,7 +312,8 @@ export function reviewPrompt(
   currentContent: string | null,
   lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
-  attempt: number
+  attempt: number,
+  existingTopics: ExistingTopic[] = []
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
   const groundingRule =
@@ -284,6 +325,19 @@ export function reviewPrompt(
               ? 'personality traits, emotional patterns, and self-image derived from the interactions'
               : 'recurring-topic and character conclusions drawn from the interactions'
         });
+  const existingTopicsBlock =
+    update.path.toLowerCase().startsWith('topics/') && existingTopics.length > 0
+      ? '\n\nExisting topics (EXCLUDING ' +
+        update.path +
+        '), each with its current content (long topics truncated):\n' +
+        existingTopics
+          .map(topic => '--- ' + topic.path + ' ---\n' + topicExcerpt(topic.content))
+          .join('\n\n') +
+        '\n\nTopic DUPLICATE rule, applied in EVERY attempt: if any existing topic above covers the same ' +
+        'subject as the proposed topic -- by title, by its Aliases line, or by content -- the proposal is ' +
+        'a DUPLICATE. Reject it with a reason that names the existing topic and proposes merging the ' +
+        'new material into that existing topic file instead.\n'
+      : '';
   return renderPrompt('review_prompt.txt', {
     attemptSuffix:
       attempt > 0 ? ' (Review attempt ' + (attempt + 1) + ' -- an earlier version was rejected.)' : '',
@@ -292,6 +346,7 @@ export function reviewPrompt(
     newContent: update.content,
     currentContent: currentContent === null ? '(this is a brand-new file)' : currentContent,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    existingTopicsBlock,
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE),
     groundingRule,
     runDate: formatRunDate(new Date()),
@@ -310,14 +365,15 @@ export async function runReview(
   currentContent: string | null,
   lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
-  attempt: number
+  attempt: number,
+  existingTopics: ExistingTopic[] = []
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
     inputs: [
       {
         role: 'user',
-        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt)
+        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt, existingTopics)
       }
     ],
     store: false

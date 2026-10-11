@@ -12,7 +12,8 @@ describe('nightly prompt templates', () => {
         undeliveredNotes: renderPrompt('integrate_notes_block.txt', {
           notesText: '--- Undelivered note #1 from a to b ---\nnote text'
         }),
-        selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt')
+        selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt'),
+        topicsRule: loadTemplate('topics_rule.txt')
       }),
       renderPrompt('review_prompt.txt', {
         runDate: '2026-10-05',
@@ -23,6 +24,7 @@ describe('nightly prompt templates', () => {
         newContent: update.content,
         currentContent: 'old content',
         journalsText: '--- Journal entry for Alice ---\njournal text',
+        existingTopicsBlock: '',
         selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt'),
         groundingRule: renderPrompt('review_grounding_relaxed.txt', {
           synthesisKind: 'recurring-topic and character conclusions drawn from the interactions'

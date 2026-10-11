@@ -45,7 +45,8 @@ import {
   runJournal,
   runReview,
   reviseProposal,
-  CompactKind
+  CompactKind,
+  ExistingTopic
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
@@ -310,19 +311,71 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let filesCreatedFromReview = 0;
     let anyReviewFailed = false;
 
-    for (const update of stagedUpdates) {
+    // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every OTHER
+    // topic (title, Aliases line, content) so it can reject a semantic duplicate before it ever
+    // reaches the archive. Seeded from the archive and then EXTENDED as this run approves topic
+    // files -- otherwise two new topics staged in one night would both pass the barrier.
+    let topicsLoadFailed = false;
+    let existingTopics: ExistingTopic[];
+    try {
+      const allCurrent = await listCurrentVersions();
+      existingTopics = allCurrent
+        .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
+        .map(row => ({ path: row.filePath, content: row.content }));
+    } catch (error) {
+      // Without barrier data this run cannot judge topic duplicates. Rather than run the full
+      // review loop on topics/ proposals and drop them afterwards, skip them BEFORE reviewing:
+      // the proposal is DROPPED (Phase 7 deletes the conversations and the next run rebuilds its
+      // journals only from ITS fresh conversations, so nothing re-stages this material), and
+      // marking the run 'partial' keeps the watermark so the next invocation retries with a
+      // working load.
+      console.error(
+        'ERROR Failed to load existing topics; skipping topics/ proposals for this run: ' + error
+      );
+      existingTopics = [];
+      topicsLoadFailed = true;
+      anyReviewFailed = true;
+    }
+
+    // The topic index is reviewed LAST: it is advisory (only the agent reads it as a discovery
+    // hint), so its lines are archived as staged without validation against the archive set.
+    // A rare stale line after a rejected duplicate is cosmetic and is fixed by the next run's
+    // index rewrite.
+    const TOPIC_INDEX_PATH = 'general/topic-index.md';
+    const orderedUpdates = [
+      ...stagedUpdates.filter(update => update.path !== TOPIC_INDEX_PATH),
+      ...stagedUpdates.filter(update => update.path === TOPIC_INDEX_PATH)
+    ];
+
+    for (const update of orderedUpdates) {
       try {
+        // A failed barrier load leaves no basis for duplicate judgement: skip topics/ proposals
+        // before spending review calls on them.
+        if (topicsLoadFailed && update.path.toLowerCase().startsWith('topics/')) {
+          console.warn(
+            'WARN Skipping review of topic proposal ' +
+              update.path +
+              ' because the existing-topics load failed; it is DROPPED (not re-reviewed next run)'
+          );
+          continue;
+        }
         const currentVersion = await getCurrentVersion(update.path);
         const currentContent = currentVersion ? currentVersion.content : null;
         const lastTouchedAt = currentVersion ? currentVersion.createdAt.toISOString() : null;
 
         let proposal = update.content;
+        // The barrier for this file never changes across revisions (update.path is fixed), so
+        // compute it once before the review/revision loop instead of on every attempt.
+        const barrierForUpdate = topicsLoadFailed
+          ? []
+          : existingTopics.filter(topic => topic.path !== update.path);
         let verdict = await runReview(
           { path: update.path, content: proposal, isNew: update.isNew },
           currentContent,
           lastTouchedAt,
           todaysJournals,
-          0
+          0,
+          barrierForUpdate
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -349,7 +402,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             currentContent,
             lastTouchedAt,
             todaysJournals,
-            revisions + 1
+            revisions + 1,
+            barrierForUpdate
           );
           revisions++;
         }
@@ -369,6 +423,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           } else if (created) {
             filesUpdatedFromReview++;
           }
+          // Extend the same-run duplicate barrier with the newly archived topic, so a second
+          // semantically-equal proposal staged this same night is still caught by the reviewer.
+          if (update.path.toLowerCase().startsWith('topics/')) {
+            existingTopics.push({ path: update.path, content: proposal });
+          }
         } else {
           // A reviewer rejection -- even after the revision cap -- is a normal, handled outcome: the
           // proposal is simply not written. It must not degrade a healthy run to 'partial' (which would
@@ -377,6 +436,24 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           console.warn(
             'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
           );
+          // Rejected duplicates are DROPPED BY DESIGN: the reviewer is instructed to name the
+          // existing topic to merge into, but this pipeline cannot rewrite that other file here
+          // (reviseProposal only ever revises the same path). Because a rejection deliberately
+          // does not degrade the run, the watermark still advances and the day's journal evidence
+          // is NOT reprocessed -- so the proposal's material is gone from the topic layer and this
+          // WARN is the only trace. It exists so the loss stays auditable and a human can merge
+          // manually if the material mattered.
+          if (update.path.toLowerCase().startsWith('topics/')) {
+            console.warn(
+              'WARN Topic proposal ' +
+                update.path +
+                ' was rejected (likely a duplicate) and is DROPPED BY DESIGN; its material is not merged automatically. ' +
+                'Archived topics it may belong to: ' +
+                (topicsLoadFailed
+                  ? '(unknown: topics load failed)'
+                  : existingTopics.map(topic => topic.path).join(', '))
+            );
+          }
         }
       } catch (error) {
         console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
