@@ -18,6 +18,11 @@ describe('nightly/mapping', () => {
       expect(pathToTitle('people/mary-jane.md')).toBe('Profile of Mary Jane');
     });
 
+    it('returns null for topics/ files and the topic index -- they have no eager mapping by design', () => {
+      expect(pathToTitle('topics/urlaub-planung.md')).toBeNull();
+      expect(pathToTitle('general/topic-index.md')).toBeNull();
+    });
+
     it('returns null for an unmapped path', () => {
       expect(pathToTitle('journals/christopher/conv123.md')).toBeNull();
     });

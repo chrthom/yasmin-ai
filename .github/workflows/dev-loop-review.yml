@@ -1,0 +1,495 @@
+name: Dev Loop Review
+
+on:
+  pull_request:
+    types: [ready_for_review, synchronize, unlabeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review (manual backstop / fixer chain)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Reviewer (PR -> marker review -> state post-step)
+    runs-on: ubuntu-latest
+    # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
+    timeout-minutes: 75
+    env:
+      GH_REPO: ${{ github.repository }}
+      MAX_TURNS: '400'
+      MAX_TOKENS: '4000000'
+      TIME_LIMIT_SEC: '3600'
+      TIME_LIMIT_MIN: '60'
+      OPENCODE_VERSION: '2.0.26'
+      MAX_DENIED_STREAK: '6'
+      MAX_ITERATIONS: '8'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEV_LOOP_TOKEN }}
+
+      - name: Gate and dedupe
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          UNLABELED_NAME: ${{ github.event.label.name }}
+          HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
+          OWNER_ID: ${{ github.event.repository.owner.id }}
+        run: |
+          set -eu
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number in event; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO_ID" != "$OWNER_ID" ]; then
+            echo "PR #$PR_NUMBER is from a fork (head repo $HEAD_REPO_ID != $OWNER_ID); skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_ACTION" = "unlabeled" ] && [ "$UNLABELED_NAME" != "needs-human" ]; then
+            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create needs-human --color B60205 \
+            --description "dev-loop: human decision required" 2>/dev/null || true
+          pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
+          if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ] \
+            && [ "$EVENT_ACTION" = "synchronize" ]; then
+            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
+            echo "PR #$PR_NUMBER is labeled needs-human; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head_sha="$(printf '%s' "$pr_json" | jq -r '.headRefOid')"
+          if [ "$EVENT_ACTION" = "unlabeled" ]; then
+            # Resume path (docs/dev-loop.md event map): removing needs-human
+            # re-reviews the PR with a fresh budget - the head-SHA dedupe and
+            # the iteration cap are bypassed by design; a CHANGES_NEEDED
+            # verdict re-chains the fixer from the new review.
+            echo "Resuming after needs-human removal; re-reviewing PR #$PR_NUMBER with a fresh budget."
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+            echo "marker_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One review per head SHA: skip if a marker review already exists for it.
+          existing="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+            | jq -r --arg sha "$head_sha" \
+              '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.commit_id == $sha)] | length')"
+          if [ "$existing" != "0" ]; then
+            echo "A marker review for head SHA $head_sha already exists; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Iteration cap: count marker reviews in the current escalation epoch
+          # (since the last dev-loop-escalation comment). At MAX_ITERATIONS the
+          # loop parks the PR instead of dispatching - agents cannot see or
+          # negotiate the cap.
+          epoch_cut="$(gh api repos/${GH_REPO}/issues/$PR_NUMBER/comments --paginate \
+            | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-escalation -->")) | .created_at] | last // empty')"
+          marker_count="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+            | jq -r --arg after "${epoch_cut:-1970-01-01T00:00:00Z}" \
+              '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.submitted_at >= $after)] | length')"
+          if [ "$marker_count" -ge "$MAX_ITERATIONS" ]; then
+            echo "Iteration cap reached ($marker_count >= $MAX_ITERATIONS marker reviews this epoch); escalating."
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
+          EOF
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "marker_count=$marker_count" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Render role prompt with budget
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          mkdir -p out
+          sed -e "s/\${MAX_TURNS}/${MAX_TURNS}/g" \
+              -e "s/\${TIME_LIMIT_MIN}/${TIME_LIMIT_MIN}/g" \
+              .github/dev-loop/prompts/reviewer.md > out/reviewer.rendered.md
+          echo "--- rendered prompt ---"
+          cat out/reviewer.rendered.md
+
+      - name: Install opencode
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          # The v2 installer (npm package @opencode/cli) installs to
+          # ~/.opencode/bin; the v1 installer at https://opencode.ai/install
+          # ships 1.x and cannot reach 2.x releases.
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VERSION"
+          export PATH="$HOME/.opencode/bin:$PATH"
+          command -v opencode
+          # The invocation below is verified against this exact version; the
+          # v1 -> v2 CLI surface moved substantially (auth/provider/config
+          # flags, managed-service architecture, event schema).
+          opencode --version | grep -F "$OPENCODE_VERSION" || {
+            echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
+            exit 1
+          }
+
+      - name: Run opencode reviewer
+        id: opencode
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          # The reviewer agent only reads GitHub (PR, diff, linked issue, prior
+          # reviews); the post-step posts the review. It uses the read-only
+          # DEV_LOOP_TOKEN_READONLY secret when defined and falls back to the
+          # write PAT until that secret is created (create it to complete the
+          # docs' read-only-environment claim).
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN_READONLY || secrets.DEV_LOOP_TOKEN }}
+          DEV_LOOP_PR: ${{ steps.gate.outputs.pr_number }}
+          DEV_LOOP_HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          # Job-local config dir: MISTRAL_API_KEY must be the only credential
+          # source (stored auth would otherwise silently mask a rotated secret).
+          OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
+          OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # The managed service binds a loopback port; never route it via a
+          # proxy. Env keys are case-insensitive, so this covers both the
+          # NO_PROXY and no_proxy spellings that tools check.
+          NO_PROXY: 127.0.0.1,localhost
+        run: |
+          export PATH="$HOME/.opencode/bin:$PATH"
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+
+          # Watchdog: consume the JSON event stream, tee it to a file, and kill
+          # opencode when the run degenerates:
+          #  - MAX_DENIED_STREAK consecutive failed/denied tool calls (state
+          #    "failed", or "completed" with a non-zero shell exit)
+          #  - MAX_TURNS steps (step_start events)
+          #  - MAX_TOKENS cumulative cost-weighted tokens: input + output +
+          #    cache.write + 0.1 * cache.read (cached tokens are billed at 10%,
+          #    so the cap means "N uncached-equivalent tokens")
+          run_watchdog() {
+            streak=0
+            steps=0
+            tokens=0
+            jq -c '
+              select(.type == "tool_use" or .type == "step_start" or .type == "step_finish")
+              | if .type == "tool_use" then {
+                    k: "tool",
+                    status: (.part.state.status // ""),
+                    exit: (.part.state.metadata.metadata.exit // 0)
+                  }
+                elif .type == "step_start" then { k: "step" }
+                else {
+                    k: "tokens",
+                    t: (
+                      (.part.tokens.input // 0)
+                      + (.part.tokens.output // 0)
+                      + (.part.tokens.cache.write // 0)
+                      + (0.1 * (.part.tokens.cache.read // 0))
+                    )
+                  }
+                end' 2>/dev/null \
+            | while IFS= read -r entry; do
+                k="$(printf '%s' "$entry" | jq -r '.k')"
+                case "$k" in
+                  step)
+                    steps=$((steps + 1))
+                    if [ "$steps" -ge "$MAX_TURNS" ]; then
+                      echo "watchdog: step limit $MAX_TURNS reached - killing opencode"
+                      pkill -TERM -f 'opencode run' || true
+                      exit 99
+                    fi
+                    ;;
+                  tokens)
+                    tt="$(printf '%s' "$entry" | jq -r '.t')"
+                    tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b | floor')
+                    if [ "$tokens" -ge "$MAX_TOKENS" ]; then
+                      echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
+                      pkill -TERM -f 'opencode run' || true
+                      exit 99
+                    fi
+                    ;;
+                  tool)
+                    status="$(printf '%s' "$entry" | jq -r '.status')"
+                    exit_code="$(printf '%s' "$entry" | jq -r '.exit')"
+                    if [ "$status" = "failed" ] || { [ "$status" = "completed" ] && [ "$exit_code" != "0" ] && [ -n "$exit_code" ] && [ "$exit_code" != "null" ]; }; then
+                      streak=$((streak + 1))
+                      echo "watchdog: failed tool call streak = $streak"
+                      if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
+                        echo "watchdog: $streak consecutive failed tool calls - killing opencode"
+                        pkill -TERM -f 'opencode run' || true
+                        exit 99
+                      fi
+                    elif [ "$status" = "completed" ]; then
+                      streak=0
+                    fi
+                    ;;
+                esac
+              done
+          }
+
+          set -o pipefail
+          set +e
+          timeout --signal=TERM --kill-after=60 "$TIME_LIMIT_SEC" \
+            opencode run --standalone --format json --auto --model mistral/zai-glm-5-3 \
+              "$(cat out/reviewer.rendered.md)" \
+            2> out/opencode.stderr \
+            | tee out/stream.ndjson \
+            | run_watchdog
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "--- opencode stderr ---"
+          cat out/opencode.stderr || true
+          if [ "$rc" = "99" ]; then
+            echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Upload opencode output artifact
+        if: always() && steps.gate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-reviewer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/stream.ndjson
+            out/opencode.stderr
+            out/reviewer.rendered.md
+          if-no-files-found: warn
+
+      - name: Post-step state machine
+        if: always() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          escalate() {
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop reviewer escalation: $1
+
+          PR: #${PR_NUMBER}
+          Run: ${RUN_URL}
+          EOF
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+          }
+
+          rc="${{ steps.opencode.outputs.rc }}"
+
+          if [ -z "$rc" ]; then
+            # opencode never ran: a pre-run step (npm ci, install, version check, render) failed.
+            if [ "$RUN_ATTEMPT" = "1" ]; then
+              echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
+              exit 1
+            fi
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow) or remove the needs-human label"
+            exit 0
+          fi
+
+          # Cost = sum of the per-step cost fields in the event stream
+          # (opencode reports cost/tokens on every step_finish event). tokens
+          # uses the same cost-weighted sum as the watchdog cap, so the
+          # reported number matches what the cap enforced.
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
+
+          if [ "$rc" = "99" ]; then
+            # The watchdog killed opencode (failure streak / step / token cap):
+            # the run misbehaved or blew the budget. Never retry, escalate.
+            escalate "reviewer killed by the watchdog (rc=99; failure streak / step cap ${MAX_TURNS} / token cap ${MAX_TOKENS}; cost: \$$cost) - see the opencode output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" = "124" ]; then
+            # deadline hit (timeout(1)): never auto-retry, escalate.
+            escalate "reviewer stopped on the ${TIME_LIMIT_MIN} min deadline (rc=124, cost: \$$cost); see the opencode output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" = "1" ]; then
+            # opencode exits 1 for both config errors (deterministic - a retry
+            # fails identically) and infrastructure failures (API unreachable);
+            # not reliably separable by rc, so never auto-retry.
+            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" != "0" ]; then
+            escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
+            exit 0
+          fi
+
+          # exit 0: the verdict lives in the final assistant message; the agent
+          # never posts the review itself - this step does, with the PAT.
+          # Assistant text = the stream's text events (all of them; the verdict
+          # contract lives in the final message, so the last VERDICT line wins).
+          final_msg="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null || true)"
+          outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
+
+          case "$outcome_line" in
+            CONFLICTING)
+              # Contract per reviewer.md step 1: a conflicted PR gets no review;
+              # the merger role handles it (same handling as the fixer).
+              echo "PR is conflicting; the merger role handles it. No review posted."
+              cat > /tmp/dev-loop-review.md <<EOF
+          The PR is conflicting; the dev-loop merger role handles it. No review was posted.
+          EOF
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-review.md >/dev/null
+              exit 0
+              ;;
+            WALL:*)
+              escalate "reviewer stopped early with ${outcome_line} (cost: \$$cost)"
+              exit 0
+              ;;
+          esac
+
+          verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | tail -1 | cut -d: -f1 || true)"
+          verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num:-0}p" || true)"
+          case "${verdict_line:-}" in
+            VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
+            *)
+              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract); transcript artifact preserved for diagnosis"
+              exit 0
+              ;;
+          esac
+          verdict="${verdict_line#VERDICT: }"
+          echo "Reviewer verdict: $verdict (cost: \$$cost)"
+
+          current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+          if [ "$current_sha" != "$REVIEWED_SHA" ]; then
+            echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
+            if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+              escalate "failed to re-dispatch the reviewer after a stale head SHA ($REVIEWED_SHA -> $current_sha); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
+            fi
+            exit 0
+          fi
+
+          # Compose and post the marker review. The findings JSON object is
+          # the text after the VERDICT line in the final assistant message
+          # (fenced or bare); anything missing or unparseable degrades to [].
+          # KEEP IN SYNC with dev-loop-fix.yml: its gates match this exact body
+          # shape - the marker alone on line 1 and a bare `Verdict: <V>` line -
+          # and the reviewer's own head-SHA dedupe greps the marker line too.
+          findings_json="$(printf '%s\n' "$final_msg" \
+            | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
+            | sed -n '/^{/,$p' \
+            | sed '/^```/d' \
+            | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
+          [ -n "$findings_json" ] || findings_json='[]'
+          # Verdict and findings must fail together: the verdict rules say a
+          # non-CLEAN verdict always has at least one finding, so a non-CLEAN
+          # verdict with zero parsed findings is a parse failure, not a clean
+          # result - escalate instead of posting an empty findings review the
+          # fixer cannot act on.
+          if [ "$verdict" != "CLEAN" ] \
+            && [ "$(printf '%s' "$findings_json" | jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
+            escalate "unparseable outcome (exit 0, verdict $verdict but the findings JSON is missing or has zero findings); transcript artifact preserved for diagnosis"
+            exit 0
+          fi
+          # Hybrid posting: findings anchored to a diff line become inline
+          # comments; the rest (and every finding if inline posting fails)
+          # go into the review body as a markdown list.
+          body_findings="$(printf '%s' "$findings_json" \
+            | jq -r '.[] | select((.path // empty | length) == 0 or (.line // 0) == 0) \
+              | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring))' 2>/dev/null || true)"
+          body="<!-- dev-loop-review -->
+          Verdict: $verdict
+
+          dev-loop review of $REVIEWED_SHA (cost: \$$cost)."
+          if [ -n "$body_findings" ]; then
+            body="$body
+
+          $body_findings"
+          fi
+          cat > /tmp/dev-loop-review.json <<EOF
+          {
+            "commit_id": "$REVIEWED_SHA",
+            "event": "COMMENT",
+            "body": $(printf '%s' "$body" | jq -Rs .),
+            "comments": $(printf '%s' "$findings_json" | jq '[.[] | select((.path // empty | length) > 0 and (.line // 0) > 0) | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
+          }
+          EOF
+          if ! review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id)"; then
+            review_post_id=""
+          fi
+          if [ -z "$review_post_id" ]; then
+            # GitHub rejects inline comments outside the diff: retry once with
+            # every finding in the body (PR #80 behavior) before escalating.
+            all_findings="$(printf '%s' "$findings_json" \
+              | jq -r '.[] | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + ((.path // "?") + ":" + ((.line // 0) | tostring) + " ") + (.message // .body // (. | tostring))' 2>/dev/null || true)"
+            fallback_body="<!-- dev-loop-review -->
+          Verdict: $verdict
+
+          dev-loop review of $REVIEWED_SHA (cost: \$$cost).
+
+          $all_findings"
+            jq --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
+              '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
+              > /tmp/dev-loop-review.json
+            review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>/dev/null || true)"
+            if [ -z "$review_post_id" ]; then
+              escalate "the review post failed (gh api rejected the payload); verdict was $verdict - see the run log"
+              exit 0
+            fi
+          fi
+
+          case "$verdict" in
+            CLEAN)
+              echo "Verdict CLEAN: marking PR ready."
+              gh pr ready "$PR_NUMBER" 2>/dev/null || echo "PR is already ready (re-review); nothing to do."
+              exit 0
+              ;;
+            CHANGES_NEEDED)
+              echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer with the exact review id ($review_post_id)."
+              gh pr ready --undo "$PR_NUMBER" 2>/dev/null || true
+              # Pass the posted review's id, not "latest": a second
+              # CHANGES_NEEDED review landing before the fixer's gate must
+              # not make the fixer act on the wrong review.
+              if ! gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$PR_NUMBER" -f review_id="$review_post_id"; then
+                escalate "failed to dispatch the fixer for this CHANGES_NEEDED review; the review stands - retry via workflow_dispatch (Actions -> Dev Loop Fix -> Run workflow)"
+              fi
+              exit 0
+              ;;
+            NEEDS_HUMAN)
+              escalate "review verdict NEEDS_HUMAN - at least one finding requires a human decision; see the review just posted"
+              exit 0
+              ;;
+          esac
