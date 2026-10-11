@@ -103,13 +103,15 @@ jobs:
       - name: Install opencode
         if: steps.gate.outputs.skip != 'true'
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          export PATH="$HOME/.local/bin:$PATH"
+          # The v2 installer (npm package @opencode/cli) installs to
+          # ~/.opencode/bin; the v1 installer at https://opencode.ai/install
+          # ships 1.x and cannot reach 2.x releases.
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VERSION"
+          export PATH="$HOME/.opencode/bin:$PATH"
           command -v opencode
           # The invocation below is verified against this exact version; the
           # v1 -> v2 CLI surface moved substantially (auth/provider/config
           # flags, managed-service architecture, event schema).
-          opencode upgrade "v$OPENCODE_VERSION" >/dev/null 2>&1 || true
           opencode --version | grep -F "$OPENCODE_VERSION" || {
             echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
             exit 1
@@ -131,7 +133,7 @@ jobs:
           # NO_PROXY and no_proxy spellings that tools check.
           NO_PROXY: 127.0.0.1,localhost
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
