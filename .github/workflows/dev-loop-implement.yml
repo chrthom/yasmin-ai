@@ -1,0 +1,197 @@
+name: Dev Loop Implement
+
+on:
+  issues:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to implement (manual backstop / retry)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: dev-loop-issue-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: Implementer (issue -> draft PR)
+    runs-on: ubuntu-latest
+    # 15 min above --time-limit (5400 s = 90 min), per docs/dev-loop.md budgets table
+    timeout-minutes: 105
+    env:
+      GH_REPO: ${{ github.repository }}
+      MAX_TURNS: '90'
+      MAX_PRICE: '7.50'
+      TIME_LIMIT_SEC: '5400'
+      TIME_LIMIT_MIN: '90'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEV_LOOP_TOKEN }}
+
+      - name: Gate and dedupe
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+        run: |
+          set -eu
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "No issue number in event; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create needs-human --color B60205 \
+            --description "dev-loop: human decision required" 2>/dev/null || true
+          if gh issue view "$ISSUE_NUMBER" --json labels \
+            | jq -e 'any(.labels[].name == "needs-human")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER is labeled needs-human; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(git ls-remote origin "refs/heads/vibe/issue-$ISSUE_NUMBER-*")" ]; then
+            echo "Branch vibe/issue-$ISSUE_NUMBER-* already exists; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Render role prompt with budget
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          mkdir -p out
+          sed -e "s/\${MAX_TURNS}/${MAX_TURNS}/g" \
+              -e "s/\${TIME_LIMIT_MIN}/${TIME_LIMIT_MIN}/g" \
+              .github/dev-loop/prompts/implementer.md > out/implementer.rendered.md
+          echo "--- rendered prompt ---"
+          cat out/implementer.rendered.md
+
+      - name: Install vibe
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          curl -LsSf https://mistral.ai/vibe/install.sh | bash
+          command -v vibe || ls -la "$HOME/.local/bin"
+
+      - name: Run vibe implementer
+        id: vibe
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          DEV_LOOP_ISSUE: ${{ steps.gate.outputs.issue_number }}
+          DEV_LOOP_ROLE: implementer
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          set +e
+          vibe --prompt-file out/implementer.rendered.md \
+            --auto-approve \
+            --max-turns "$MAX_TURNS" \
+            --max-price "$MAX_PRICE" \
+            --time-limit "$TIME_LIMIT_SEC" \
+            --enabled-tools Read,Grep,Glob,Edit,Write,Bash \
+            --output-dir out/
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Upload vibe export artifact
+        if: always() && steps.gate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-implementer-export-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/export.json
+          if-no-files-found: warn
+
+      - name: Post-step state machine
+        if: always() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.gate.outputs.issue_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -u
+          escalate() {
+            gh issue edit "$ISSUE_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop implementer escalation: $1
+
+          Issue: #${ISSUE_NUMBER}
+          Run: https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}
+          EOF
+            gh issue comment "$ISSUE_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+          }
+
+          rc="${{ steps.vibe.outputs.rc }}"
+          outcome="$(jq -r '.outcome // .finalMessage // .final_message // empty' out/export.json 2>/dev/null || true)"
+
+          if [ -z "$rc" ]; then
+            # vibe never ran: a pre-vibe step (npm ci, install, render) failed.
+            if [ "$RUN_ATTEMPT" = "1" ]; then
+              echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
+              exit 1
+            fi
+            escalate "a workflow step failed before the agent ran (twice); remove the needs-human label to retry with a fresh budget"
+            exit 0
+          fi
+
+          if [ "$rc" = "0" ]; then
+            case "$outcome" in
+              PR_URL:*)
+                echo "Implementer finished: $outcome"
+                exit 0
+                ;;
+              NO_PR:*)
+                echo "Implementer reported $outcome (questions posted and issue labeled by the agent); no PR opened by design."
+                exit 0
+                ;;
+              WALL:*)
+                reason="${outcome#WALL: }"
+                escalate "implementer stopped early with WALL: $reason"
+                exit 0
+                ;;
+              *)
+                escalate "unparseable outcome (exit 0, final line does not match the contract); export.json artifact preserved for diagnosis"
+                exit 0
+                ;;
+            esac
+          fi
+
+          if [ "$rc" = "2" ]; then
+            if [ "$RUN_ATTEMPT" = "1" ]; then
+              echo "Infrastructure failure (exit 2); retrying this run once."
+              gh api -X POST "repos/$REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" >/dev/null
+              exit 0
+            fi
+            escalate "infrastructure failure (exit 2) persisted after one retry"
+            exit 0
+          fi
+
+          if [ "$rc" = "3" ]; then
+            escalate "implementer hit a harness cap or refused (exit 3, outcome: ${outcome:-unknown}) - likely a rabbit hole or the issue is too large; see the export.json artifact"
+            exit 0
+          fi
+
+          escalate "unexpected vibe exit code $rc (outcome: ${outcome:-unknown}); see the export.json artifact"
