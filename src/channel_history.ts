@@ -29,9 +29,7 @@ const PROTOCOL_TAGS: readonly string[] = [
 export const escapeChannelHistory = (text: string): string => {
   let escaped = text;
   for (const tag of PROTOCOL_TAGS) {
-    escaped = escaped
-      .replaceAll(`<${tag}>`, `<${tag} >`)
-      .replaceAll(`</${tag}`, `< /${tag}`);
+    escaped = escaped.replaceAll(`<${tag}>`, `<${tag} >`).replaceAll(`</${tag}`, `< /${tag}`);
   }
   return escaped;
 };
