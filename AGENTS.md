@@ -44,6 +44,7 @@ src/
 ├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
 ├── handoff.ts          # Summary + last turns handed to a fresh conversation after a restart
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
+├── channel_history.ts   # <channel_history> block: build/escape/strip for group channel context
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
 │   ├── db_proxy.ts     # Database proxy loaded with mock background entries
@@ -90,8 +91,12 @@ src/
    - Filters out already loaded titles using the session's active conversation cache.
    - Wraps newly loaded context pieces in structured XML tags (`<context_entry title="...">...</context_entry>`) and prepends them to the prompt.
    - Calls the Mistral API with custom Tool Calling configuration and manages 12-hour session state.
-4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
-5. **Response** → Answers are sent back to Synology Chat via its API
+4. **Group channel history** → For group/slash requests carrying `channel_id`/`post_id`, the recent channel
+   messages (fetched via the Synology `post_list` integration API, bot and slash posts excluded) are prepended
+   as an ephemeral `<channel_history>` block before the user question. The nightly journal and the handoff
+   strip this block (`src/channel_history.ts`), so third-party channel chatter never reaches memory.
+5. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
+6. **Response** → Answers are sent back to Synology Chat via its API
 
 #### Memory writes: the live agent is read-only (memory)
 
@@ -232,6 +237,7 @@ Required for runtime:
 - `CHAT_TOKEN_BOT` - Token for `/chat/bot` endpoint
 - `CHAT_TOKEN_SLASH` - Token for `/chat/slash` endpoint
 - `CHAT_TOKEN_GROUP` - Token for `/chat/group` endpoint
+- `CHAT_BOT_USER_ID` - Synology user id of the Yasmin bot (used to exclude its own replies from group channel history; a startup warning is logged if unset)
 - `AGENT_ID_CONVERSATION` - Mistral agent identifier for the live conversation agent
 - `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the live agent RAGs against
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the nightly memory-consolidation agent
