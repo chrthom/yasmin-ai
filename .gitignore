@@ -9,6 +9,7 @@ Thumbs.db
 # Local agent/assistant state
 .claude/
 .openclaude/
+.opencode/dev-loop/
 
 # Vendors
 node_modules/

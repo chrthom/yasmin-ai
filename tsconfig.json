@@ -19,5 +19,6 @@
     "noImplicitOverride": true,
     "lib": ["ES2022"]
   },
-  "include": ["src", "scripts", "package.json"]
+  "include": ["src", "scripts", "package.json", ".opencode/plugins/dev-loop"],
+  "exclude": [".opencode/plugins/dev-loop/index.ts"]
 }
