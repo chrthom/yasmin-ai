@@ -73,7 +73,9 @@ no-op.
   since the last escalation comment (per escalation epoch). At `MAX_ITERATIONS` (8), it
   deterministically labels `needs-human`, posts the escalation, dispatches nothing. Agents
   cannot see or negotiate the cap.
-- **Per-run budgets**: `--max-turns` / `--max-tokens` on every role run (plus the job
+- **Per-run budgets**: step cap / token cap on every role run, enforced by the stream
+  watchdog (plus the job `timeout-minutes` and `timeout(1)` as the wall-clock caps); a budget
+  stop escalates instead of chaining.
   `timeout-minutes` as the wall-clock cap); a budget stop escalates instead of chaining.
 - **Fixer chains only on `finished`**: `WALL:` or a limit-stop breaks the cycle.
 - **One review per head SHA**: pre-step skips if a marker review with `commit_id == headRefOid`
@@ -180,17 +182,18 @@ Calibrate from the `out/stream.ndjson` artifacts after the first real runs; thes
 (steps/tokens enforced by the stream watchdog — a cap hit kills `opencode run` and the
 post-step classifies rc 99; time enforced by `timeout(1)`, rc 124 — not a hang):
 
-| Role | `--max-turns` | `--max-tokens` | `--time-limit` | job `timeout-minutes` | Rationale |
+| Role | steps (watchdog) | tokens (watchdog, cost-weighted) | time limit (`timeout(1)`) | job `timeout-minutes` | Rationale |
 | --- | --- | --- | --- | --- |
 | implementer | 800 | 6M | 5400 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint. First live run used 71 steps / 3.03M tokens / $4.63 on a modest issue; with opencode prompt caching observed at 93-99% hit rate, steps are cheap (~10% input cost), so the step cap is a generous runaway guard (~7x the vibe-era 120-turn budget) and the 90-min deadline is the real constraint |
-| reviewer | 60 | 4M | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate in Phase 2 from its first artifacts |
-| fixer | 60 | 4M | 3600 | 75 | scoped to one review's findings; usually well under |
-| merger | 45 | 2M | 2700 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
+| reviewer | 400 | 4M | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate in Phase 2 from its first artifacts |
+| fixer | 400 | 4M | 3600 | 75 | scoped to one review's findings; usually well under |
+| merger | 300 | 2M | 2700 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
 
-The token cap (watchdog-summed input+output+cache read+write) is the resource brake. With
-opencode the first live runs showed working prompt caching (93–99% cache-hit rate on resent
-context, cached tokens billed at 10%), so dollar cost no longer tracks input volume the way
-the vibe-era analysis assumed. Token spend remains the direct measure of work; a token-cap
+The token cap is cost-weighted: input + output + cache.write + 0.1 × cache.read —
+cached tokens count at their 10% billing rate, so the cap means "N uncached-equivalent
+tokens" and preserves the vibe-era cost semantics: a heavily cached, cheap, healthy run
+cannot blow it. The post-step reports the same sum, so artifacts calibrate against what
+the cap enforced. Token spend remains the direct measure of work; a token-cap
 hit is a truthful "this run consumed excessive tokens". A step-cap hit means the agent
 looped: the cap is deliberately far above any honest run. Hard ceiling independent of
 opencode: the GitHub job timeout (`timeout-minutes`) set 15 min above each time limit, so a
@@ -278,5 +281,5 @@ which is also the recovery path if a webhook event was ever missed.
   success; the cycle escalates at 8 iterations, in code.
 - A conflicted PR gets a merge commit resolving both sides, returns to draft, and is re-reviewed.
 - `needs-human` parks an item; removing the label resumes it with a fresh budget.
-- Every role run is bounded by `--max-turns`/`--max-tokens` and the job timeout; the transcript
+- Every role run is bounded by the step/token caps and the job timeout; the transcript
   artifact preserves what happened within those bounds.

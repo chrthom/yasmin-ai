@@ -141,7 +141,11 @@ jobs:
           #    that on the first live vibe run)
           #  - MAX_TURNS steps (step_start events; ~7x the vibe budget, cheap
           #    thanks to prompt caching)
-          #  - MAX_TOKENS cumulative tokens (input+output+cache read+write)
+          #  - MAX_TOKENS cumulative cost-weighted tokens: input + output +
+          #    cache.write + 0.1 * cache.read (cached tokens are billed at 10%,
+          #    so the cap means "N uncached-equivalent tokens" and a cheap,
+          #    healthy cached run cannot blow it - same cost semantics as the
+          #    vibe-era --max-tokens)
           run_watchdog() {
             streak=0
             steps=0
@@ -156,12 +160,12 @@ jobs:
                 elif .type == "step_start" then { k: "step" }
                 else {
                     k: "tokens",
-                    t: [
-                      (.part.tokens.input // 0),
-                      (.part.tokens.output // 0),
-                      (.part.tokens.cache.read // 0),
-                      (.part.tokens.cache.write // 0)
-                    ]
+                    t: (
+                      (.part.tokens.input // 0)
+                      + (.part.tokens.output // 0)
+                      + (.part.tokens.cache.write // 0)
+                      + (0.1 * (.part.tokens.cache.read // 0))
+                    )
                   }
                 end' 2>/dev/null \
             | while IFS= read -r entry; do
@@ -176,8 +180,8 @@ jobs:
                     fi
                     ;;
                   tokens)
-                    tt="$(printf '%s' "$entry" | jq -r '.t | map(. // 0) | add')"
-                    tokens=$((tokens + tt))
+                    tt="$(printf '%s' "$entry" | jq -r '.t')"
+                    tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b')
                     if [ "$tokens" -ge "$MAX_TOKENS" ]; then
                       echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
                       pkill -TERM -f 'opencode run' || true
@@ -268,9 +272,12 @@ jobs:
           fi
 
           # Cost = sum of the per-step cost fields in the event stream
-          # (opencode reports cost/tokens on every step_finish event).
-          cost="$(jq -s '[.[].part.cost // 0] | add' out/stream.ndjson 2>/dev/null || echo 0)"
-          tokens="$(jq -s '[.[].part.tokens // empty | (.input // 0) + (.output // 0)] | add' out/stream.ndjson 2>/dev/null || echo 0)"
+          # (opencode reports cost/tokens on every step_finish event). tokens
+          # uses the same cost-weighted sum as the watchdog cap, so the
+          # reported number matches what the cap enforced.
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          tokens="$(jq -s '[.[].part.tokens // empty
+            | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "99" ]; then
