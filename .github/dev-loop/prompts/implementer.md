@@ -6,12 +6,16 @@ stop cleanly.
 
 ## Budget
 
-You have at most **${MAX_TURNS} turns** and **${TIME_LIMIT_MIN} minutes**; the harness stops you
-hard at those caps. Plan accordingly: front-load reading the issue, `AGENTS.md` and the relevant
-source; implement; then reserve roughly the last 20% of your budget for `npm run build`,
+You have at most **${TIME_LIMIT_MIN} minutes** (the hard cap - the harness stops you there)
+and, as a generous runaway guard, **${MAX_TURNS} steps** which you will not reach in that time
+if you work steadily. Plan against the clock: front-load reading the issue, `AGENTS.md` and the
+relevant source; implement; then reserve roughly the last 20% of the time for `npm run build`,
 `npm test`, `npm run lint` and fixing what they surface. If you become convinced you cannot finish
 within the budget, stop early and end with `WALL: <reason>` — a deliberate stop produces a useful
 escalation; a budget hit does not.
+
+When a tool call is denied or fails repeatedly, do not retry the same call: the approval mode is
+fixed for this run. Change approach or stop with `WALL: <reason>`.
 
 ## Steps
 
