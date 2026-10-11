@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       retry:
-        description: Internal retry counter for infrastructure failures (do not edit)
+        description: Internal retry counter (do not edit)
         required: false
         default: '0'
         type: string
@@ -33,11 +33,11 @@ jobs:
     timeout-minutes: 75
     env:
       GH_REPO: ${{ github.repository }}
-      MAX_TURNS: '60'
+      MAX_TURNS: '400'
       MAX_TOKENS: '4000000'
       TIME_LIMIT_SEC: '3600'
       TIME_LIMIT_MIN: '60'
-      VIBE_VERSION: '2.26.1'
+      OPENCODE_VERSION: '2.0.26'
       MAX_DENIED_STREAK: '6'
       MAX_ITERATIONS: '8'
     steps:
@@ -153,20 +153,23 @@ jobs:
           echo "--- rendered prompt ---"
           cat out/reviewer.rendered.md
 
-      - name: Install vibe
+      - name: Install opencode
         if: steps.gate.outputs.skip != 'true'
         run: |
-          curl -LsSf https://mistral.ai/vibe/install.sh | bash
-          command -v vibe
-          # The invocation below is verified against this exact version; the CLI
-          # surface moved substantially between minor versions (2.9 vs 2.26).
-          vibe --version | grep -F "vibe $VIBE_VERSION" || {
-            echo "::error::Installed vibe version does not match the expected $VIBE_VERSION - verify the invocation against the new CLI surface before rerunning"
+          curl -fsSL https://opencode.ai/install | bash
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v opencode
+          # The invocation below is verified against this exact version; the
+          # v1 -> v2 CLI surface moved substantially (auth/provider/config
+          # flags, managed-service architecture, event schema).
+          opencode upgrade "v$OPENCODE_VERSION" >/dev/null 2>&1 || true
+          opencode --version | grep -F "$OPENCODE_VERSION" || {
+            echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
             exit 1
           }
 
-      - name: Run vibe reviewer
-        id: vibe
+      - name: Run opencode reviewer
+        id: opencode
         if: steps.gate.outputs.skip != 'true'
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
@@ -178,72 +181,113 @@ jobs:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN_READONLY || secrets.DEV_LOOP_TOKEN }}
           DEV_LOOP_PR: ${{ steps.gate.outputs.pr_number }}
           DEV_LOOP_HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          # Job-local config dir: MISTRAL_API_KEY must be the only credential
+          # source (stored auth would otherwise silently mask a rotated secret).
+          OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
+          OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # The managed service binds a loopback port; never route it via a proxy.
+          NO_PROXY: 127.0.0.1,localhost
+          no_proxy: 127.0.0.1,localhost
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p "$OPENCODE_CONFIG_DIR"
 
-          # Watchdog: consume the streaming NDJSON transcript, tee it to a file,
-          # and kill vibe when the agent hits MAX_DENIED_STREAK consecutive tool
-          # denials - a denial loop burns the whole turn budget for nothing.
-          kill_on_denial_streak() {
+          # Watchdog: consume the JSON event stream, tee it to a file, and kill
+          # opencode when the run degenerates:
+          #  - MAX_DENIED_STREAK consecutive failed/denied tool calls (state
+          #    "failed", or "completed" with a non-zero shell exit)
+          #  - MAX_TURNS steps (step_start events)
+          #  - MAX_TOKENS cumulative cost-weighted tokens: input + output +
+          #    cache.write + 0.1 * cache.read (cached tokens are billed at 10%,
+          #    so the cap means "N uncached-equivalent tokens")
+          run_watchdog() {
             streak=0
+            steps=0
+            tokens=0
             jq -c '
-              select(.type == "effect")
-              | {
-                  toolName: .detail.toolName,
-                  status: .detail.state.status,
-                  code: .detail.state.error.code
-                }' 2>/dev/null \
+              select(.type == "tool_use" or .type == "step_start" or .type == "step_finish")
+              | if .type == "tool_use" then {
+                    k: "tool",
+                    status: (.part.state.status // ""),
+                    exit: (.part.state.metadata.metadata.exit // 0)
+                  }
+                elif .type == "step_start" then { k: "step" }
+                else {
+                    k: "tokens",
+                    t: (
+                      (.part.tokens.input // 0)
+                      + (.part.tokens.output // 0)
+                      + (.part.tokens.cache.write // 0)
+                      + (0.1 * (.part.tokens.cache.read // 0))
+                    )
+                  }
+                end' 2>/dev/null \
             | while IFS= read -r entry; do
-                status="$(printf '%s' "$entry" | jq -r '.status // empty')"
-                code="$(printf '%s' "$entry" | jq -r '.code // empty')"
-                if [ "$status" = "failed" ] && [ "$code" = "tool_denied" ]; then
-                  streak=$((streak + 1))
-                  echo "watchdog: denied tool call streak = $streak"
-                  if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
-                    echo "watchdog: $streak consecutive denials - killing vibe"
-                    pkill -TERM -f 'vibe --prompt-file' || true
-                    exit 99
-                  fi
-                else
-                  streak=0
-                fi
+                k="$(printf '%s' "$entry" | jq -r '.k')"
+                case "$k" in
+                  step)
+                    steps=$((steps + 1))
+                    if [ "$steps" -ge "$MAX_TURNS" ]; then
+                      echo "watchdog: step limit $MAX_TURNS reached - killing opencode"
+                      pkill -TERM -f 'opencode run' || true
+                      exit 99
+                    fi
+                    ;;
+                  tokens)
+                    tt="$(printf '%s' "$entry" | jq -r '.t')"
+                    tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b | floor')
+                    if [ "$tokens" -ge "$MAX_TOKENS" ]; then
+                      echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
+                      pkill -TERM -f 'opencode run' || true
+                      exit 99
+                    fi
+                    ;;
+                  tool)
+                    status="$(printf '%s' "$entry" | jq -r '.status')"
+                    exit_code="$(printf '%s' "$entry" | jq -r '.exit')"
+                    if [ "$status" = "failed" ] || { [ "$status" = "completed" ] && [ "$exit_code" != "0" ] && [ -n "$exit_code" ] && [ "$exit_code" != "null" ]; }; then
+                      streak=$((streak + 1))
+                      echo "watchdog: failed tool call streak = $streak"
+                      if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
+                        echo "watchdog: $streak consecutive failed tool calls - killing opencode"
+                        pkill -TERM -f 'opencode run' || true
+                        exit 99
+                      fi
+                    elif [ "$status" = "completed" ]; then
+                      streak=0
+                    fi
+                    ;;
+                esac
               done
           }
 
           set -o pipefail
           set +e
-          vibe --prompt-file out/reviewer.rendered.md \
-            --auto-approve \
-            --trust \
-            --output streaming \
-            --max-turns "$MAX_TURNS" \
-            --max-tokens "$MAX_TOKENS" \
-            --time-limit "$TIME_LIMIT_SEC" \
-            --output-dir out/ \
-            2> out/vibe.stderr \
+          timeout --signal=TERM --kill-after=60 "$TIME_LIMIT_SEC" \
+            opencode run --standalone --format json --auto --model mistral/zai-glm-5-3 \
+              "$(cat out/reviewer.rendered.md)" \
+            2> out/opencode.stderr \
             | tee out/stream.ndjson \
-            | kill_on_denial_streak
+            | run_watchdog
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          echo "--- vibe stderr ---"
-          cat out/vibe.stderr || true
+          echo "--- opencode stderr ---"
+          cat out/opencode.stderr || true
           if [ "$rc" = "99" ]; then
             echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
           fi
           exit 0
 
-      - name: Upload vibe output artifact
+      - name: Upload opencode output artifact
         if: always() && steps.gate.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: vibe-reviewer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          name: opencode-reviewer-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/export.json
             out/stream.ndjson
-            out/vibe.stderr
+            out/opencode.stderr
             out/reviewer.rendered.md
-            out/session/
           if-no-files-found: warn
 
       - name: Post-step state machine
@@ -252,7 +296,6 @@ jobs:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
-          RETRY_COUNT: ${{ inputs.retry || '0' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -270,9 +313,10 @@ jobs:
             gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
           }
 
-          rc="${{ steps.vibe.outputs.rc }}"
+          rc="${{ steps.opencode.outputs.rc }}"
 
           if [ -z "$rc" ]; then
+            # opencode never ran: a pre-run step (npm ci, install, version check, render) failed.
             if [ "$RUN_ATTEMPT" = "1" ]; then
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
@@ -281,51 +325,46 @@ jobs:
             exit 0
           fi
 
-          if [ "${{ steps.vibe.outputs.stopped_by_watchdog }}" = "true" ]; then
-            escalate "reviewer killed by the denial-streak watchdog ($MAX_DENIED_STREAK consecutive denied tool calls, rc=$rc) - the agent could not use its tools; see the vibe output artifact"
+          # Cost = sum of the per-step cost fields in the event stream
+          # (opencode reports cost/tokens on every step_finish event). tokens
+          # uses the same cost-weighted sum as the watchdog cap, so the
+          # reported number matches what the cap enforced.
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
+
+          if [ "$rc" = "99" ]; then
+            # The watchdog killed opencode (failure streak / step / token cap):
+            # the run misbehaved or blew the budget. Never retry, escalate.
+            escalate "reviewer killed by the watchdog (rc=99; failure streak / step cap ${MAX_TURNS} / token cap ${MAX_TOKENS}; cost: \$$cost) - see the opencode output artifact"
             exit 0
           fi
 
-          outcome="$(jq -r '.outcome // "unknown"' out/export.json 2>/dev/null || echo unknown)"
-          cost="$(jq -r '.cost_usd // "n/a"' out/export.json 2>/dev/null || echo "n/a")"
-          stderr_tail="$(tail -1 out/vibe.stderr 2>/dev/null || true)"
-
-          if [ "$rc" = "2" ]; then
-            if [ "$RETRY_COUNT" = "0" ]; then
-              echo "Vibe infrastructure failure (exit 2, $stderr_tail); re-dispatching once with retry=1."
-              if gh workflow run dev-loop-review.yml --ref main \
-                -f pr_number="$PR_NUMBER" -f retry=1; then
-                exit 0
-              fi
-              echo "re-dispatch failed; leaving this run red for manual retry"
-              exit 0
-            fi
-            escalate "infrastructure failure persisted after one retry (exit 2, $stderr_tail)"
-            exit 0
-          fi
-
-          if [ "$rc" = "3" ]; then
-            escalate "reviewer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail); see the vibe output artifact"
+          if [ "$rc" = "124" ]; then
+            # deadline hit (timeout(1)): never auto-retry, escalate.
+            escalate "reviewer stopped on the ${TIME_LIMIT_MIN} min deadline (rc=124, cost: \$$cost); see the opencode output artifact"
             exit 0
           fi
 
           if [ "$rc" = "1" ]; then
-            escalate "vibe usage/config error (exit 1, $stderr_tail); see the vibe output artifact"
+            # opencode exits 1 for both config errors (deterministic - a retry
+            # fails identically) and infrastructure failures (API unreachable);
+            # not reliably separable by rc, so never auto-retry.
+            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
             exit 0
           fi
 
           if [ "$rc" != "0" ]; then
-            escalate "unexpected vibe exit code $rc (outcome: $outcome, $stderr_tail); see the vibe output artifact"
+            escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
             exit 0
           fi
 
           # exit 0: the verdict lives in the final assistant message; the agent
           # never posts the review itself - this step does, with the PAT.
-          final_msg="$(jq -rs '[ .[] | select(.type == "message" and .role == "assistant") \
-              | [.content[]? | select(.type == "text") | .text] | join("\n") ] | last // ""' \
-            out/stream.ndjson 2>/dev/null || true)"
-          verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | head -1 | cut -d: -f1 || true)"
-          verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num}p" || true)"
+          # Assistant text = the stream's text events (all of them; the verdict
+          # contract lives in the final message, so the last VERDICT line wins).
+          final_msg="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null || true)"
+          verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | tail -1 | cut -d: -f1 || true)"
+          verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num:-0}p" || true)"
           case "${verdict_line:-}" in
             VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
             *)

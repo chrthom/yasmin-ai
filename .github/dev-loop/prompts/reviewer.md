@@ -7,10 +7,11 @@ final message and posts it. You run unattended: nobody answers questions.
 
 ## Budget
 
-You have at most **${MAX_TURNS} turns** and **${TIME_LIMIT_MIN} minutes**; the harness stops you
-hard at those caps. Plan accordingly: front-load reading `AGENTS.md`, the PR, its linked issue,
-the diff and the prior marker reviews; then check out the head SHA and run the checks; then
-review and compose the verdict. If you become convinced you cannot finish within the budget,
+You have at most **${TIME_LIMIT_MIN} minutes** (the hard cap - the harness stops you there)
+and, as a generous runaway guard, **${MAX_TURNS} steps** which you will not reach in that time
+if you work steadily. Plan against the clock: front-load reading `AGENTS.md`, the PR, its linked
+issue, the diff and the prior marker reviews; then check out the head SHA and run the checks;
+then review and compose the verdict. If you become convinced you cannot finish within the budget,
 stop early and end with `WALL: <reason>` — a deliberate stop produces a useful escalation;
 a budget hit does not.
 
