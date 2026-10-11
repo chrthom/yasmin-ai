@@ -177,6 +177,17 @@ set 15 min above each `--time-limit`, so a wedged process cannot burn the 6-hour
 Expected real-world spend per happy-path PR (implement + 1–2 reviews + 1 fix + occasional
 merge): roughly $5–15 total; the caps bound the worst case at ~$15 per role run.
 
+**Budget awareness in the prompt**: each role prompt is rendered with its caps (the workflow
+pre-step injects `MAX_TURNS`, `TIME_LIMIT_MIN` into the prompt file via env or a template
+step, so the numbers live in one place — the workflow — not in the prompt text). The prompt
+tells the agent its turn budget and instructs it to plan accordingly: front-load reading the
+issue/PR and `AGENTS.md`, implement, then reserve the last ~20% of the budget for running
+`npm run build`/`npm test`/`npm run lint` and fixing what they surface. If the agent believes
+it cannot finish within the budget, it must stop early with `WALL: <reason>` rather than
+run until the harness kills it — a deliberate stop yields a useful escalation, a budget hit
+does not. Caveat: agents cannot observe their live usage, so this is planning guidance, not
+a hard guarantee; the harness cap remains the enforcement and the two complement each other.
+
 ## Failure handling
 
 Principle: a failed role run never chains, never retries itself, and always leaves a visible
