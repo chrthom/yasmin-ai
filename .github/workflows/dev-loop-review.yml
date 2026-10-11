@@ -6,13 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to review (manual backstop / retry / fixer chain)
+        description: PR number to review (manual backstop / fixer chain)
         required: true
-        type: string
-      retry:
-        description: Internal retry counter (do not edit)
-        required: false
-        default: '0'
         type: string
 
 permissions:
@@ -156,13 +151,15 @@ jobs:
       - name: Install opencode
         if: steps.gate.outputs.skip != 'true'
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          export PATH="$HOME/.local/bin:$PATH"
+          # The v2 installer (npm package @opencode/cli) installs to
+          # ~/.opencode/bin; the v1 installer at https://opencode.ai/install
+          # ships 1.x and cannot reach 2.x releases.
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VERSION"
+          export PATH="$HOME/.opencode/bin:$PATH"
           command -v opencode
           # The invocation below is verified against this exact version; the
           # v1 -> v2 CLI surface moved substantially (auth/provider/config
           # flags, managed-service architecture, event schema).
-          opencode upgrade "v$OPENCODE_VERSION" >/dev/null 2>&1 || true
           opencode --version | grep -F "$OPENCODE_VERSION" || {
             echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
             exit 1
@@ -190,7 +187,7 @@ jobs:
           # NO_PROXY and no_proxy spellings that tools check.
           NO_PROXY: 127.0.0.1,localhost
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
@@ -364,6 +361,25 @@ jobs:
           # Assistant text = the stream's text events (all of them; the verdict
           # contract lives in the final message, so the last VERDICT line wins).
           final_msg="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null || true)"
+          outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
+
+          case "$outcome_line" in
+            CONFLICTING)
+              # Contract per reviewer.md step 1: a conflicted PR gets no review;
+              # the merger role handles it (same handling as the fixer).
+              echo "PR is conflicting; the merger role handles it. No review posted."
+              cat > /tmp/dev-loop-review.md <<EOF
+          The PR is conflicting; the dev-loop merger role handles it. No review was posted.
+          EOF
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-review.md >/dev/null
+              exit 0
+              ;;
+            WALL:*)
+              escalate "reviewer stopped early with ${outcome_line} (cost: \$$cost)"
+              exit 0
+              ;;
+          esac
+
           verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | tail -1 | cut -d: -f1 || true)"
           verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num:-0}p" || true)"
           case "${verdict_line:-}" in
@@ -388,12 +404,25 @@ jobs:
           # Compose and post the marker review. The findings JSON object is
           # the text after the VERDICT line in the final assistant message
           # (fenced or bare); anything missing or unparseable degrades to [].
+          # KEEP IN SYNC with dev-loop-fix.yml: its gates match this exact body
+          # shape - the marker alone on line 1 and a bare `Verdict: <V>` line -
+          # and the reviewer's own head-SHA dedupe greps the marker line too.
           findings_json="$(printf '%s\n' "$final_msg" \
             | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
             | sed -n '/^{/,$p' \
             | sed '/^```/d' \
             | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
           [ -n "$findings_json" ] || findings_json='[]'
+          # Verdict and findings must fail together: the verdict rules say a
+          # non-CLEAN verdict always has at least one finding, so a non-CLEAN
+          # verdict with zero parsed findings is a parse failure, not a clean
+          # result - escalate instead of posting an empty findings review the
+          # fixer cannot act on.
+          if [ "$verdict" != "CLEAN" ] \
+            && [ "$(printf '%s' "$findings_json" | jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
+            escalate "unparseable outcome (exit 0, verdict $verdict but the findings JSON is missing or has zero findings); transcript artifact preserved for diagnosis"
+            exit 0
+          fi
           # Hybrid posting: findings anchored to a diff line become inline
           # comments; the rest (and every finding if inline posting fails)
           # go into the review body as a markdown list.
@@ -417,7 +446,10 @@ jobs:
             "comments": $(printf '%s' "$findings_json" | jq '[.[] | select((.path // empty | length) > 0 and (.line // 0) > 0) | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
           }
           EOF
-          if ! gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json >/dev/null; then
+          if ! review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id)"; then
+            review_post_id=""
+          fi
+          if [ -z "$review_post_id" ]; then
             # GitHub rejects inline comments outside the diff: retry once with
             # every finding in the body (PR #80 behavior) before escalating.
             all_findings="$(printf '%s' "$findings_json" \
@@ -431,7 +463,8 @@ jobs:
             jq --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
               '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
               > /tmp/dev-loop-review.json
-            if ! gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json >/dev/null; then
+            review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>/dev/null || true)"
+            if [ -z "$review_post_id" ]; then
               escalate "the review post failed (gh api rejected the payload); verdict was $verdict - see the run log"
               exit 0
             fi
@@ -444,9 +477,13 @@ jobs:
               exit 0
               ;;
             CHANGES_NEEDED)
-              echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer."
+              echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer with the exact review id ($review_post_id)."
               gh pr ready --undo "$PR_NUMBER" 2>/dev/null || true
-              if ! gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER"; then
+              # Pass the posted review's id, not "latest": a second
+              # CHANGES_NEEDED review landing before the fixer's gate must
+              # not make the fixer act on the wrong review.
+              if ! gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$PR_NUMBER" -f review_id="$review_post_id"; then
                 escalate "failed to dispatch the fixer for this CHANGES_NEEDED review; the review stands - retry via workflow_dispatch (Actions -> Dev Loop Fix -> Run workflow)"
               fi
               exit 0

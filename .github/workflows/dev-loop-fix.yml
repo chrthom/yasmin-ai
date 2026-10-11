@@ -16,11 +16,6 @@ on:
         required: false
         default: ''
         type: string
-      retry:
-        description: Internal retry counter (do not edit)
-        required: false
-        default: '0'
-        type: string
 
 permissions:
   contents: write
@@ -89,6 +84,9 @@ jobs:
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
           # starts the fixer. CLEAN and human reviews start nothing. The
           # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.
+          # KEEP IN SYNC with dev-loop-review.yml: these greps match the exact
+          # marker-review body its post-step composes - the marker alone on
+          # line 1 and a bare `Verdict: <V>` line.
           if [ "$EVENT_NAME" = "pull_request_review" ]; then
             if ! printf '%s' "$REVIEW_BODY" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
               echo "Review is not a dev-loop marker review; skipping."
@@ -134,13 +132,23 @@ jobs:
           # has already moved past the reviewed SHA, a fix (or a human push) has
           # landed since - this review is already being acted on. Skip. On the
           # unlabeled resume path the human decides a re-fix is needed, so the
-          # check does not apply.
+          # check does not apply. Exception: if every commit between the reviewed
+          # SHA and the current head is a CI auto-format commit (message
+          # "chore: auto-format", pushed by ci.yml straight to the PR branch),
+          # no fix ran - the findings still stand and the fixer proceeds against
+          # the formatted head.
           head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
           reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
           if [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
-            echo "Head SHA ($head_sha_before) already moved past the reviewed SHA ($reviewed_sha); a fix for review $review_id already ran. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            git fetch origin "$head_sha_before" --quiet
+            non_format="$(git log --format='%s' "$reviewed_sha..$head_sha_before" 2>/dev/null | grep -vc '^chore: auto-format$' || true)"
+            if [ "${non_format:-1}" = "0" ]; then
+              echo "Head moved only by CI auto-format commits ($reviewed_sha -> $head_sha_before); no fix ran yet, proceeding with the findings."
+            else
+              echo "Head SHA ($head_sha_before) already moved past the reviewed SHA ($reviewed_sha) by a non-auto-format commit; a fix for review $review_id already ran. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           branch="$(gh pr view "$PR_NUMBER" --json headRefName | jq -r '.headRefName')"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -172,13 +180,15 @@ jobs:
       - name: Install opencode
         if: steps.gate.outputs.skip != 'true'
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          export PATH="$HOME/.local/bin:$PATH"
+          # The v2 installer (npm package @opencode/cli) installs to
+          # ~/.opencode/bin; the v1 installer at https://opencode.ai/install
+          # ships 1.x and cannot reach 2.x releases.
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VERSION"
+          export PATH="$HOME/.opencode/bin:$PATH"
           command -v opencode
           # The invocation below is verified against this exact version; the
           # v1 -> v2 CLI surface moved substantially (auth/provider/config
           # flags, managed-service architecture, event schema).
-          opencode upgrade "v$OPENCODE_VERSION" >/dev/null 2>&1 || true
           opencode --version | grep -F "$OPENCODE_VERSION" || {
             echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
             exit 1
@@ -202,7 +212,7 @@ jobs:
           # NO_PROXY and no_proxy spellings that tools check.
           NO_PROXY: 127.0.0.1,localhost
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
