@@ -343,6 +343,7 @@ function globalRules({ argv, cwd }, block) {
   const push = parsePush(git.rest, git.cwd);
   if (push.force) block('Force-pushing is forbidden in this repository.');
   if (push.bulk) block('git push --all/--mirror/--prune/--branches is forbidden.');
+  if (push.deletes) block('Deleting remote branches is forbidden.');
   if (push.targets.includes(MAIN)) block(`Pushing to ${MAIN} is forbidden; open a pull request instead.`);
 }
 
@@ -504,7 +505,8 @@ function gitRules(role, cmd, block) {
     }
     if (sub === 'merge' || sub === 'pull') {
       // `-s values` come as separate tokens (`git merge -s ours other`): the value token after a
-      // strategy flag is the strategy to reject.
+      // strategy flag is the strategy to reject; long flags attach the value with `=` (`--strategy-option=theirs`);
+      // and the short flags may be attached directly (`-Xours`, `-sours`) with no space.
       let dropping = false;
       for (let i = 0; i < rest.length; i++) {
         const t = rest[i];
@@ -513,6 +515,8 @@ function gitRules(role, cmd, block) {
           if (DROP_STRATEGY_WORDS.includes(v ?? '')) dropping = true;
         } else if (new RegExp(`^(${STRATEGY_FLAGS.join('|')})=`).test(t)) {
           if (DROP_STRATEGY_WORDS.includes(t.slice(t.indexOf('=') + 1))) dropping = true;
+        } else if (/^-[sX](ours|theirs)$/.test(t)) {
+          dropping = true;
         }
       }
       if (dropping) {
@@ -614,6 +618,13 @@ function check(command, { role, cwd } = {}) {
   const block = reason => {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
+  // Repo-wide (non-agent) hook: reject command substitution outright. Backticks / `$(` can smuggle a
+  // blocked command past tokenization (e.g. `` echo `git push origin main` ``). This is deliberately not
+  // applied to dev-loop agent sessions, whose documented workflow runs `$(date +%s)` inside branch names
+  // (e.g. `git switch -c fixer-pr-<N>-$(date +%s)`).
+  if (!role && /`|\$\(/.test(command)) {
+    block('Command substitution (backticks or $()) is forbidden.');
+  }
   for (const cmd of commands(command, cwd)) {
     if (role) roleRules(role, cmd, block);
     else globalRules(cmd, block);

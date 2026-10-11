@@ -57,13 +57,17 @@ describe('guard-bash.mjs global rules', () => {
     'git push origin :main',
     'git push --all origin',
     'git push --mirror',
+    'git push -d origin feature',
+    'git push --delete origin feature',
     'git commit --no-verify -m x',
     'git commit -nm x',
     'git push --no-verify',
     'git -C . push origin main',
     'npm test && git push -f',
     'bash -c "git push origin main"',
-    'FOO=1 git push --force'
+    'FOO=1 git push --force',
+    'echo `git push origin main`',
+    'echo $(git push origin main)'
   ])('blocks %s', command => {
     expect(run(command).blocked).toBe(true);
   });
@@ -196,7 +200,11 @@ describe('guard-bash.mjs role rules', () => {
     ['merger', 'git merge -s ours origin/main'],
     ['merger', 'git merge -X theirs origin/main'],
     ['merger', 'git merge --strategy-option=theirs origin/main'],
-    ['merger', 'git merge origin/main --strategy ours']
+    ['merger', 'git merge origin/main --strategy ours'],
+    ['merger', 'git merge -Xours origin/main'],
+    ['merger', 'git pull -Xtheirs'],
+    ['merger', 'git merge -sours origin/main'],
+    ['merger', 'git merge -Xours origin/main --no-ff']
   ])('%s: blocks %s', (role, command) => {
     expect(run(command, role).blocked).toBe(true);
   });
