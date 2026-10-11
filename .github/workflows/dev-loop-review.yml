@@ -1,0 +1,369 @@
+name: Dev Loop Review
+
+on:
+  pull_request:
+    types: [ready_for_review, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review (manual backstop / retry / fixer chain)
+        required: true
+        type: string
+      retry:
+        description: Internal retry counter for infrastructure failures (do not edit)
+        required: false
+        default: '0'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Reviewer (PR -> marker review -> state post-step)
+    runs-on: ubuntu-latest
+    # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
+    timeout-minutes: 75
+    env:
+      GH_REPO: ${{ github.repository }}
+      MAX_TURNS: '60'
+      MAX_TOKENS: '4000000'
+      TIME_LIMIT_SEC: '3600'
+      TIME_LIMIT_MIN: '60'
+      VIBE_VERSION: '2.26.1'
+      MAX_DENIED_STREAK: '6'
+      MAX_ITERATIONS: '8'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DEV_LOOP_TOKEN }}
+
+      - name: Gate and dedupe
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
+          OWNER_ID: ${{ github.event.repository.owner.id }}
+        run: |
+          set -eu
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number in event; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO_ID" != "$OWNER_ID" ]; then
+            echo "PR #$PR_NUMBER is from a fork (head repo $HEAD_REPO_ID != $OWNER_ID); skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create needs-human --color B60205 \
+            --description "dev-loop: human decision required" 2>/dev/null || true
+          pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
+          if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ] \
+            && [ "$EVENT_ACTION" = "synchronize" ]; then
+            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
+            echo "PR #$PR_NUMBER is labeled needs-human; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head_sha="$(printf '%s' "$pr_json" | jq -r '.headRefOid')"
+          # One review per head SHA: skip if a marker review already exists for it.
+          existing="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+            | jq -r --arg sha "$head_sha" \
+              '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.commit_id == $sha)] | length')"
+          if [ "$existing" != "0" ]; then
+            echo "A marker review for head SHA $head_sha already exists; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Iteration cap: count marker reviews in the current escalation epoch
+          # (since the last dev-loop-escalation comment). At MAX_ITERATIONS the
+          # loop parks the PR instead of dispatching - agents cannot see or
+          # negotiate the cap.
+          epoch_cut="$(gh api repos/${GH_REPO}/issues/$PR_NUMBER/comments --paginate \
+            | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-escalation -->")) | .created_at] | last // empty')"
+          marker_count="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+            | jq -r --arg after "${epoch_cut:-1970-01-01T00:00:00Z}" \
+              '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.submitted_at >= $after)] | length')"
+          if [ "$marker_count" -ge "$MAX_ITERATIONS" ]; then
+            echo "Iteration cap reached ($marker_count >= $MAX_ITERATIONS marker reviews this epoch); escalating."
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
+          EOF
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "marker_count=$marker_count" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Render role prompt with budget
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          mkdir -p out
+          sed -e "s/\${MAX_TURNS}/${MAX_TURNS}/g" \
+              -e "s/\${TIME_LIMIT_MIN}/${TIME_LIMIT_MIN}/g" \
+              .github/dev-loop/prompts/reviewer.md > out/reviewer.rendered.md
+          echo "--- rendered prompt ---"
+          cat out/reviewer.rendered.md
+
+      - name: Install vibe
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          curl -LsSf https://mistral.ai/vibe/install.sh | bash
+          command -v vibe
+          # The invocation below is verified against this exact version; the CLI
+          # surface moved substantially between minor versions (2.9 vs 2.26).
+          vibe --version | grep -F "vibe $VIBE_VERSION" || {
+            echo "::error::Installed vibe version does not match the expected $VIBE_VERSION - verify the invocation against the new CLI surface before rerunning"
+            exit 1
+          }
+
+      - name: Run vibe reviewer
+        id: vibe
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          # Read-only environment: the reviewer agent never writes to GitHub;
+          # the post-step posts the review with the PAT. GH_TOKEN is only for
+          # read access to the PR, diff, linked issue and prior reviews.
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          DEV_LOOP_PR: ${{ steps.gate.outputs.pr_number }}
+          DEV_LOOP_HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # Watchdog: consume the streaming NDJSON transcript, tee it to a file,
+          # and kill vibe when the agent hits MAX_DENIED_STREAK consecutive tool
+          # denials - a denial loop burns the whole turn budget for nothing.
+          kill_on_denial_streak() {
+            streak=0
+            jq -c '
+              select(.type == "effect")
+              | {
+                  toolName: .detail.toolName,
+                  status: .detail.state.status,
+                  code: .detail.state.error.code
+                }' 2>/dev/null \
+            | while IFS= read -r entry; do
+                status="$(printf '%s' "$entry" | jq -r '.status // empty')"
+                code="$(printf '%s' "$entry" | jq -r '.code // empty')"
+                if [ "$status" = "failed" ] && [ "$code" = "tool_denied" ]; then
+                  streak=$((streak + 1))
+                  echo "watchdog: denied tool call streak = $streak"
+                  if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
+                    echo "watchdog: $streak consecutive denials - killing vibe"
+                    pkill -TERM -f 'vibe --prompt-file' || true
+                    exit 99
+                  fi
+                else
+                  streak=0
+                fi
+              done
+          }
+
+          set -o pipefail
+          set +e
+          vibe --prompt-file out/reviewer.rendered.md \
+            --auto-approve \
+            --trust \
+            --output streaming \
+            --max-turns "$MAX_TURNS" \
+            --max-tokens "$MAX_TOKENS" \
+            --time-limit "$TIME_LIMIT_SEC" \
+            --output-dir out/ \
+            2> out/vibe.stderr \
+            | tee out/stream.ndjson \
+            | kill_on_denial_streak
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "--- vibe stderr ---"
+          cat out/vibe.stderr || true
+          if [ "$rc" = "99" ]; then
+            echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Upload vibe output artifact
+        if: always() && steps.gate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-reviewer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/export.json
+            out/stream.ndjson
+            out/vibe.stderr
+            out/reviewer.rendered.md
+            out/session/
+          if-no-files-found: warn
+
+      - name: Post-step state machine
+        if: always() && steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          escalate() {
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop reviewer escalation: $1
+
+          PR: #${PR_NUMBER}
+          Run: ${RUN_URL}
+          EOF
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+          }
+
+          rc="${{ steps.vibe.outputs.rc }}"
+
+          if [ -z "$rc" ]; then
+            if [ "$RUN_ATTEMPT" = "1" ]; then
+              echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
+              exit 1
+            fi
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow) or remove the needs-human label"
+            exit 0
+          fi
+
+          if [ "${{ steps.vibe.outputs.stopped_by_watchdog }}" = "true" ]; then
+            escalate "reviewer killed by the denial-streak watchdog ($MAX_DENIED_STREAK consecutive denied tool calls, rc=$rc) - the agent could not use its tools; see the vibe output artifact"
+            exit 0
+          fi
+
+          outcome="$(jq -r '.outcome // "unknown"' out/export.json 2>/dev/null || echo unknown)"
+          cost="$(jq -r '.cost_usd // "n/a"' out/export.json 2>/dev/null || echo "n/a")"
+          stderr_tail="$(tail -1 out/vibe.stderr 2>/dev/null || true)"
+
+          if [ "$rc" = "2" ]; then
+            if [ "$RETRY_COUNT" = "0" ]; then
+              echo "Vibe infrastructure failure (exit 2, $stderr_tail); re-dispatching once with retry=1."
+              if gh workflow run dev-loop-review.yml --ref main \
+                -f pr_number="$PR_NUMBER" -f retry=1; then
+                exit 0
+              fi
+              echo "re-dispatch failed; leaving this run red for manual retry"
+              exit 0
+            fi
+            escalate "infrastructure failure persisted after one retry (exit 2, $stderr_tail)"
+            exit 0
+          fi
+
+          if [ "$rc" = "3" ]; then
+            escalate "reviewer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" = "1" ]; then
+            escalate "vibe usage/config error (exit 1, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" != "0" ]; then
+            escalate "unexpected vibe exit code $rc (outcome: $outcome, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          # exit 0: the verdict lives in the final assistant message; the agent
+          # never posts the review itself - this step does, with the PAT.
+          final_msg="$(jq -rs '[ .[] | select(.type == "message" and .role == "assistant") \
+              | [.content[]? | select(.type == "text") | .text] | join("\n") ] | last // ""' \
+            out/stream.ndjson 2>/dev/null || true)"
+          verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | head -1 | cut -d: -f1 || true)"
+          verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num}p" || true)"
+          case "${verdict_line:-}" in
+            VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
+            *)
+              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract); transcript artifact preserved for diagnosis"
+              exit 0
+              ;;
+          esac
+          verdict="${verdict_line#VERDICT: }"
+          echo "Reviewer verdict: $verdict (cost: \$$cost)"
+
+          current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+          if [ "$current_sha" != "$REVIEWED_SHA" ]; then
+            echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
+            gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"
+            exit 0
+          fi
+
+          # Compose and post the marker review. The findings JSON object is
+          # the text after the VERDICT line in the final assistant message
+          # (fenced or bare); anything missing or unparseable degrades to [].
+          findings_json="$(printf '%s\n' "$final_msg" \
+            | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
+            | sed -n '/^{/,$p' \
+            | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
+          [ -n "$findings_json" ] || findings_json='[]'
+          body="<!-- dev-loop-review -->
+          Verdict: $verdict
+
+          dev-loop review of $REVIEWED_SHA (cost: \$$cost).
+          Findings and suggested fixes are in the inline comments."
+          cat > /tmp/dev-loop-review.json <<EOF
+          {
+            "commit_id": "$REVIEWED_SHA",
+            "event": "COMMENT",
+            "body": $(printf '%s' "$body" | jq -Rs .),
+            "comments": $(printf '%s' "$findings_json" | jq '[.[] | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]** " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
+          }
+          EOF
+          if ! gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json >/dev/null; then
+            escalate "the review post failed (gh api rejected the payload); verdict was $verdict - see the run log"
+            exit 0
+          fi
+
+          case "$verdict" in
+            CLEAN)
+              echo "Verdict CLEAN: marking PR ready."
+              gh pr ready "$PR_NUMBER" 2>/dev/null || echo "PR is already ready (re-review); nothing to do."
+              exit 0
+              ;;
+            CHANGES_NEEDED)
+              echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer."
+              gh pr ready --undo "$PR_NUMBER" 2>/dev/null || true
+              gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER"
+              exit 0
+              ;;
+            NEEDS_HUMAN)
+              escalate "review verdict NEEDS_HUMAN - at least one finding requires a human decision; see the review just posted"
+              exit 0
+              ;;
+          esac
