@@ -50,7 +50,7 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           UNLABELED_NAME: ${{ github.event.label.name }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
-          OWNER_ID: ${{ github.event.repository.owner.id }}
+          REPO_ID: ${{ github.event.repository.id }}
         run: |
           set -eu
           if [ -z "$PR_NUMBER" ]; then
@@ -58,8 +58,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO_ID" != "$OWNER_ID" ]; then
-            echo "PR #$PR_NUMBER is from a fork (head repo $HEAD_REPO_ID != $OWNER_ID); skipping."
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO_ID" != "$REPO_ID" ]; then
+            echo "PR #$PR_NUMBER is from a fork (head repo $HEAD_REPO_ID != $REPO_ID); skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
