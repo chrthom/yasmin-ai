@@ -10,6 +10,7 @@ import {
 } from './database/models/intraday_notes.model';
 import { buildHandoff, waitFor } from './handoff';
 import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
+import { extractContentText } from './mistral/content';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 
 interface MistralConversationResponseOutputPart {
@@ -698,15 +699,7 @@ export class ChatAgent {
 
     const texts: string[] = [];
     for (const messageOutput of messageOutputs) {
-      if (typeof messageOutput.content === 'string') {
-        texts.push(messageOutput.content);
-      } else {
-        texts.push(
-          ...(<MistralConversationResponseOutputPart[]>messageOutput.content)
-            .filter(p => p.type == 'text')
-            .map(p => p.text)
-        );
-      }
+      texts.push(extractContentText(messageOutput.content));
     }
 
     const text = texts.join(' ').trim();
