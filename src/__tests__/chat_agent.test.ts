@@ -39,6 +39,7 @@ jest.mock('../mistral/mistral_api', () => ({
   conversationsUrl: () => 'https://test.url'
 }));
 
+import { capitalize } from '../utils/string';
 import { ChatAgent } from '../chat_agent';
 import { config } from '../config';
 import { buildHandoff } from '../handoff';
@@ -109,14 +110,12 @@ describe('ChatAgent', () => {
 
   describe('capitalize', () => {
     it('should capitalize the first letter', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.capitalize('hello');
+      const result = capitalize('hello');
       expect(result).toBe('Hello');
     });
 
     it('should handle empty string', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.capitalize('');
+      const result = capitalize('');
       expect(result).toBe('');
     });
   });

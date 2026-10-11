@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { sanitizeForPath, capitalizeNormalized } from '../utils/string';
 
 /**
  * Table-driven mapping between long-term verbose file paths (memory_archive.file_path)
@@ -19,24 +20,17 @@ const FIXED_MAPPINGS: FixedMapping[] = [
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;
 const PEOPLE_TITLE_PATTERN = /^Profile of (.+)$/;
 
-/** Capitalizes a single hyphen/underscore-separated part: "mary" -> "Mary" */
-function capitalizePart(part: string): string {
-  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-}
-
 /** Converts a people/<stem>.md stem into a "Name" title, e.g. "mary-jane" -> "Mary Jane" */
 function stemToName(stem: string): string {
-  return stem.split(/[-_]/).map(capitalizePart).join(' ');
+  return stem.split(/[-_]/).map(capitalizeNormalized).join(' ');
 }
 
 /**
  * Converts a "Name" title back into a people/<stem>.md stem, e.g. "Mary Jane" -> "mary-jane".
- * Mirrors the pipeline's sanitizeForPath (lowercase, every non [a-z0-9-] char -> '-'): without this,
- * apostrophe/punctuation names (e.g. "O'Brien" -> "o-brien") would produce invalid people/ stems and
- * silently fail to map in both directions.
+ * Uses the shared sanitizeForPath function to ensure consistency with the pipeline.
  */
 function nameToStem(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  return sanitizeForPath(name);
 }
 
 /**

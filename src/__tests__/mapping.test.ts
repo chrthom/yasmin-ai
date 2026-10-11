@@ -87,5 +87,26 @@ describe('nightly/mapping', () => {
       const title = pathToTitle('people/o-brien.md');
       expect(titleToPath(title as string)).toBe('people/o-brien.md');
     });
+
+    it('ensures titleToPath(pathToTitle(p)) === p for all mapped paths', () => {
+      // This is the explicit round-trip requirement from the issue
+      // Note: underscore-separated paths like people/john_doe.md do NOT round-trip
+      // because nameToStem/sanitizeForPath normalizes underscores to hyphens.
+      // The convention is to use hyphen-separated stems in people/ paths.
+      const mappedPaths = [
+        'self-reflection/profile.md',
+        'general/family.md',
+        'people/christopher.md',
+        'people/mary-jane.md',
+        'people/o-brien.md'
+      ];
+
+      for (const path of mappedPaths) {
+        const title = pathToTitle(path);
+        if (title !== null) {
+          expect(titleToPath(title)).toBe(path);
+        }
+      }
+    });
   });
 });

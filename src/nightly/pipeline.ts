@@ -50,6 +50,7 @@ import {
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
+import { sanitizeForPath } from '../utils/string';
 import {
   deleteConversation,
   deleteDocument,
@@ -74,11 +75,6 @@ export interface PipelineResult {
   conversationsProcessed: number;
   filesUpdated: number;
   filesCreated: number;
-}
-
-/** Lower-cases input and replaces every character that is not a-z, 0-9, or hyphen with a hyphen */
-function sanitizeForPath(input: string): string {
-  return input.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 }
 
 /**

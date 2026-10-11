@@ -1,3 +1,4 @@
+import { capitalize } from './utils/string';
 import { contextService } from './services/context.service';
 import { config } from './config';
 import { getContentByTitleFromDb, isKnownPerson } from './database/models/context.model';
@@ -89,10 +90,6 @@ export class ChatAgent {
     this.agentId = agentId;
   }
 
-  private capitalize(s: string): string {
-    return s.charAt(0).toUpperCase() + s.slice(1);
-  }
-
   /**
    * Delivers undelivered pending notes to the given user, claiming each note's delivery
    * atomically right before it is used, so a concurrent duplicate input can never deliver
@@ -133,7 +130,7 @@ export class ChatAgent {
         claimed.map(n => `#${n.id} from ${n.fromUsername}`).join(', ')
     );
     const lines = claimed.map(
-      note => `${this.capitalize(note.fromUsername)} wants me to tell you: ${note.content}`
+      note => `${capitalize(note.fromUsername)} wants me to tell you: ${note.content}`
     );
     return {
       block: renderNotesBlock(lines),
@@ -178,10 +175,10 @@ export class ChatAgent {
     } else if (typeof to === 'string' && to.trim().length > 0) {
       recipients = to
         .split(',')
-        .map(name => this.capitalize(name.trim()))
+        .map(name => capitalize(name.trim()))
         .filter(name => name.length > 0);
     } else if (Array.isArray(to) && to.length > 0 && to.every((r): r is string => typeof r === 'string')) {
-      recipients = to.map(r => this.capitalize(r.trim()));
+      recipients = to.map(r => capitalize(r.trim()));
     } else {
       return JSON.stringify({
         success: false,
