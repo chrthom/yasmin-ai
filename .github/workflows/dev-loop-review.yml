@@ -185,9 +185,10 @@ jobs:
           # source (stored auth would otherwise silently mask a rotated secret).
           OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
           OPENCODE_DISABLE_AUTOUPDATE: 'true'
-          # The managed service binds a loopback port; never route it via a proxy.
+          # The managed service binds a loopback port; never route it via a
+          # proxy. Env keys are case-insensitive, so this covers both the
+          # NO_PROXY and no_proxy spellings that tools check.
           NO_PROXY: 127.0.0.1,localhost
-          no_proxy: 127.0.0.1,localhost
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
