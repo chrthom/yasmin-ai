@@ -374,6 +374,21 @@ describe('reflection', () => {
       expect(prompt.split('truncated for review').length - 1).toBe(1);
     });
 
+    it('topic excerpt: an Aliases line longer than the cap survives intact', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const longAliases = 'Aliases: ' + 'a'.repeat(700) + '\n' + 'x'.repeat(1000);
+      const existing = [{ path: 'topics/alt.md', content: longAliases }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain(longAliases.split('\n')[0]);
+      expect(prompt).toContain('truncated for review');
+    });
+    it('topic excerpt: single-line content longer than the cap is truncated with the marker', () => {
+      const update: StagedUpdate = { path: 'topics/neu.md', content: 'x', isNew: true };
+      const singleLine = 'x'.repeat(1000);
+      const existing = [{ path: 'topics/alt.md', content: singleLine }];
+      const prompt = reviewPrompt(update, null, null, [], 0, existing);
+      expect(prompt).toContain('truncated for review');
+    });
     it('adds no topics context for a non-topic update even when topics exist', () => {
       const update: StagedUpdate = { path: 'people/christopher.md', content: 'x', isNew: false };
       const existing = [{ path: 'topics/urlaub-planung.md', content: 'Aliases: Sommerreise' }];

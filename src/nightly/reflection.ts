@@ -280,18 +280,24 @@ export interface ExistingTopic {
  * number and size of topic files. */
 const TOPIC_EXCERPT_MAX_CHARS = 600;
 
-/** Truncates a topic's content for the review prompt, always keeping the leading Aliases line intact */
+/** Truncates a topic's content for the review prompt. The leading line (the Aliases line is the
+ * duplicate-matching anchor) is always kept intact, even when it alone exceeds the cap; only the
+ * remainder is truncated to the cap. */
 function topicExcerpt(content: string): string {
   if (content.length <= TOPIC_EXCERPT_MAX_CHARS) {
     return content;
   }
   const aliased = content.replace(/\r/g, '');
   const firstLineBreak = aliased.indexOf('\n');
-  const head =
-    firstLineBreak !== -1 && firstLineBreak < TOPIC_EXCERPT_MAX_CHARS
-      ? aliased.slice(0, firstLineBreak + 1)
-      : '';
-  return head + aliased.slice(head.length, TOPIC_EXCERPT_MAX_CHARS).trim() + '\n...[truncated for review]';
+  if (firstLineBreak === -1) {
+    return aliased + '\n...[truncated for review]';
+  }
+  const head = aliased.slice(0, firstLineBreak + 1);
+  return (
+    head +
+    aliased.slice(head.length, head.length + TOPIC_EXCERPT_MAX_CHARS).trim() +
+    '\n...[truncated for review]'
+  );
 }
 
 /**

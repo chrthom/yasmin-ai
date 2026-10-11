@@ -116,6 +116,21 @@ describe('nightly/tools', () => {
       expect(result.success).toBe(false);
       expect(getStagedUpdates()).toHaveLength(0);
     });
+    it('normalizes non-canonical casing of fixed paths to the canonical lowercase form', () => {
+      const result = stage_update(
+        'General/Topic-Index.md',
+        'topics/urlaub-planung.md - Urlaubsplanung',
+        true
+      );
+      expect(result).toEqual({ success: true, path: 'general/topic-index.md' });
+      const profile = stage_update('Self-Reflection/Profile.md', 'content', false);
+      expect(profile).toEqual({ success: true, path: 'self-reflection/profile.md' });
+      expect(getStagedUpdates()[0]).toEqual({
+        path: 'general/topic-index.md',
+        content: 'topics/urlaub-planung.md - Urlaubsplanung',
+        isNew: true
+      });
+    });
   });
 
   describe('get_long_term_file', () => {
