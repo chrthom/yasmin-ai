@@ -49,8 +49,9 @@ export const config = {
     get nightlyAgentId(): string {
       return requiredEnv('AGENT_ID_NIGHTLY');
     },
-    // Hard ceiling for any single Mistral HTTP call made through mistral_api.ts.
-    requestTimeoutMs: 30_000,
+    // Hard ceiling for any single Mistral HTTP call made through mistral_api.ts (live turns
+    // reprocess the full conversation history and can legitimately exceed 30s).
+    requestTimeoutMs: parseClampedEnvInt('REQUEST_TIMEOUT_MS', 120_000, 1, 600_000),
     // Cap on the sequential tool-calling loop in the live agent; a warning is logged when hit.
     maxToolCalls: 5,
     // Without this optional agent the handoff degrades to replaying just the last turns.
