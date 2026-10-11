@@ -115,11 +115,21 @@ jobs:
           elif [ -n "$REVIEW_ID_INPUT" ]; then
             review_id="$REVIEW_ID_INPUT"
           else
+            # Act on the newest marker review, and only if it is
+            # CHANGES_NEEDED. Picking the latest CHANGES_NEEDED review
+            # regardless of newer reviews made the resume path act on a
+            # stale review superseded by e.g. a NEEDS_HUMAN review at the
+            # current head: the fixer then verified already-resolved
+            # findings, pushed nothing, and the post-step misread the
+            # unchanged head as "made no change". A newer non-CHANGES_NEEDED
+            # verdict stands on its own (the reviewer workflow's unlabeled
+            # resume path re-reviews with a fresh budget); a newer
+            # CHANGES_NEEDED review is the one to act on.
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.body | contains("Verdict: CHANGES_NEEDED"))] | last | .id // empty')"
+              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
           if [ -z "$review_id" ]; then
-            echo "No marker review found on PR #$PR_NUMBER; nothing to fix. Skipping."
+            echo "No unresolved CHANGES_NEEDED marker review on PR #$PR_NUMBER; nothing to fix. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -363,7 +373,9 @@ jobs:
 
           # Cost = sum of the per-step cost fields in the event stream
           # (opencode reports cost/tokens on every step_finish event).
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          # Round to cents: every consumer prints $cost verbatim, and the raw
+          # sum has float artifacts (e.g. $0.16212848000000002).
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "99" ]; then
@@ -413,7 +425,18 @@ jobs:
               echo "Fixer finished: $outcome_line (cost: \$$cost)"
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               if [ "$head_sha_now" = "$HEAD_SHA_BEFORE" ]; then
-                escalate "fixer reported FIXED but the head SHA is unchanged ($head_sha_now) - the fixer made no change; see the opencode output artifact"
+                # FIXED with an unchanged head has two meanings: the fixer
+                # verified the findings are already resolved on this head (a
+                # legitimate no-op), or it failed to push. Escalating on the
+                # legitimate case parks resolved PRs for no reason; chain the
+                # reviewer instead. If a marker review for this head already
+                # exists, the reviewer's gate dedupes it; otherwise the human
+                # gets the real current verdict instead of a misleading
+                # "made no change" escalation.
+                echo "Fixer reported FIXED with an unchanged head ($head_sha_now); chaining the reviewer to re-review this head."
+                if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+                  escalate "failed to chain the reviewer after a no-op FIXED (unchanged head $head_sha_now); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
+                fi
                 exit 0
               fi
               echo "Chaining the reviewer for the new head $head_sha_now."
