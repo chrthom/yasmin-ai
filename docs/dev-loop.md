@@ -158,15 +158,72 @@ the agent never needs review-writing API access.
 - Public repo: hosted runners free and unlimited. Optional later: self-hosted runner on the
   Synology (zero minutes cost, key stays on LAN).
 
+## Budgets and parameters
+
+Calibrate from `export.json` artifacts after the first real runs; these are the starting caps
+(all enforced by vibe itself — a cap hit is exit code 3 with a parseable outcome, not a hang):
+
+| Role | `--max-turns` | `--max-price` | `--max-tokens` | `--time-limit` | Rationale |
+| --- | --- | --- | --- | --- | --- |
+| implementer | 60 | 5.00 | 800k | 3600 (60 min) | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint; 60 turns ≈ 25–30 tool calls of headroom above typical |
+| reviewer | 40 | 2.00 | 400k | 2400 (40 min) | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once |
+| fixer | 40 | 2.00 | 400k | 2400 | scoped to one review's findings; usually well under |
+| merger | 30 | 1.00 | 200k | 1800 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
+
+Hard ceiling independent of vibe: the GitHub job timeout (`timeout-minutes`) set 10–15 min
+above each `--time-limit`, so a wedged process cannot burn the 6-hour job limit. Expected
+real-world spend per happy-path PR (implement + 1–2 reviews + 1 fix + occasional merge):
+roughly $5–15 total at these caps; the caps bound the worst case at ~$10 per role run.
+
+## Failure handling
+
+Principle: a failed role run never chains, never retries itself, and always leaves a visible
+GitHub trace. No silent stuck states. Every failure path ends in exactly one of:
+(a) a `needs-human` label + marker escalation comment (`@chrthom`, reason, pointers),
+(b) a benign no-op, or (c) an Actions-visible failed run that the dispatch backstop can re-tick.
+
+The vibe exit code is the discriminator (`export.json` outcome):
+
+| What failed | Detection | Handling (post-step, in code) |
+| --- | --- | --- |
+| model API outage / runner infra | exit 2 (`infrastructure_failure`) | **retry once** via a rescheduled workflow run (GitHub re-run API, or re-dispatch after 5 min); on second failure: escalate with reason + run link. Transient by nature |
+| budget hit (turns/price/tokens/time) | exit 3 (`turn_limit`/`price_limit`/`token_limit`/`deadline`) | escalate: label `needs-human`, comment "implementer hit its price cap at $5 — likely a rabbit hole or the issue is too large", link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem |
+| model refusal | exit 3 (`refusal`) | escalate with the refusal category from `export.json`; a human decides whether the task is genuinely unsafe |
+| agent finished but outcome unparseable | exit 0, final line doesn't match the contract | escalate with reason "unparseable outcome" + link to `export.json` artifact; the transcript is preserved for diagnosis |
+| agent reported `WALL:` / `NO_PR:` | exit 0, parseable | the designed escalation: implementer comments its questions on the issue + labels it; fixer/merger escalate on the PR |
+| workflow step failed *outside* vibe (npm ci, install, push rejected) | step exit code | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice, add a failure-branch to the post-step that escalates instead of leaving it red silently |
+
+Per-role specifics:
+
+- **implementer fails** → nothing exists yet on GitHub except the issue. Post-step comments on
+  the issue ("dev-loop implementer failed: <reason>, run: <link>") and labels it `needs-human`.
+  The issue is never lost; removing the label re-triggers the implementer with a fresh budget.
+- **reviewer fails** → the PR sits ready-for-review (or draft) with no review. Post-step comments
+  on the PR with the failure reason. Human can re-run the job or flip draft→ready to re-trigger.
+  A ready PR with zero findings stays unmergeable by review policy, so nothing unsafe happens.
+- **fixer fails** → the review's findings still stand; the PR simply doesn't progress. Post-step
+  comments on the PR; the human can remove `needs-human` to re-trigger the fixer on the same review.
+- **merger fails** → the PR stays `CONFLICTING`; CI's mergeability probe keeps showing it and
+  every future `workflow_run` of `ci.yml` re-offers the merger dispatch (natural retry).
+  Escalation only after repeated failure (track via a `dev-loop-retries` label or comment count).
+
+Backstop: `workflow_dispatch` on each role workflow doubles as the manual retry button, and a
+`workflow_dispatch` "tick" re-derives state from GitHub and re-dispatches anything stuck —
+which is also the recovery path if a webhook event was ever missed.
+
 ## Implementation phases
 
 1. **Branch `vibe/dev-loop-actions`** (this PR): plan document only (`docs/dev-loop.md`).
-2. **Phase 1**: role prompts + `dev-loop-review.yml` + `dev-loop-implement.yml`. Validate on a
-   scratch issue: issue → draft PR → manual ready → review → verdict → state post-step.
-3. **Phase 2**: `dev-loop-fix.yml` + fixer chain + iteration cap. Validate the full
-   CHANGES_NEEDED → fixer → reviewer cycle on 2–3 real issues.
+2. **Phase 1 — implementer only**: `dev-loop-implement.yml` + `implementer.md` prompt. Validate
+   the whole design in isolation on 2–3 real open issues: event trigger → headless vibe run →
+   draft PR with `Closes #<N>` → CI green → `export.json` artifact with sane cost. Human does
+   the review part manually at this stage. Gate: no manual intervention needed beyond creating
+   the issue, and cost per run within ~2x of the cap prediction.
+3. **Phase 2**: `dev-loop-review.yml` + `dev-loop-fix.yml` + fixer chain + iteration cap.
+   Validate the full CHANGES_NEEDED → fixer → reviewer cycle end-to-end.
 4. **Phase 3**: `dev-loop-merge.yml` + `workflow_run` trigger. Soak test for a week.
-5. **Phase 4**: budget calibration from `export.json` artifacts, reviewer prompt iteration.
+5. **Phase 4**: budget calibration from accumulated `export.json` artifacts, reviewer prompt
+   iteration, retry/failure-path drills (simulate API outage, budget cap, unparseable outcome).
 6. **Cleanup**: close PR #80 as superseded.
 
 ## Acceptance criteria
