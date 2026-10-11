@@ -203,7 +203,9 @@ function parsePush(rest, cwd) {
       refspecs.some(r => r.deletes) || flags.some(f => f === '--delete' || (short(f) && f.includes('d'))),
     bulk: flags.some(f => f === '--all' || f === '--mirror' || f === '--prune' || f === '--branches'),
     // Without refspecs git pushes the current branch, or its upstream (push.default=upstream).
-    targets: refspecs.length ? refspecs.map(r => r.dst) : [current, upstream].filter(Boolean)
+    targets: refspecs.length ? refspecs.map(r => r.dst) : [current, upstream].filter(Boolean),
+    // The target repository: the first positional is the remote name or URL (undefined for a bare push).
+    remote: pos.length ? pos[0] : undefined
   };
 }
 
@@ -211,6 +213,15 @@ function parsePush(rest, cwd) {
 function upstreamBranch(cwd) {
   const ref = runGit(cwd, ['rev-parse', '--symbolic-full-name', '@{upstream}']);
   return ref?.replace(/^refs\/remotes\/[^/]+\//, '');
+}
+
+// Whether the configured remote named `name` exists (`git remote` lists its names). A remote configured
+// in the user's checkout (e.g. a fork remote) is trusted; an arbitrary URL is not.
+function remoteExists(cwd, name) {
+  return runGit(cwd, ['remote'])
+    ?.split('\n')
+    .map(r => r.trim())
+    .includes(name);
 }
 
 // Short options of `git commit` that take a value: everything after them in a cluster is that value.
@@ -238,11 +249,18 @@ function commitSkipsHooks(rest) {
       continue;
     }
     if (/^-[a-zA-Z]/.test(t) && !t.startsWith('--')) {
-      for (const ch of t.slice(1)) {
+      // Scan the whole short-option cluster, not just the first char: `-n` can appear anywhere in it
+      // (e.g. `-amn`, `-anm`). A value-taking flag consumes the *rest of the token* as its value when
+      // it is not the entire token, so we keep scanning for `n` instead of breaking out.
+      for (let j = 1; j < t.length; j++) {
+        const ch = t[j];
         if (ch === 'n') return true;
         if (COMMIT_SHORT_WITH_VALUE.includes(ch)) {
-          if (t.length === 2) i++; // value is the next token
-          break;
+          if (t.length === 2) {
+            i++; // value is the next separate token
+            break;
+          }
+          // attached value in this same token; keep scanning the remainder of the cluster
         }
       }
     }
@@ -333,6 +351,15 @@ function reviewPayloadProblem(api, cwd) {
 // ---------------------------------------------------------------------------------------------------
 // Rules
 
+// Push-safety rules that every session (repo-wide and dev-loop agent alike) must enforce. Without
+// this shared helper the git push handling in gitRules would return before the global checks apply,
+// letting a dev-loop agent force-push or bulk-push.
+function blockUnsafePush(push, block) {
+  if (push.force) block('Force-pushing is forbidden in this repository.');
+  if (push.bulk) block('git push --all/--mirror/--prune/--branches is forbidden.');
+  if (push.deletes) block('Deleting remote branches is forbidden.');
+}
+
 function globalRules({ argv, cwd }, block) {
   if (argv[0] !== 'git') return;
   const git = parseGit(argv.slice(1), cwd);
@@ -341,9 +368,10 @@ function globalRules({ argv, cwd }, block) {
   }
   if (git.sub !== 'push') return;
   const push = parsePush(git.rest, git.cwd);
-  if (push.force) block('Force-pushing is forbidden in this repository.');
-  if (push.bulk) block('git push --all/--mirror/--prune/--branches is forbidden.');
-  if (push.deletes) block('Deleting remote branches is forbidden.');
+  blockUnsafePush(push, block);
+  if (push.remote !== undefined && push.remote !== 'origin' && !remoteExists(git.cwd, push.remote)) {
+    block(`Pushing to a remote other than origin (${push.remote}) is forbidden.`);
+  }
   if (push.targets.includes(MAIN)) block(`Pushing to ${MAIN} is forbidden; open a pull request instead.`);
 }
 
@@ -391,7 +419,10 @@ function ghRules(role, { argv, cwd }, block) {
     const api = parseGhApi(argv.slice(2));
     if (api.endpoint === 'graphql') {
       if (api.mutation || api.opaqueBody) block('GraphQL mutations are forbidden for dev-loop agents.');
-    } else if (api.method !== 'GET' && !API_WRITES[role].some(re => re.test(api.endpoint))) {
+    } else if (
+      api.method !== 'GET' &&
+      !(api.method === 'POST' && API_WRITES[role].some(re => re.test(api.endpoint)))
+    ) {
       block(`The ${role} agent may not ${api.method} ${api.endpoint || 'that endpoint'}.`);
     } else if (role === 'reviewer' && api.method === 'POST') {
       const problem = reviewPayloadProblem(api, cwd);
@@ -474,6 +505,9 @@ function gitRules(role, cmd, block) {
   }
 
   if (sub === 'commit' && rest.includes('--amend')) block('Amending commits is forbidden; add a new commit.');
+  if (sub === 'commit' && (rest.includes('--no-verify') || commitSkipsHooks(rest))) {
+    block('Skipping git hooks (--no-verify) is forbidden.');
+  }
 
   if (
     role === 'reviewer' &&
@@ -534,7 +568,10 @@ function gitRules(role, cmd, block) {
 
   if (sub !== 'push') return;
   const push = parsePush(rest, git.cwd);
-  if (push.deletes) block('Deleting remote branches is forbidden.');
+  blockUnsafePush(push, block);
+  if (push.remote !== undefined && push.remote !== 'origin' && !remoteExists(git.cwd, push.remote)) {
+    block(`Pushing to a remote other than origin (${push.remote}) is forbidden.`);
+  }
   if (!push.current) {
     block('Push from a checked-out branch, not from a detached HEAD.');
     return;
@@ -574,6 +611,15 @@ const NPX_BIN_ALLOWLIST = ['prettier', 'eslint', 'jest', 'tsc'];
 function reviewNpxPackage(args) {
   const bin = args.find(a => !a.startsWith('-'));
   if (!NPX_BIN_ALLOWLIST.includes(bin)) return false;
+  // `--call`, `--shell` and `-c` make npx execute an arbitrary command string (potentially a shell),
+  // which would bypass the allowlisted binary: reject them outright.
+  if (
+    args.some(
+      a => ['--call', '--shell', '-c'].includes(a) || a.startsWith('--call=') || a.startsWith('--shell=')
+    )
+  ) {
+    return false;
+  }
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
     let pkg;
@@ -613,17 +659,53 @@ function roleRules(role, cmd, block) {
   }
 }
 
+// Bodies of every `$(...)` / backtick command substitution in the raw command string. Used by the
+// dev-loop agent path to check the substituted *content* through the same rules engine: a benign
+// substitution (`$(date +%s)`, used in generated branch names) passes, one that smuggles a blocked
+// command (`$(git push origin main)`) is caught. Nested substitutions shrink strictly at each level,
+// so the recursion in check() terminates.
+function substitutionBodies(command) {
+  const bodies = [];
+  const stack = [];
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (c === '$' && command[i + 1] === '(') {
+      stack.push({ marker: ')', start: i + 2 });
+      i++;
+    } else if (c === '`') {
+      if (stack.length && stack[stack.length - 1].marker === '`') {
+        const open = stack.pop();
+        bodies.push(command.slice(open.start, i));
+      } else {
+        stack.push({ marker: '`', start: i + 1 });
+      }
+    } else if (c === ')' && stack.length && stack[stack.length - 1].marker === ')') {
+      const open = stack.pop();
+      bodies.push(command.slice(open.start, i));
+    }
+  }
+  return bodies;
+}
+
 function check(command, { role, cwd } = {}) {
   const reasons = [];
   const block = reason => {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
   // Repo-wide (non-agent) hook: reject command substitution outright. Backticks / `$(` can smuggle a
-  // blocked command past tokenization (e.g. `` echo `git push origin main` ``). This is deliberately not
-  // applied to dev-loop agent sessions, whose documented workflow runs `$(date +%s)` inside branch names
-  // (e.g. `git switch -c fixer-pr-<N>-$(date +%s)`).
+  // blocked command past tokenization (e.g. `` echo `git push origin main` ``). Dev-loop agent sessions
+  // keep their documented workflow (`$(date +%s)` inside branch names), so there the substitution
+  // *bodies* are extracted and checked through the same rules engine: `$(date +%s)` passes, while
+  // `$(git push origin main)` (or backticks smuggling any blocked command) is blocked.
   if (!role && /`|\$\(/.test(command)) {
     block('Command substitution (backticks or $()) is forbidden.');
+  }
+  if (role) {
+    for (const body of substitutionBodies(command)) {
+      for (const reason of check(body, { role, cwd })) {
+        block(reason);
+      }
+    }
   }
   for (const cmd of commands(command, cwd)) {
     if (role) roleRules(role, cmd, block);

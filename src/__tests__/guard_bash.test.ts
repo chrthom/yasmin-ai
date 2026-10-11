@@ -331,7 +331,87 @@ describe('guard-bash.mjs role rules', () => {
     });
   });
 
-  it('role rules do not repeat the global rules', () => {
-    expect(run('git push -f', 'fixer').blocked).toBe(false);
+  describe('role rules enforce push safety', () => {
+    it.each([['fixer'], ['merger'], ['implementer']])('blocks a force-push (%s)', role => {
+      expect(run('git push -f origin HEAD', role).blocked).toBe(true);
+      expect(run('git push --force-with-lease origin HEAD', role).blocked).toBe(true);
+    });
+
+    it.each([['reviewer'], ['merger']])('blocks a bulk push (%s)', role => {
+      expect(run('git push --mirror origin', role).blocked).toBe(true);
+      expect(run('git push --all origin', role).blocked).toBe(true);
+    });
+  });
+
+  describe('role rules block hook-skipping commits', () => {
+    it('blocks git commit -amn msg (n hidden in a short-flag cluster)', () => {
+      expect(run('git commit -amn msg', 'fixer').blocked).toBe(true);
+    });
+
+    it('blocks git commit --no-verify', () => {
+      expect(run('git commit --no-verify -m msg', 'fixer').blocked).toBe(true);
+    });
+
+    it('allows a normal commit', () => {
+      expect(run('git commit -am "normal msg"', 'fixer').blocked).toBe(false);
+    });
+  });
+
+  describe('role rules check substitution bodies', () => {
+    it('allows the documented date substitution in branch names', () => {
+      expect(run('git switch -c merger-pr-52-$(date +%s) --track origin/vibe/x', 'merger').blocked).toBe(
+        false
+      );
+    });
+
+    it('blocks backticks smuggling a blocked command', () => {
+      expect(run('echo `git push origin main`', 'fixer').blocked).toBe(true);
+    });
+
+    it('blocks a $() body that would be blocked itself', () => {
+      expect(run('echo $(git push origin main)', 'fixer').blocked).toBe(true);
+      expect(run('git commit -m "$(gh pr merge 12)"', 'fixer').blocked).toBe(true);
+    });
+  });
+
+  describe('role rules restrict push remotes', () => {
+    it('blocks pushing to a URL', () => {
+      expect(run('git push https://example.com/x.git HEAD', 'fixer').blocked).toBe(true);
+    });
+
+    it('allows pushing to origin', () => {
+      expect(run('git push origin HEAD', 'fixer').blocked).toBe(false);
+    });
+  });
+
+  describe('reviewer npx escapes', () => {
+    it('blocks npx --call/--shell/-c even with an allowlisted package', () => {
+      expect(run('npx -p prettier --call "git push origin main"', 'reviewer').blocked).toBe(true);
+      expect(run('npx --shell "git push origin main"', 'reviewer').blocked).toBe(true);
+      expect(run('npx -c "git push origin main"', 'reviewer').blocked).toBe(true);
+    });
+
+    it('still allows a plain allowlisted npx run', () => {
+      expect(run('npx prettier --write file.ts', 'reviewer').blocked).toBe(false);
+    });
+  });
+
+  describe('reviewer api method gating', () => {
+    it('blocks PATCH on the reviews endpoint', () => {
+      expect(
+        run('gh api repos/chrthom/yasmin-ai/pulls/12/reviews -X PATCH -f body=x', 'reviewer').blocked
+      ).toBe(true);
+    });
+
+    it('still allows POST on the reviews endpoint', () => {
+      const file = join(repo, 'review-post.json');
+      writeFileSync(
+        file,
+        JSON.stringify({ event: 'COMMENT', body: '<!-- dev-loop-review -->\nVerdict: CLEAN' })
+      );
+      expect(
+        run(`gh api repos/chrthom/yasmin-ai/pulls/12/reviews -X POST --input ${file}`, 'reviewer').blocked
+      ).toBe(false);
+    });
   });
 });
