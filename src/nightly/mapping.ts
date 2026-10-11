@@ -1,9 +1,11 @@
 import { config } from '../config';
+import { capitalizeWord, profileTitle, sanitizeForPath } from '../strings';
 
 /**
  * Table-driven mapping between long-term verbose file paths (memory_archive.file_path)
  * and MariaDB context_entries titles. Paths/titles with no matching rule map to null --
- * those files have no eager-cache representation in context_entries.
+ * those files have no eager-cache representation in context_entries. The slug and casing
+ * rules it relies on live in src/strings.ts, shared with the pipeline.
  */
 
 interface FixedMapping {
@@ -19,24 +21,9 @@ const FIXED_MAPPINGS: FixedMapping[] = [
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;
 const PEOPLE_TITLE_PATTERN = /^Profile of (.+)$/;
 
-/** Capitalizes a single hyphen/underscore-separated part: "mary" -> "Mary" */
-function capitalizePart(part: string): string {
-  return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-}
-
 /** Converts a people/<stem>.md stem into a "Name" title, e.g. "mary-jane" -> "Mary Jane" */
 function stemToName(stem: string): string {
-  return stem.split(/[-_]/).map(capitalizePart).join(' ');
-}
-
-/**
- * Converts a "Name" title back into a people/<stem>.md stem, e.g. "Mary Jane" -> "mary-jane".
- * Mirrors the pipeline's sanitizeForPath (lowercase, every non [a-z0-9-] char -> '-'): without this,
- * apostrophe/punctuation names (e.g. "O'Brien" -> "o-brien") would produce invalid people/ stems and
- * silently fail to map in both directions.
- */
-function nameToStem(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  return stem.split(/[-_]/).map(capitalizeWord).join(' ');
 }
 
 /**
@@ -58,7 +45,7 @@ export function pathToTitle(path: string): string | null {
     if (name.toLowerCase() === 'yasmin') {
       return null;
     }
-    return `Profile of ${name}`;
+    return profileTitle(name);
   }
 
   return null;
@@ -75,7 +62,9 @@ export function titleToPath(title: string): string | null {
 
   const peopleMatch = PEOPLE_TITLE_PATTERN.exec(title);
   if (peopleMatch) {
-    return `people/${nameToStem(peopleMatch[1])}.md`;
+    // The shared sanitizeForPath slug rule also folds apostrophes/punctuation to hyphens, so
+    // "O'Brien" maps to people/o-brien.md -- exactly the stem pathToTitle built the title from.
+    return `people/${sanitizeForPath(peopleMatch[1])}.md`;
   }
 
   return null;

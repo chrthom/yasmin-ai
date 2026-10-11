@@ -43,6 +43,8 @@ src/
 ├── app.ts              # Express server entry point with route handlers
 ├── chat_agent.ts       # Mistral AI API client - manages conversations & dynamic context
 ├── handoff.ts          # Summary + last turns handed to a fresh conversation after a restart
+├── strings.ts          # Shared string rules (path slugs, casing variants, Profile of titles) used by
+│                       #   the live agent and the nightly mapping/pipeline
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic

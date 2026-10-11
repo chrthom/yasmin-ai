@@ -14,8 +14,8 @@ const VALID_STAGE_PATH_RE =
 const TOPICS_PATH_PREFIX = 'topics/';
 
 /**
- * Generic path-slug sanitizer (same rule as the pipeline's sanitizeForPath / mapping's
- * nameToStem): lowercase, every non [a-z0-9-] char -> '-'. German umlauts are transliterated
+ * Generic path-slug sanitizer (same rule as the shared sanitizeForPath in src/strings.ts):
+ * lowercase, every non [a-z0-9-] char -> '-'. German umlauts are transliterated
  * FIRST (the family converses in German, so 'Ausflüge' must become 'ausfluege', not
  * 'ausfl-ge'). Freely generated names are normalized here instead of trusted -- this also
  * neutralizes traversal ('../' becomes '--').

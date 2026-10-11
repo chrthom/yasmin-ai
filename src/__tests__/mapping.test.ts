@@ -87,5 +87,20 @@ describe('nightly/mapping', () => {
       const title = pathToTitle('people/o-brien.md');
       expect(titleToPath(title as string)).toBe('people/o-brien.md');
     });
+
+    // The guard for the shared slug rule: titleToPath(pathToTitle(p)) === p must hold for every
+    // canonical people/ stem (sanitizeForPath can only produce [a-z0-9-], so underscore stems are
+    // deliberately absent -- they can never round-trip back to a hyphen-free original).
+    it('round-trips every canonical people/ stem, including digit and multi-hyphen stems', () => {
+      const paths = [
+        'people/anna-lise.md',
+        'people/mary-jane-smith.md',
+        'people/claude2.md',
+        'people/x0-y9.md'
+      ];
+      for (const path of paths) {
+        expect(titleToPath(pathToTitle(path) as string)).toBe(path);
+      }
+    });
   });
 });

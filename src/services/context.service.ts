@@ -5,6 +5,7 @@ import {
   getContentByTitleFromDb
 } from '../database/models/context.model';
 import { contextEntryBlock, xmlBlock } from '../protocol';
+import { profileTitle } from '../strings';
 
 export interface ContextRetrievalResult {
   formattedContext: string;
@@ -33,7 +34,7 @@ export class ContextService {
 
     // 1. Mandatorily match eager-loaded entries for the first turn
     // Profile of the sender, Family notes, and Profile of Yasmin
-    const profileOfSenderTitle = `Profile of ${username}`;
+    const profileOfSenderTitle = profileTitle(username);
     const familyNotesTitle = config.context.familyNotesTitle;
     const profileOfYasminTitle = config.context.profileOfYasminTitle;
 

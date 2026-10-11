@@ -107,20 +107,6 @@ describe('ChatAgent', () => {
     mockBuildHandoff.mockResolvedValue('<previous_conversation>\nHANDOFF\n</previous_conversation>');
   });
 
-  describe('capitalize', () => {
-    it('should capitalize the first letter', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.capitalize('hello');
-      expect(result).toBe('Hello');
-    });
-
-    it('should handle empty string', () => {
-      // @ts-expect-error - accessing private method for testing
-      const result = chatAgent.capitalize('');
-      expect(result).toBe('');
-    });
-  });
-
   describe('processRequest prompt builder', () => {
     it('should build correct prompt with prepended XML context for normal conversation', async () => {
       // Mock getActiveConversationId to return undefined (new conversation)
