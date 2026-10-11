@@ -49,6 +49,18 @@ import {
   ExistingTopic
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
+import {
+  DREAM_REFLECTION_PATH,
+  appendDreamReflection,
+  dreamDateFromPath,
+  dreamFilePath,
+  findUnreflectedDream,
+  runDream,
+  runDreamReflection,
+  selectDreamSources,
+  shouldDreamTonight,
+  findLastDreamAt
+} from './dream';
 import { pathToTitle } from './mapping';
 import { personNameFromTitle, sanitizeForPath } from '../strings';
 import { decayMoodFile, MOOD_FILE_PATH, parseMood, stampMoodUpdatedAt, stripMoodHeader } from './mood';
@@ -76,6 +88,7 @@ export interface PipelineResult {
   conversationsProcessed: number;
   filesUpdated: number;
   filesCreated: number;
+  dreamGenerated: boolean;
 }
 
 /**
@@ -193,7 +206,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           lastCompletedPhase: '1-collect',
           conversationsProcessed: 0
         });
-        return { jobId, status: 'completed', conversationsProcessed: 0, filesUpdated: 0, filesCreated: 0 };
+        return {
+          jobId,
+          status: 'completed',
+          conversationsProcessed: 0,
+          filesUpdated: 0,
+          filesCreated: 0,
+          dreamGenerated: false
+        };
       }
 
       await updateJobLog(jobId, {
@@ -307,6 +327,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let filesUpdatedFromReview = 0;
     let filesCreatedFromReview = 0;
     let anyReviewFailed = false;
+    let anyDreamFailed = false;
+    let dreamGenerated = false;
 
     // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every OTHER
     // topic (title, Aliases line, content) so it can reject a semantic duplicate before it ever
@@ -474,15 +496,85 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     });
     // Mood decay is deterministic code, not agent work: an existing mood fades exponentially
     // toward neutral with its own half-life every night, even when the agent staged no mood
-    // update (no mood signal today). It runs BEFORE Phase 5 so the decayed version is synced to
-    // the Mistral library in the SAME run, and Phase 6's compacted Profile of Yasmin reflects
+    // update (no mood signal today). It runs BEFORE Phase 6 so the decayed version is synced to
+    // the Mistral library in the SAME run, and Phase 7's compacted Profile of Yasmin reflects
     // the already-decayed state.
     await decayMoodFile(collectedAt).catch(error =>
       console.error('ERROR Failed to decay self-reflection/mood.md: ' + error)
     );
 
     // -----------------------------------------------------------------------
-    // Phase 5 -- Upload
+    // Phase 5 -- Dream (two-stage: dream generation + Yasmin's own reflection)
+    // -----------------------------------------------------------------------
+    // Runs on only some nights (2-3x per week -- see shouldDreamTonight). Old, randomly mixed
+    // journals are woven into a dream by a dedicated dream agent, then reflected on with Yasmin's
+    // conversation persona. The phase is idempotent and always safe to re-run (fresh or resumed):
+    // the dream file's per-date existence guards stage 1 (no double dream), and the dated
+    // reflection header guards stage 2 -- so a crash after dream generation is caught up on the
+    // next run with the reflection only. A dream failure degrades to 'partial', never aborts.
+    try {
+      const currentVersionsForDream = await listCurrentVersions();
+      const dreamPath = dreamFilePath(collectedAt);
+      const dreamRow = await getCurrentVersion(dreamPath);
+
+      if (dreamRow) {
+        // Stage 1 is already durably done for this date -- only the reflection may be missing.
+        dreamGenerated = true;
+      } else if (!shouldDreamTonight(findLastDreamAt(currentVersionsForDream), Math.random)) {
+        console.log('INFO No dream tonight (cadence)');
+      } else {
+        const sources = selectDreamSources(currentVersionsForDream, collectedAt, Math.random);
+        if (sources.length < 2) {
+          console.log('INFO Too few old journals to dream from; skipping dream phase');
+        } else {
+          const dreamText = await runDream(sources);
+          // The archive (and with it the RAG copy) must be self-describing: without this header,
+          // the live agent retrieving the dream from its library would have no way to tell the
+          // dream's absurd, recombined events from things that actually happened -- the system
+          // prompt tells it library content is "YOUR MEMORY".
+          const dateStr = dreamPath.slice('journals/dreams/'.length, -'.md'.length);
+          const archivedDream =
+            'TRAUM -- nicht wirklich passiert. Am ' +
+            dateStr +
+            ' hatte Yasmin diesen Traum (nur ein Traum, erfunden aus alten Tagebucheintragen):\n\n' +
+            dreamText;
+          await insertNextVersion(dreamPath, archivedDream, collectedAt);
+          dreamGenerated = true;
+          console.log('INFO Dream generated from ' + sources.length + ' old journals: ' + dreamPath);
+        }
+      }
+
+      // Stage 2 -- Yasmin's own reflection (conversation persona). Appends one dated entry to the
+      // append-only self-reflection/dreams.md. The dated header is the idempotency guard: it makes
+      // a same-night resume (crash between the two stages) catch up at most the missing reflection,
+      // and it also lets a LATER run catch up the newest dream whose reflection once failed or came
+      // back empty -- a 'partial' run is not resumed and the next night's dreamPath is a new date,
+      // so without this catch-up that dream would stay unreflected forever.
+      const reflectionRow = await getCurrentVersion(DREAM_REFLECTION_PATH);
+      const reflectionContent = reflectionRow ? reflectionRow.content : null;
+      // Stage 1 (just run or pre-existing) may have added a dream the initial listing predates, so
+      // re-list: findUnreflectedDream picks the newest dream lacking a dated reflection entry.
+      const versionsAfterDream = await listCurrentVersions();
+      const unreflected = findUnreflectedDream(versionsAfterDream, reflectionContent);
+      if (unreflected) {
+        const dateStr = dreamDateFromPath(unreflected.filePath)!;
+        const reflectionText = await runDreamReflection(unreflected.content);
+        const nextContent = appendDreamReflection(reflectionContent, dateStr, reflectionText);
+        await insertNextVersion(DREAM_REFLECTION_PATH, nextContent, collectedAt);
+        console.log(
+          'INFO Dream reflection for ' + unreflected.filePath + ' appended to ' + DREAM_REFLECTION_PATH
+        );
+      }
+
+      await updateJobLog(jobId, { lastCompletedPhase: '5-dream' });
+    } catch (error) {
+      console.error('ERROR Dream phase failed: ' + error);
+      anyDreamFailed = true;
+      await updateJobLog(jobId, { lastCompletedPhase: '5-dream' });
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 6 -- Upload
     // -----------------------------------------------------------------------
     let anyUploadFailed = false;
     let anyDeleteFailed = false;
@@ -493,7 +585,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       // An unguarded transient read failure here would bubble to the outer catch and turn the whole
       // run into a non-resumable 'failed'. Demote it to a phase failure instead: skip the upload, mark
       // the run 'partial', and let the next invocation pick up the still-unsynced rows.
-      console.error('ERROR Phase 5 failed to list unsynced rows; skipping upload: ' + error);
+      console.error('ERROR Phase 6 failed to list unsynced rows; skipping upload: ' + error);
       anyUploadFailed = true;
       unsynced = [];
     }
@@ -528,7 +620,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       // Same resumability rationale: without the orphan-cleanup inputs we cannot safely tell which
       // library docs are orphans, so skip the deletions, mark 'partial', and retry next run.
       console.error(
-        'ERROR Phase 5 failed to reconcile Mistral library documents; skipping orphan cleanup: ' + error
+        'ERROR Phase 6 failed to reconcile Mistral library documents; skipping orphan cleanup: ' + error
       );
       anyDeleteFailed = true;
     }
@@ -590,10 +682,10 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       }
     }
 
-    await updateJobLog(jobId, { lastCompletedPhase: '5-upload' });
+    await updateJobLog(jobId, { lastCompletedPhase: '6-upload' });
 
     // -----------------------------------------------------------------------
-    // Phase 6 -- Regenerate eager cache (always fully re-runs -- cheap, idempotent, purely local)
+    // Phase 7 -- Regenerate eager cache (always fully re-runs -- cheap, idempotent, purely local)
     // -----------------------------------------------------------------------
     // NOTE: this phase's upserts are NOT counted into the job log's filesUpdated/filesCreated --
     // it unconditionally rewrites every current file every night regardless of whether anything
@@ -603,10 +695,10 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     try {
       allCurrentVersions = await listCurrentVersions();
     } catch (error) {
-      // Same resumability rationale as Phase 5: leave the eager cache untouched this run and mark
+      // Same resumability rationale as Phase 6: leave the eager cache untouched this run and mark
       // 'partial' so phase 6 re-runs next invocation.
       console.error(
-        'ERROR Phase 6 failed to load current versions; leaving the eager cache untouched: ' + error
+        'ERROR Phase 7 failed to load current versions; leaving the eager cache untouched: ' + error
       );
       anyEagerFailed = true;
       allCurrentVersions = [];
@@ -680,7 +772,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           // and move on rather than degrading a healthy run to 'partial'. A genuinely empty memory
           // file is not an eager-cache failure.
           console.log(
-            'INFO Phase 6 compaction produced empty output for "' +
+            'INFO Phase 7 compaction produced empty output for "' +
               row.filePath +
               '"; skipping eager-cache update (no content)'
           );
@@ -698,9 +790,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       }
     }
 
-    await updateJobLog(jobId, { lastCompletedPhase: '6-eager' });
+    await updateJobLog(jobId, { lastCompletedPhase: '7-eager' });
     // -----------------------------------------------------------------------
-    // Phase 6.5 -- Pending-notes reset (outbox)
+    // Phase 8 -- Pending-notes reset (outbox)
     // -----------------------------------------------------------------------
     // The outbox holds at most one day: after integrate (3) and review/archive (4) succeeded,
     // every note -- delivered or not -- has served its purpose (delivered notes live on in the
@@ -726,7 +818,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 7 -- Cleanup
+    // Phase 9 -- Cleanup
     // -----------------------------------------------------------------------
     const idsToDelete = conversations.map(c => c.id).filter(id => !skippedIds.includes(id));
     for (const id of idsToDelete) {
@@ -755,6 +847,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     const finalStatus: NightlyJobStatus =
       skippedIds.length === 0 &&
       !anyReviewFailed &&
+      !anyDreamFailed &&
       !anyUploadFailed &&
       !anyDeleteFailed &&
       !anyEagerFailed &&
@@ -768,7 +861,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     await updateJobLog(jobId, {
       status: finalStatus,
       completedAt: collectedAt,
-      lastCompletedPhase: '7-cleanup',
+      lastCompletedPhase: '9-cleanup',
       conversationsProcessed,
       filesUpdated,
       filesCreated
@@ -814,7 +907,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       }
     }
 
-    return { jobId, status: finalStatus, conversationsProcessed, filesUpdated, filesCreated };
+    return {
+      jobId,
+      status: finalStatus,
+      conversationsProcessed,
+      filesUpdated,
+      filesCreated,
+      dreamGenerated
+    };
   } catch (error) {
     if (jobId !== undefined) {
       // Best-effort: if this write itself fails (e.g. DB outage), do not let that error replace the
