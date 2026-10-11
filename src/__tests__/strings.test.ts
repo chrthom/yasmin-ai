@@ -1,4 +1,11 @@
-import { capitalizeLowerRest, capitalizePreserveRest, profileTitle, sanitizeForPath } from '../strings';
+import {
+  capitalizeLowerRest,
+  capitalizePreserveRest,
+  personNameFromTitle,
+  PROFILE_TITLE_PREFIX,
+  profileTitle,
+  sanitizeForPath
+} from '../strings';
 
 describe('strings', () => {
   describe('sanitizeForPath', () => {
@@ -63,6 +70,36 @@ describe('strings', () => {
 
     it('performs no case normalization of its own -- lookups are case-insensitive', () => {
       expect(profileTitle('christopher')).toBe('Profile of christopher');
+    });
+
+    it('builds its titles from the shared PROFILE_TITLE_PREFIX, never a private literal', () => {
+      expect(PROFILE_TITLE_PREFIX).toBe('Profile of ');
+      expect(profileTitle('Mary')).toBe(`${PROFILE_TITLE_PREFIX}Mary`);
+    });
+  });
+
+  describe('personNameFromTitle', () => {
+    it('inverts profileTitle -- the two ends of the title template cannot drift apart', () => {
+      expect(personNameFromTitle(profileTitle('Mary'))).toBe('Mary');
+      expect(personNameFromTitle(profileTitle('Mary Jane'))).toBe('Mary Jane');
+      expect(personNameFromTitle(profileTitle('christopher'))).toBe('christopher');
+    });
+
+    it('keeps the name exactly as written, including its casing', () => {
+      expect(personNameFromTitle('Profile of McNeal')).toBe('McNeal');
+      expect(personNameFromTitle("Profile of o'brien")).toBe("o'brien");
+    });
+
+    it('returns null for titles that are not profile titles', () => {
+      expect(personNameFromTitle('Family notes')).toBeNull();
+      expect(personNameFromTitle('Session with Mary')).toBeNull();
+      expect(personNameFromTitle('')).toBeNull();
+      expect(personNameFromTitle('Profile Mary')).toBeNull();
+    });
+
+    it('returns null for a bare prefix with an empty name', () => {
+      expect(personNameFromTitle('Profile of ')).toBeNull();
+      expect(personNameFromTitle(PROFILE_TITLE_PREFIX)).toBeNull();
     });
   });
 });

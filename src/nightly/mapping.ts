@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { capitalizeLowerRest, profileTitle, sanitizeForPath } from '../strings';
+import { capitalizeLowerRest, personNameFromTitle, profileTitle, sanitizeForPath } from '../strings';
 
 /**
  * Table-driven mapping between long-term verbose file paths (memory_archive.file_path)
@@ -18,7 +18,6 @@ const FIXED_MAPPINGS: FixedMapping[] = [
 ];
 
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;
-const PEOPLE_TITLE_PATTERN = /^Profile of (.+)$/;
 
 /** Converts a people/<stem>.md stem into a "Name" title, e.g. "mary-jane" -> "Mary Jane" */
 function stemToName(stem: string): string {
@@ -59,11 +58,11 @@ export function titleToPath(title: string): string | null {
     return fixed.path;
   }
 
-  const peopleMatch = PEOPLE_TITLE_PATTERN.exec(title);
-  if (peopleMatch) {
+  const personName = personNameFromTitle(title);
+  if (personName !== null) {
     // The same stem function the pipeline uses for journal paths -- the title<->path round-trip
     // (see __tests__/mapping.test.ts) depends on both directions going through it.
-    return `people/${sanitizeForPath(peopleMatch[1])}.md`;
+    return `people/${sanitizeForPath(personName)}.md`;
   }
 
   return null;

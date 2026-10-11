@@ -10,6 +10,7 @@
  * - capitalizePreserveRest:  upper-cases the first char, keeps the rest as typed
  * - capitalizeLowerRest:      upper-cases the first char, lower-cases the rest
  * - profileTitle:            no case handling at all, just the title template
+ * - personNameFromTitle:     the inverse of profileTitle -- parses the prefix back out
  */
 
 /**
@@ -44,11 +45,34 @@ export function capitalizeLowerRest(s: string): string {
 }
 
 /**
+ * Canonical prefix of the context_entries title built by profileTitle. Parsing sites must read
+ * the template from here (directly or via personNameFromTitle) instead of repeating the literal,
+ * so the title construction and its inverses cannot drift apart -- the exact convention-drift
+ * class issue #60 targets.
+ */
+export const PROFILE_TITLE_PREFIX = 'Profile of ';
+
+/**
  * Builds the canonical "Profile of <name>" context_entries title. Performs no case normalization
  * of its own: lookups against context_entries titles are case-insensitive, so callers pass the
  * name in exactly the casing they have and pick a capitalize variant deliberately if they need
  * a canonical rendering.
  */
 export function profileTitle(name: string): string {
-  return `Profile of ${name}`;
+  return `${PROFILE_TITLE_PREFIX}${name}`;
+}
+
+/**
+ * Inverse of profileTitle: returns the person name from a "Profile of <name>" title, or null
+ * when the title is not a profile title (including a bare prefix with an empty name). Matches
+ * the prefix exactly as profileTitle writes it; callers that must tolerate arbitrary title
+ * casing (e.g. case-insensitive context_entries lookups) compare lower-cased against
+ * PROFILE_TITLE_PREFIX instead.
+ */
+export function personNameFromTitle(title: string): string | null {
+  if (!title.startsWith(PROFILE_TITLE_PREFIX)) {
+    return null;
+  }
+  const name = title.slice(PROFILE_TITLE_PREFIX.length);
+  return name.length > 0 ? name : null;
 }

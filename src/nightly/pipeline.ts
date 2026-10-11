@@ -50,7 +50,7 @@ import {
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
-import { sanitizeForPath } from '../strings';
+import { personNameFromTitle, sanitizeForPath } from '../strings';
 import {
   deleteConversation,
   deleteDocument,
@@ -609,8 +609,16 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       } else if (row.filePath === 'general/family.md') {
         kind = 'family';
       } else {
+        const name = personNameFromTitle(title);
+        if (name === null) {
+          // Unreachable today -- people/ paths always map to "Profile of <name>" titles -- but
+          // treat it like any other per-row failure rather than compacting against a wrong name.
+          console.error('ERROR Phase 6 could not derive a person name from title "' + title + '"');
+          anyEagerFailed = true;
+          continue;
+        }
         kind = 'person';
-        personName = title.replace('Profile of ', '');
+        personName = name;
       }
 
       try {
