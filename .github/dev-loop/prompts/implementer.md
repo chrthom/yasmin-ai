@@ -13,6 +13,9 @@ source; implement; then reserve roughly the last 20% of your budget for `npm run
 within the budget, stop early and end with `WALL: <reason>` — a deliberate stop produces a useful
 escalation; a budget hit does not.
 
+When a tool call is denied or fails repeatedly, do not retry the same call: the approval mode is
+fixed for this run. Change approach or stop with `WALL: <reason>`.
+
 ## Steps
 
 1. Read the issue and all its comments: `gh issue view <N> --comments`. Read `AGENTS.md` for the

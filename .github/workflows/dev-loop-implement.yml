@@ -9,6 +9,11 @@ on:
         description: Issue number to implement (manual backstop / retry)
         required: true
         type: string
+      retry:
+        description: Internal retry counter for infrastructure failures (do not edit)
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: write
@@ -24,14 +29,16 @@ jobs:
   implement:
     name: Implementer (issue -> draft PR)
     runs-on: ubuntu-latest
-    # The only hard wall-clock cap: vibe 2.9.x has no --time-limit flag
-    # (docs/dev-loop.md budgets table).
+    # 15 min above --time-limit (5400 s = 90 min), per docs/dev-loop.md budgets table
     timeout-minutes: 105
     env:
       GH_REPO: ${{ github.repository }}
       MAX_TURNS: '90'
       MAX_PRICE: '7.50'
+      TIME_LIMIT_SEC: '5400'
       TIME_LIMIT_MIN: '90'
+      VIBE_VERSION: '2.26.1'
+      MAX_DENIED_STREAK: '6'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -60,7 +67,7 @@ jobs:
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
           if gh issue view "$ISSUE_NUMBER" --json labels \
-            | jq -e 'any(.labels[].name == "needs-human")' >/dev/null; then
+            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
             echo "Issue #$ISSUE_NUMBER is labeled needs-human; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -98,6 +105,12 @@ jobs:
         run: |
           curl -LsSf https://mistral.ai/vibe/install.sh | bash
           command -v vibe
+          # The invocation below is verified against this exact version; the CLI
+          # surface moved substantially between minor versions (2.9 vs 2.26).
+          vibe --version | grep -F "vibe $VIBE_VERSION" || {
+            echo "::error::Installed vibe version does not match the expected $VIBE_VERSION - verify the invocation against the new CLI surface before rerunning"
+            exit 1
+          }
 
       - name: Run vibe implementer
         id: vibe
@@ -108,24 +121,59 @@ jobs:
           DEV_LOOP_ISSUE: ${{ steps.gate.outputs.issue_number }}
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          vibe --version
+
+          # Watchdog: consume the streaming NDJSON transcript, tee it to a file,
+          # and kill vibe when the agent hits MAX_DENIED_STREAK consecutive tool
+          # denials - a denial loop burns the whole turn budget for nothing (the
+          # first live run did exactly that: 90 turns of denied bash calls).
+          kill_on_denial_streak() {
+            streak=0
+            jq -c '
+              select(.type == "effect")
+              | {
+                  toolName: .detail.toolName,
+                  status: .detail.state.status,
+                  code: .detail.state.error.code
+                }' 2>/dev/null \
+            | while IFS= read -r entry; do
+                status="$(printf '%s' "$entry" | jq -r '.status // empty')"
+                code="$(printf '%s' "$entry" | jq -r '.code // empty')"
+                if [ "$status" = "failed" ] && [ "$code" = "tool_denied" ]; then
+                  streak=$((streak + 1))
+                  echo "watchdog: denied tool call streak = $streak"
+                  if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
+                    echo "watchdog: $streak consecutive denials - killing vibe"
+                    pkill -TERM -f 'vibe --prompt-file' || true
+                    exit 99
+                  fi
+                else
+                  streak=0
+                fi
+              done
+          }
+
+          set -o pipefail
           set +e
-          vibe -p "$(cat out/implementer.rendered.md)" --trust --output json \
+          vibe --prompt-file out/implementer.rendered.md \
+            --auto-approve \
+            --trust \
+            --output streaming \
             --max-turns "$MAX_TURNS" \
             --max-price "$MAX_PRICE" \
-            --enabled-tools bash \
-            --enabled-tools read_file \
-            --enabled-tools grep \
-            --enabled-tools write_file \
-            --enabled-tools search_replace \
-            > out/messages.json \
-            2> out/vibe.stderr
+            --time-limit "$TIME_LIMIT_SEC" \
+            --output-dir out/ \
+            2> out/vibe.stderr \
+            | tee out/stream.ndjson \
+            | kill_on_denial_streak
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           echo "--- vibe stderr ---"
           cat out/vibe.stderr || true
-          exit $rc
+          if [ "$rc" = "99" ]; then
+            echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
 
       - name: Upload vibe output artifact
         if: always() && steps.gate.outputs.skip != 'true'
@@ -133,20 +181,22 @@ jobs:
         with:
           name: vibe-implementer-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/messages.json
+            out/export.json
+            out/stream.ndjson
             out/vibe.stderr
             out/implementer.rendered.md
+            out/session/
           if-no-files-found: warn
 
       - name: Post-step state machine
         if: always() && steps.gate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          RETRY_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ steps.gate.outputs.issue_number }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          RUN_ID: ${{ github.run_id }}
           REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
           escalate() {
@@ -156,7 +206,7 @@ jobs:
           @chrthom dev-loop implementer escalation: $1
 
           Issue: #${ISSUE_NUMBER}
-          Run: https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}
+          Run: ${RUN_URL}
           EOF
             gh issue comment "$ISSUE_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
           }
@@ -164,7 +214,7 @@ jobs:
           rc="${{ steps.vibe.outputs.rc }}"
 
           if [ -z "$rc" ]; then
-            # vibe never ran: a pre-vibe step (npm ci, install, render) failed.
+            # vibe never ran: a pre-vibe step (npm ci, install, version check, render) failed.
             if [ "$RUN_ATTEMPT" = "1" ]; then
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
@@ -173,26 +223,36 @@ jobs:
             exit 0
           fi
 
-          # Final non-empty line of the last assistant message in the transcript.
-          final_msg="$(jq -r '[.[] | select(.role == "assistant")] | last | .content // empty' \
-            out/messages.json 2>/dev/null || true)"
-          outcome="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
-          stop_reason="$(grep -o '<vibe_stop_event>.*</vibe_stop_event>' out/vibe.stderr 2>/dev/null \
-            | head -1 | sed -e 's/<[^>]*>//g' || true)"
+          # The watchdog killed vibe after a denial streak: not a budget hit, not
+          # an infra failure - the run misbehaved. Never retry, escalate.
+          if [ "${{ steps.vibe.outputs.stopped_by_watchdog }}" = "true" ]; then
+            escalate "implementer killed by the denial-streak watchdog ($MAX_DENIED_STREAK consecutive denied tool calls, rc=$rc) - the agent could not use its tools; see the vibe output artifact"
+            exit 0
+          fi
+
+          # exit code taxonomy and outcome/cost come from export.json (vibe
+          # writes it on every exit when --output-dir is set).
+          outcome="$(jq -r '.outcome // "unknown"' out/export.json 2>/dev/null || echo unknown)"
+          cost="$(jq -r '.cost_usd // "n/a"' out/export.json 2>/dev/null || echo "n/a")"
+          stderr_tail="$(tail -1 out/vibe.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "0" ]; then
-            case "$outcome" in
+            # Final assistant text = last message entry in the stream.
+            final_msg="$(jq -r 'select(.type == "message" and .role == "assistant") \
+                | [.content[]? | select(.type == "text") | .text] | join("\n")' \
+              out/stream.ndjson 2>/dev/null | tail -1 || true)"
+            outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
+            case "$outcome_line" in
               PR_URL:*)
-                echo "Implementer finished: $outcome"
+                echo "Implementer finished: $outcome_line (cost: \$$cost)"
                 exit 0
                 ;;
               NO_PR:*)
-                echo "Implementer reported $outcome (questions posted and issue labeled by the agent); no PR opened by design."
+                echo "Implementer reported $outcome_line (questions posted and issue labeled by the agent); no PR opened by design."
                 exit 0
                 ;;
               WALL:*)
-                reason="${outcome#WALL: }"
-                escalate "implementer stopped early with WALL: $reason"
+                escalate "implementer stopped early with ${outcome_line} (cost: \$$cost)"
                 exit 0
                 ;;
               *)
@@ -202,19 +262,34 @@ jobs:
             esac
           fi
 
-          if [ -n "$stop_reason" ]; then
-            escalate "implementer hit a harness cap ($stop_reason) - likely a rabbit hole or the issue is too large; see the vibe output artifact"
-            exit 0
-          fi
-
-          if [ "$RUN_ATTEMPT" = "1" ]; then
-            echo "Vibe failed without a budget stop (exit $rc); likely transient, retrying this run once."
-            if GH_TOKEN="$RETRY_TOKEN" gh api -X POST \
-              "repos/$REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" >/dev/null; then
+          if [ "$rc" = "2" ]; then
+            # infrastructure failure (model API after retries, runtime): transient.
+            # Re-dispatch a fresh run (the re-run API cannot touch a run that is
+            # still in progress); RETRY_COUNT breaks the loop at one retry.
+            if [ "$RETRY_COUNT" = "0" ]; then
+              echo "Vibe infrastructure failure (exit 2, $stderr_tail); re-dispatching once with retry=1."
+              if gh workflow run dev-loop-implement.yml --ref main \
+                -f issue_number="$ISSUE_NUMBER" -f retry=1; then
+                exit 0
+              fi
+              echo "re-dispatch failed; leaving this run red for manual retry"
               exit 0
             fi
-            echo "rerun request failed; leaving this run red for manual re-run"
+            escalate "infrastructure failure persisted after one retry (exit 2, $stderr_tail)"
             exit 0
           fi
 
-          escalate "vibe failed (exit $rc, attempt 2) without a budget stop; see the vibe output artifact"
+          if [ "$rc" = "3" ]; then
+            # budget hit (turn_limit/token_limit/price_limit/deadline) or refusal:
+            # never auto-retry; the task, not the run, is the problem.
+            escalate "implementer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail) - likely a rabbit hole or the issue is too large; see the vibe output artifact"
+            exit 0
+          fi
+
+          if [ "$rc" = "1" ]; then
+            # usage/config error: deterministic, a retry fails the same way.
+            escalate "vibe usage/config error (exit 1, $stderr_tail); see the vibe output artifact"
+            exit 0
+          fi
+
+          escalate "unexpected vibe exit code $rc (outcome: $outcome, $stderr_tail); see the vibe output artifact"

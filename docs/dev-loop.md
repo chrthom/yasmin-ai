@@ -18,9 +18,10 @@ GitHub event (or previous post-step)
 role workflow (reviewer / fixer / merger / implementer)
   pre-step: gate + dedupe (head SHA, verdict, iteration cap)
   job:      checkout → Node 22 → npm ci → render prompt (budget injected) →
-            vibe -p "$(cat out/<role>.rendered.md)" --trust --output json
-            --max-price --max-turns --enabled-tools <role> > out/messages.json
-  post-step: deterministic state machine from out/messages.json
+            vibe --prompt-file out/<role>.rendered.md --auto-approve --trust
+            --output streaming --max-turns --max-price --time-limit
+            --output-dir out/ (with a denial-streak watchdog on the stream)
+  post-step: deterministic state machine from out/export.json + out/stream.ndjson
              (ready/draft, labels, escalation, next dispatch)
 ```
 
@@ -134,28 +135,32 @@ steps:
   - run: npm ci
   - run: curl -LsSf https://mistral.ai/vibe/install.sh | bash
   - run: render .github/dev-loop/prompts/<role>.md with the budget values, then:
-        vibe -p "$(cat out/<role>.rendered.md)" --trust --output json --max-turns <per role>
-        --max-price <per role> --enabled-tools bash --enabled-tools read_file
-        --enabled-tools grep --enabled-tools write_file --enabled-tools search_replace
-        > out/messages.json
+        vibe --prompt-file out/<role>.rendered.md --auto-approve --trust
+        --output streaming --max-turns <per role> --max-price <per role>
+        --time-limit <per role> --output-dir out/
+        2> out/vibe.stderr | tee out/stream.ndjson | <denial-streak watchdog>
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           DEV_LOOP_ARGS: <pr/issue number, branch, review id>
-            (vibe has no --prompt-file: the rendered prompt is passed as the -p argument —
-            never via stdin: get_prompt_from_stdin() opens /dev/tty after reading, which
-            fails on a tty-less runner and silently discards the prompt; programmatic mode
-            auto-approves all tools, --trust skips the trust prompt; --max-turns/--max-price
-            apply only in programmatic mode; there is no --time-limit — the job
-            timeout-minutes is the only wall-clock cap)
-  - uses: actions/upload-artifact@v4     # out/messages.json (full transcript) + vibe stderr:
-                                         # final message, stop reason on budget hits
+            (verified against vibe 2.26.1: --prompt-file reads the rendered prompt,
+            --auto-approve approves all tool calls - in 2.26.1 -p alone no longer
+            implies auto-approval, and without it every tool call is denied and the
+            agent burns its whole turn budget on denials, --trust skips the trust
+            prompt, --output streaming gives the watchdog and the post-step a live
+            NDJSON transcript, --output-dir writes out/export.json on every exit:
+            outcome, stop reason, cost, usage. The installed vibe version must be
+            pinned and verified: the CLI surface moved substantially between
+            minor versions (2.9 vs 2.26))
+  - uses: actions/upload-artifact@v4     # out/export.json + out/stream.ndjson + stderr:
+                                         # outcome, stop reason, cost, final message
   - run: <post-step: state machine per table above, using the PAT>
 ```
 
 The reviewer posts its review **from the post-step** (reads the agent's verdict out of
-`out/messages.json` — the last assistant message — or the stderr stop tag, composes the
-marker-prefixed JSON, `gh api` posts it), so the agent never needs review-writing API access.
+`out/stream.ndjson` — the last assistant message — plus `out/export.json` for outcome and
+cost, composes the marker-prefixed JSON, `gh api` posts it), so the agent never needs
+review-writing API access.
 
 ## Secrets & settings
 
@@ -168,25 +173,23 @@ marker-prefixed JSON, `gh api` posts it), so the agent never needs review-writin
 
 ## Budgets and parameters
 
-Calibrate from the `out/messages.json` / stderr artifacts after the first real runs; these are the starting caps
-(all enforced by vibe itself — a cap hit stops the session with a parseable
-`<vibe_stop_event>` reason on stderr and exit 1, not a hang; the CLI has no exit-2/3 taxonomy,
-only 0 and 1, so the stop tag on stderr is the discriminator for budget stops vs other failures;
-`--max-tokens` deliberately unset, see table):
+Calibrate from the `out/export.json` artifacts after the first real runs; these are the starting caps
+(all enforced by vibe itself — a cap hit stops the session with `Stopped: <outcome>` on
+stderr and a parseable `export.json`, exit code 3, not a hang; `--max-tokens` deliberately
+unset, see table):
 
-| Role | `--max-turns` | `--max-price` | job `timeout-minutes` | Rationale |
+| Role | `--max-turns` | `--max-price` | `--time-limit` | job `timeout-minutes` | Rationale |
 | --- | --- | --- | --- | --- |
-| implementer | 90 | 7.50 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint; 90 turns ≈ 40 tool calls of headroom above typical |
-| reviewer | 60 | 3.00 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once |
-| fixer | 60 | 3.00 | 75 | scoped to one review's findings; usually well under |
-| merger | 45 | 1.50 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
+| implementer | 90 | 7.50 | 5400 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint; 90 turns ≈ 40 tool calls of headroom above typical |
+| reviewer | 60 | 3.00 | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once |
+| fixer | 60 | 3.00 | 3600 | 75 | scoped to one review's findings; usually well under |
+| merger | 45 | 1.50 | 2700 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
 
 `--max-price` is the cost brake; `--max-tokens` is deliberately **not set** (price already
 bounds cumulative token spend, and a separate token cap adds a failure mode without adding
 protection). Hard ceiling independent of vibe: the GitHub job timeout (`timeout-minutes`)
-set 15 min above each role's wall-clock target (90/60/60/45 min), so a wedged process cannot
-burn the 6-hour job limit. Note: there is no vibe-level `--time-limit` flag; the timeout is
-the job's `timeout-minutes`, and hitting it shows as a red cancelled run, not a parseable outcome.
+set 15 min above each `--time-limit`, so a wedged process cannot burn the 6-hour job limit.
+A `--time-limit` hit is a parseable exit-3 `deadline` outcome with a complete export.
 Expected real-world spend per happy-path PR (implement + 1–2 reviews + 1 fix + occasional
 merge): roughly $5–15 total; the caps bound the worst case at ~$15 per role run.
 
@@ -208,16 +211,19 @@ GitHub trace. No silent stuck states. Every failure path ends in exactly one of:
 (a) a `needs-human` label + marker escalation comment (`@chrthom`, reason, pointers),
 (b) a benign no-op, or (c) an Actions-visible failed run that the dispatch backstop can re-tick.
 
-The vibe exit code and stderr stop tag are the discriminators (`out/messages.json` transcript +
-`out/vibe.stderr`):
+The vibe exit code and `out/export.json` are the discriminators (`out/stream.ndjson` has the
+full transcript). Vibe 2.26.1 exit codes: 0 finished, 1 usage/config error, 2 infrastructure
+failure, 3 limit hit or refusal (`turn_limit`/`token_limit`/`price_limit`/`deadline`/`refusal`), 4 aborted:
 
 | What failed | Detection | Handling (post-step, in code) |
 | --- | --- | --- |
-| model API outage / runner infra | exit 1, no `<vibe_stop_event>` tag on stderr | **retry once** via the GitHub re-run API (needs `actions: write` on the workflow's own `GITHUB_TOKEN` — fine-grained PATs cannot hold Actions permissions; reruns create no events, so the recursion guard does not apply); on second failure: escalate with reason + run link. Transient by nature |
-| budget hit (turns/price) | exit 1 with `<vibe_stop_event>Turn limit of N reached</vibe_stop_event>` or `<vibe_stop_event>Price limit exceeded: $X > $Y</vibe_stop_event>` on stderr | escalate: label `needs-human`, comment the stop reason ("likely a rabbit hole or the issue is too large"), link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem |
-| wall-clock timeout | job killed by `timeout-minutes` (no vibe exit code) | red run; the re-run backstop covers it |
-| model refusal / other in-run error | exit 1, message on stderr, no stop tag | escalate with the stderr message; a human decides whether the task is genuinely unsafe |
-| agent finished but outcome unparseable | exit 0, final message doesn't match the contract | escalate with reason "unparseable outcome" + link to the transcript artifact; the transcript is preserved for diagnosis |
+| model API outage / runner infra | exit 2 (`infrastructure_failure`) | **retry once** by re-dispatching the workflow via `gh workflow run` with a retry input (the re-run API cannot touch a run that is still in progress — it 403s — and fine-grained PATs cannot hold Actions permissions, so the dispatch uses the workflow's own `actions: write` token); on second failure: escalate with reason + run link. Transient by nature |
+| budget hit (turns/price/tokens/time) | exit 3 (`turn_limit`/`price_limit`/`token_limit`/`deadline` in `export.json`) | escalate: label `needs-human`, comment the outcome + cost from `export.json` ("likely a rabbit hole or the issue is too large"), link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem |
+| wall-clock timeout (belt above `--time-limit`) | job killed by `timeout-minutes` (no vibe exit code) | red run; the re-run backstop covers it |
+| model refusal | exit 3 (`refusal` in `export.json`) | escalate with the refusal; a human decides whether the task is genuinely unsafe |
+| usage/config error (bad flag, missing API key) | exit 1 (`usage_error`/`config_error`) | escalate; deterministic, a retry fails the same way |
+| tool-denial loop (misconfigured approval, agent retries a denied call) | watchdog kills vibe after N consecutive denials | escalate: the agent could not use its tools; a full turn budget spent on denials is pure waste (this happened on the first live run) |
+| agent finished but outcome unparseable | exit 0, final assistant message doesn't match the contract | escalate with reason "unparseable outcome" + link to the transcript artifact; the transcript is preserved for diagnosis |
 | agent reported `WALL:` / `NO_PR:` | exit 0, parseable | the designed escalation: implementer comments its questions on the issue + labels it; fixer/merger escalate on the PR |
 | workflow step failed *outside* vibe (npm ci, install, push rejected) | step exit code | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice, add a failure-branch to the post-step that escalates instead of leaving it red silently |
 
