@@ -2,7 +2,7 @@ name: Dev Loop Review
 
 on:
   pull_request:
-    types: [ready_for_review, synchronize]
+    types: [ready_for_review, synchronize, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -53,6 +53,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
+          UNLABELED_NAME: ${{ github.event.label.name }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           OWNER_ID: ${{ github.event.repository.owner.id }}
         run: |
@@ -64,6 +65,11 @@ jobs:
           fi
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$HEAD_REPO_ID" != "$OWNER_ID" ]; then
             echo "PR #$PR_NUMBER is from a fork (head repo $HEAD_REPO_ID != $OWNER_ID); skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_ACTION" = "unlabeled" ] && [ "$UNLABELED_NAME" != "needs-human" ]; then
+            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -82,6 +88,17 @@ jobs:
             exit 0
           fi
           head_sha="$(printf '%s' "$pr_json" | jq -r '.headRefOid')"
+          if [ "$EVENT_ACTION" = "unlabeled" ]; then
+            # Resume path (docs/dev-loop.md event map): removing needs-human
+            # re-reviews the PR with a fresh budget - the head-SHA dedupe and
+            # the iteration cap are bypassed by design; a CHANGES_NEEDED
+            # verdict re-chains the fixer from the new review.
+            echo "Resuming after needs-human removal; re-reviewing PR #$PR_NUMBER with a fresh budget."
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+            echo "marker_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # One review per head SHA: skip if a marker review already exists for it.
           existing="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
             | jq -r --arg sha "$head_sha" \
@@ -320,7 +337,9 @@ jobs:
           current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
           if [ "$current_sha" != "$REVIEWED_SHA" ]; then
             echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
-            gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"
+            if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+              escalate "failed to re-dispatch the reviewer after a stale head SHA ($REVIEWED_SHA -> $current_sha); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
+            fi
             exit 0
           fi
 
@@ -330,24 +349,50 @@ jobs:
           findings_json="$(printf '%s\n' "$final_msg" \
             | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
             | sed -n '/^{/,$p' \
+            | sed '/^```/d' \
             | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
           [ -n "$findings_json" ] || findings_json='[]'
+          # Hybrid posting: findings anchored to a diff line become inline
+          # comments; the rest (and every finding if inline posting fails)
+          # go into the review body as a markdown list.
+          body_findings="$(printf '%s' "$findings_json" \
+            | jq -r '.[] | select((.path // empty | length) == 0 or (.line // 0) == 0) \
+              | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring))' 2>/dev/null || true)"
           body="<!-- dev-loop-review -->
           Verdict: $verdict
 
-          dev-loop review of $REVIEWED_SHA (cost: \$$cost).
-          Findings and suggested fixes are in the inline comments."
+          dev-loop review of $REVIEWED_SHA (cost: \$$cost)."
+          if [ -n "$body_findings" ]; then
+            body="$body
+
+          $body_findings"
+          fi
           cat > /tmp/dev-loop-review.json <<EOF
           {
             "commit_id": "$REVIEWED_SHA",
             "event": "COMMENT",
             "body": $(printf '%s' "$body" | jq -Rs .),
-            "comments": $(printf '%s' "$findings_json" | jq '[.[] | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]** " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
+            "comments": $(printf '%s' "$findings_json" | jq '[.[] | select((.path // empty | length) > 0 and (.line // 0) > 0) | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
           }
           EOF
           if ! gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json >/dev/null; then
-            escalate "the review post failed (gh api rejected the payload); verdict was $verdict - see the run log"
-            exit 0
+            # GitHub rejects inline comments outside the diff: retry once with
+            # every finding in the body (PR #80 behavior) before escalating.
+            all_findings="$(printf '%s' "$findings_json" \
+              | jq -r '.[] | "- **[" + (.severity // "minor") + "]** " + ((.path // "?") + ":" + ((.line // 0) | tostring) + " ") + (.message // .body // (. | tostring))' 2>/dev/null || true)"
+            fallback_body="<!-- dev-loop-review -->
+          Verdict: $verdict
+
+          dev-loop review of $REVIEWED_SHA (cost: \$$cost).
+
+          $all_findings"
+            jq --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
+              '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
+              > /tmp/dev-loop-review.json
+            if ! gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json >/dev/null; then
+              escalate "the review post failed (gh api rejected the payload); verdict was $verdict - see the run log"
+              exit 0
+            fi
           fi
 
           case "$verdict" in
@@ -359,7 +404,9 @@ jobs:
             CHANGES_NEEDED)
               echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer."
               gh pr ready --undo "$PR_NUMBER" 2>/dev/null || true
-              gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER"
+              if ! gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER"; then
+                escalate "failed to dispatch the fixer for this CHANGES_NEEDED review; the review stands - retry via workflow_dispatch (Actions -> Dev Loop Fix -> Run workflow)"
+              fi
               exit 0
               ;;
             NEEDS_HUMAN)
