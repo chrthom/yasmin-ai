@@ -31,11 +31,7 @@ describe('extractContentText', () => {
   });
 
   it('should skip text parts whose text is not a string', () => {
-    const content = [
-      { type: 'text', text: 42 },
-      { type: 'text' },
-      { type: 'text', text: 'Valid' }
-    ];
+    const content = [{ type: 'text', text: 42 }, { type: 'text' }, { type: 'text', text: 'Valid' }];
     expect(extractContentText(content)).toBe('Valid');
   });
 
