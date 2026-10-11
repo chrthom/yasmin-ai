@@ -140,8 +140,16 @@ jobs:
           head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
           reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
           if [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
-            git fetch origin "$head_sha_before" --quiet
-            non_format="$(git log --format='%s' "$reviewed_sha..$head_sha_before" 2>/dev/null | grep -vc '^chore: auto-format$' || true)"
+            git fetch origin "$reviewed_sha" "$head_sha_before" --quiet
+            # Fail closed: if the range cannot be resolved (shallow checkout,
+            # pruned history), the intervening commits are unknown - skip
+            # instead of proceeding on an unverified delta.
+            if ! git log --format='%s' "$reviewed_sha..$head_sha_before" >/dev/null 2>&1; then
+              echo "Cannot resolve the range $reviewed_sha..$head_sha_before; cannot verify whether only auto-format commits moved the head. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            non_format="$(git log --format='%s' "$reviewed_sha..$head_sha_before" | grep -vc '^chore: auto-format$' || true)"
             if [ "${non_format:-1}" = "0" ]; then
               echo "Head moved only by CI auto-format commits ($reviewed_sha -> $head_sha_before); no fix ran yet, proceeding with the findings."
             else
