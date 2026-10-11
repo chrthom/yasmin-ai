@@ -55,8 +55,7 @@ export const config = {
     // Cap on the sequential tool-calling loop in the live agent; a warning is logged when hit.
     maxToolCalls: 5,
     // Without this optional agent the handoff degrades to replaying just the last turns.
-    summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', ''),
-
+    summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', '')
   },
   context: {
     familyNotesTitle: 'Family notes',
