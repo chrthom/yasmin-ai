@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       retry:
-        description: Internal retry counter for infrastructure failures (do not edit)
+        description: Internal retry counter (do not edit)
         required: false
         default: '0'
         type: string
@@ -33,11 +33,11 @@ jobs:
     timeout-minutes: 105
     env:
       GH_REPO: ${{ github.repository }}
-      MAX_TURNS: '120'
+      MAX_TURNS: '800'
       MAX_TOKENS: '6000000'
       TIME_LIMIT_SEC: '5400'
       TIME_LIMIT_MIN: '90'
-      VIBE_VERSION: '2.26.1'
+      OPENCODE_VERSION: '2.0.26'
       MAX_DENIED_STREAK: '6'
     steps:
       - name: Checkout repository
@@ -100,92 +100,136 @@ jobs:
           echo "--- rendered prompt ---"
           cat out/implementer.rendered.md
 
-      - name: Install vibe
+      - name: Install opencode
         if: steps.gate.outputs.skip != 'true'
         run: |
-          curl -LsSf https://mistral.ai/vibe/install.sh | bash
-          command -v vibe
-          # The invocation below is verified against this exact version; the CLI
-          # surface moved substantially between minor versions (2.9 vs 2.26).
-          vibe --version | grep -F "vibe $VIBE_VERSION" || {
-            echo "::error::Installed vibe version does not match the expected $VIBE_VERSION - verify the invocation against the new CLI surface before rerunning"
+          curl -fsSL https://opencode.ai/install | bash
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v opencode
+          # The invocation below is verified against this exact version; the
+          # v1 -> v2 CLI surface moved substantially (auth/provider/config
+          # flags, managed-service architecture, event schema).
+          opencode upgrade "v$OPENCODE_VERSION" >/dev/null 2>&1 || true
+          opencode --version | grep -F "$OPENCODE_VERSION" || {
+            echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
             exit 1
           }
 
-      - name: Run vibe implementer
-        id: vibe
+      - name: Run opencode implementer
+        id: opencode
         if: steps.gate.outputs.skip != 'true'
         env:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           DEV_LOOP_ISSUE: ${{ steps.gate.outputs.issue_number }}
+          # Job-local config dir: MISTRAL_API_KEY must be the only credential
+          # source (stored auth would otherwise silently mask a rotated secret).
+          OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
+          OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # The managed service binds a loopback port; never route it via a proxy.
+          NO_PROXY: 127.0.0.1,localhost
+          no_proxy: 127.0.0.1,localhost
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p "$OPENCODE_CONFIG_DIR"
 
-          # Watchdog: consume the streaming NDJSON transcript, tee it to a file,
-          # and kill vibe when the agent hits MAX_DENIED_STREAK consecutive tool
-          # denials - a denial loop burns the whole turn budget for nothing (the
-          # first live run did exactly that: 90 turns of denied bash calls).
-          kill_on_denial_streak() {
+          # Watchdog: consume the JSON event stream, tee it to a file, and kill
+          # opencode when the run degenerates:
+          #  - MAX_DENIED_STREAK consecutive failed/denied tool calls (state
+          #    "failed", or "completed" with a non-zero shell exit) - the agent
+          #    is burning the budget for nothing (a denial loop did exactly
+          #    that on the first live vibe run)
+          #  - MAX_TURNS steps (step_start events; ~7x the vibe budget, cheap
+          #    thanks to prompt caching)
+          #  - MAX_TOKENS cumulative tokens (input+output+cache read+write)
+          run_watchdog() {
             streak=0
+            steps=0
+            tokens=0
             jq -c '
-              select(.type == "effect")
-              | {
-                  toolName: .detail.toolName,
-                  status: .detail.state.status,
-                  code: .detail.state.error.code
-                }' 2>/dev/null \
+              select(.type == "tool_use" or .type == "step_start" or .type == "step_finish")
+              | if .type == "tool_use" then {
+                    k: "tool",
+                    status: (.part.state.status // ""),
+                    exit: (.part.state.metadata.metadata.exit // 0)
+                  }
+                elif .type == "step_start" then { k: "step" }
+                else {
+                    k: "tokens",
+                    t: [
+                      (.part.tokens.input // 0),
+                      (.part.tokens.output // 0),
+                      (.part.tokens.cache.read // 0),
+                      (.part.tokens.cache.write // 0)
+                    ]
+                  }
+                end' 2>/dev/null \
             | while IFS= read -r entry; do
-                status="$(printf '%s' "$entry" | jq -r '.status // empty')"
-                code="$(printf '%s' "$entry" | jq -r '.code // empty')"
-                if [ "$status" = "failed" ] && [ "$code" = "tool_denied" ]; then
-                  streak=$((streak + 1))
-                  echo "watchdog: denied tool call streak = $streak"
-                  if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
-                    echo "watchdog: $streak consecutive denials - killing vibe"
-                    pkill -TERM -f 'vibe --prompt-file' || true
-                    exit 99
-                  fi
-                else
-                  streak=0
-                fi
+                k="$(printf '%s' "$entry" | jq -r '.k')"
+                case "$k" in
+                  step)
+                    steps=$((steps + 1))
+                    if [ "$steps" -ge "$MAX_TURNS" ]; then
+                      echo "watchdog: step limit $MAX_TURNS reached - killing opencode"
+                      pkill -TERM -f 'opencode run' || true
+                      exit 99
+                    fi
+                    ;;
+                  tokens)
+                    tt="$(printf '%s' "$entry" | jq -r '.t | map(. // 0) | add')"
+                    tokens=$((tokens + tt))
+                    if [ "$tokens" -ge "$MAX_TOKENS" ]; then
+                      echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
+                      pkill -TERM -f 'opencode run' || true
+                      exit 99
+                    fi
+                    ;;
+                  tool)
+                    status="$(printf '%s' "$entry" | jq -r '.status')"
+                    exit_code="$(printf '%s' "$entry" | jq -r '.exit')"
+                    if [ "$status" = "failed" ] || { [ "$status" = "completed" ] && [ "$exit_code" != "0" ] && [ -n "$exit_code" ] && [ "$exit_code" != "null" ]; }; then
+                      streak=$((streak + 1))
+                      echo "watchdog: failed tool call streak = $streak"
+                      if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
+                        echo "watchdog: $streak consecutive failed tool calls - killing opencode"
+                        pkill -TERM -f 'opencode run' || true
+                        exit 99
+                      fi
+                    elif [ "$status" = "completed" ]; then
+                      streak=0
+                    fi
+                    ;;
+                esac
               done
           }
 
           set -o pipefail
           set +e
-          vibe --prompt-file out/implementer.rendered.md \
-            --auto-approve \
-            --trust \
-            --output streaming \
-            --max-turns "$MAX_TURNS" \
-            --max-tokens "$MAX_TOKENS" \
-            --time-limit "$TIME_LIMIT_SEC" \
-            --output-dir out/ \
-            2> out/vibe.stderr \
+          timeout --signal=TERM --kill-after=60 "$TIME_LIMIT_SEC" \
+            opencode run --standalone --format json --auto --model mistral/zai-glm-5-3 \
+              "$(cat out/implementer.rendered.md)" \
+            2> out/opencode.stderr \
             | tee out/stream.ndjson \
-            | kill_on_denial_streak
+            | run_watchdog
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          echo "--- vibe stderr ---"
-          cat out/vibe.stderr || true
+          echo "--- opencode stderr ---"
+          cat out/opencode.stderr || true
           if [ "$rc" = "99" ]; then
             echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
           fi
           exit 0
 
-      - name: Upload vibe output artifact
+      - name: Upload opencode output artifact
         if: always() && steps.gate.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: vibe-implementer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          name: opencode-implementer-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/export.json
             out/stream.ndjson
-            out/vibe.stderr
+            out/opencode.stderr
             out/implementer.rendered.md
-            out/session/
           if-no-files-found: warn
 
       - name: Post-step state machine
@@ -211,10 +255,10 @@ jobs:
             gh issue comment "$ISSUE_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
           }
 
-          rc="${{ steps.vibe.outputs.rc }}"
+          rc="${{ steps.opencode.outputs.rc }}"
 
           if [ -z "$rc" ]; then
-            # vibe never ran: a pre-vibe step (npm ci, install, version check, render) failed.
+            # opencode never ran: a pre-run step (npm ci, install, version check, render) failed.
             if [ "$RUN_ATTEMPT" = "1" ]; then
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
@@ -223,28 +267,32 @@ jobs:
             exit 0
           fi
 
-          # The watchdog killed vibe after a denial streak: not a budget hit, not
-          # an infra failure - the run misbehaved. Never retry, escalate.
-          if [ "${{ steps.vibe.outputs.stopped_by_watchdog }}" = "true" ]; then
-            escalate "implementer killed by the denial-streak watchdog ($MAX_DENIED_STREAK consecutive denied tool calls, rc=$rc) - the agent could not use its tools; see the vibe output artifact"
+          # Cost = sum of the per-step cost fields in the event stream
+          # (opencode reports cost/tokens on every step_finish event).
+          cost="$(jq -s '[.[].part.cost // 0] | add' out/stream.ndjson 2>/dev/null || echo 0)"
+          tokens="$(jq -s '[.[].part.tokens // empty | (.input // 0) + (.output // 0)] | add' out/stream.ndjson 2>/dev/null || echo 0)"
+          stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
+
+          if [ "$rc" = "99" ]; then
+            # The watchdog killed opencode (failure streak / step / token cap):
+            # the run misbehaved or blew the budget. Never retry, escalate.
+            escalate "implementer killed by the watchdog (rc=99; failure streak / step cap ${MAX_TURNS} / token cap ${MAX_TOKENS}; cost: \$$cost) - see the opencode output artifact"
             exit 0
           fi
 
-          # exit code taxonomy and outcome/cost come from export.json (vibe
-          # writes it on every exit when --output-dir is set).
-          outcome="$(jq -r '.outcome // "unknown"' out/export.json 2>/dev/null || echo unknown)"
-          cost="$(jq -r '.cost_usd // "n/a"' out/export.json 2>/dev/null || echo "n/a")"
-          stderr_tail="$(tail -1 out/vibe.stderr 2>/dev/null || true)"
+          if [ "$rc" = "124" ]; then
+            # deadline hit (timeout(1)): never auto-retry, escalate.
+            escalate "implementer stopped on the ${TIME_LIMIT_MIN} min deadline (rc=124, cost: \$$cost); see the opencode output artifact"
+            exit 0
+          fi
 
           if [ "$rc" = "0" ]; then
-            # Final assistant text = last message entry in the stream.
-            final_msg="$(jq -r 'select(.type == "message" and .role == "assistant") \
-                | [.content[]? | select(.type == "text") | .text] | join("\n")' \
-              out/stream.ndjson 2>/dev/null | tail -1 || true)"
-            outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
+            # Final assistant text = last non-empty line across all text events.
+            outcome_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
+              | awk 'NF { line = $0 } END { if (line) print line }')"
             case "$outcome_line" in
               PR_URL:*)
-                echo "Implementer finished: $outcome_line (cost: \$$cost)"
+                echo "Implementer finished: $outcome_line (cost: \$$cost, tokens: $tokens)"
                 exit 0
                 ;;
               NO_PR:*)
@@ -262,37 +310,14 @@ jobs:
             esac
           fi
 
-          if [ "$rc" = "2" ]; then
-            # infrastructure failure (model API after retries, runtime): transient.
-            # Re-dispatch a fresh run (the re-run API cannot touch a run that is
-            # still in progress); RETRY_COUNT breaks the loop at one retry.
-            if [ "$RETRY_COUNT" = "0" ]; then
-              echo "Vibe infrastructure failure (exit 2, $stderr_tail); re-dispatching once with retry=1."
-              if gh workflow run dev-loop-implement.yml --ref main \
-                -f issue_number="$ISSUE_NUMBER" -f retry=1; then
-                exit 0
-              fi
-              echo "re-dispatch failed; leaving this run red for manual retry"
-              exit 0
-            fi
-            escalate "infrastructure failure persisted after one retry (exit 2, $stderr_tail)"
-            exit 0
-          fi
-
-          if [ "$rc" = "3" ]; then
-            # budget hit (turn_limit/token_limit/deadline) or refusal: never
-            # auto-retry. turn_limit = the planning budget was too small or the
-            # agent looped; token_limit = the run consumed excessive tokens
-            # (input-dominated; immune to billing/caching variance, unlike a
-            # price cap). Either way the task, not the run, is the problem.
-            escalate "implementer stopped on $outcome (exit 3, cost: \$$cost, $stderr_tail); see the vibe output artifact"
-            exit 0
-          fi
-
           if [ "$rc" = "1" ]; then
-            # usage/config error: deterministic, a retry fails the same way.
-            escalate "vibe usage/config error (exit 1, $stderr_tail); see the vibe output artifact"
+            # opencode exits 1 for both config errors (e.g. invalid credentials,
+            # deterministic - a retry fails identically) and infrastructure
+            # failures (API unreachable). They are not reliably separable by
+            # exit code, so never auto-retry; manual retry stays available via
+            # the workflow_dispatch retry input.
+            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
             exit 0
           fi
 
-          escalate "unexpected vibe exit code $rc (outcome: $outcome, $stderr_tail); see the vibe output artifact"
+          escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
