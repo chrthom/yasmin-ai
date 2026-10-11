@@ -32,10 +32,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Hard ceiling for any single Mistral HTTP call in the nightly pipeline. withRetry only engages
-// on a *thrown* error, so without this a hung TCP/TLS connection would never settle and would
-// block a phase indefinitely while holding processing_lock.
-const REQUEST_TIMEOUT_MS = 30_000;
+// Hard ceiling for any single Mistral HTTP call. withRetry only engages on a *thrown* error,
+// so without this a hung TCP/TLS connection would never settle and would block a phase
+// indefinitely while holding processing_lock. Applies to the nightly pipeline as well as to
+// interactive callers that do not pass their own timeoutMs.
+const REQUEST_TIMEOUT_MS = 120_000;
 
 /**
  * Canonical URL of the conversations endpoint, derived from the single configured API root so
@@ -48,8 +49,7 @@ export function conversationsUrl(): string {
 /**
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
- * `timeoutMs` lets interactive callers (ChatAgent) set a longer ceiling: a live turn reprocesses
- * the whole conversation history and can legitimately take minutes.
+ * `timeoutMs` lets callers override the default REQUEST_TIMEOUT_MS ceiling.
  */
 export async function fetchWithTimeout(
   url: string,

@@ -53,7 +53,6 @@ class RespawnRequestedException extends Error {
   }
 }
 
-// The Mistral API key is checked at startup (validateEnv in config.ts), so the `!` is safe.
 function authorizationHeader(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}` };
 }
@@ -244,6 +243,8 @@ export class ChatAgent {
     // A failed tool-result send may leave the conversation broken even on a non-stale status
     // (e.g. a persistent 5xx after retries), so the tool path respawns on any typed API error,
     // while the initial send only respawns on the stale 400/404 statuses.
+    // true  -> non-stale typed API errors (e.g. a persistent 5xx after retries) also trigger a respawn
+    // false -> only stale 400/404 responses trigger a respawn; other errors just fail the turn
     respawnOnAnyError: boolean = false
   ): Promise<MistralConversationResponse> {
     const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
@@ -260,9 +261,6 @@ export class ChatAgent {
                 ...authorizationHeader(this.apiKey)
               }
             },
-            // A live turn reprocesses the full conversation history and can legitimately exceed
-            // the nightly pipeline's 30s ceiling, so the interactive path gets its own generous
-            // timeout (config.mistral.chatRequestTimeoutMs).
             this.chatRequestTimeoutMs
           );
           if (!response.ok) {

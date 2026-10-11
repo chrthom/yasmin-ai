@@ -1,5 +1,7 @@
 import * as process from 'node:process';
 
+const DEFAULT_CHAT_REQUEST_TIMEOUT_MS = 120000;
+
 const optionalEnv = (key: string, fallback: string): string => process.env[key] || fallback;
 
 // Lazy getters throw on access instead of the compile-time-only `!`, so importing config without
@@ -42,8 +44,8 @@ export const config = {
     // its tighter 30s ceiling. Non-numeric or non-positive values fall back to the default
     // (a NaN would abort every live request immediately, since setTimeout(abort, NaN) fires at once).
     chatRequestTimeoutMs: (() => {
-      const parsed = parseInt(optionalEnv('CHAT_REQUEST_TIMEOUT_MS', '120000'), 10);
-      return Number.isFinite(parsed) && parsed > 0 ? parsed : 120000;
+      const parsed = parseInt(optionalEnv('CHAT_REQUEST_TIMEOUT_MS', ''), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAT_REQUEST_TIMEOUT_MS;
     })()
   },
   synology: {
