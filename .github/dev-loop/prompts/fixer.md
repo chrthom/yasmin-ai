@@ -46,7 +46,9 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    replies as context on what earlier runs already changed, never as human answers. Replies
    without the prefix that predate this rule come from earlier fixer runs as well —
    cross-check them against the repo state instead of treating them as steering: only an
-   unprefixed reply by `chrthom` that the repo state cannot explain may override the review.
+   unprefixed reply by `chrthom` that carries an actionable answer the repo state cannot
+   explain may override the review — an unprefixed reply that is not actionable (a bare
+   file path, an unreadable reference) is never an override, however unexplainable.
 2. Start from a fresh local branch off the remote PR branch, never a local checkout of it:
    `git fetch origin && git switch -c fixer-pr-<N>-$(date +%s) --track origin/<branch>`. CI pushes
    auto-format commits, so always start from the remote branch.
@@ -73,7 +75,10 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    reviewer again via `synchronize` - never chain it yourself.
 7. Reply to each inline comment you addressed with a short note on what changed:
    `gh api repos/chrthom/yasmin-ai/pulls/<N>/comments/<commentId>/replies -X POST -f body="..."`,
-   prefixing every reply body with `dev-loop fixer: ` (e.g. `dev-loop fixer: changed X to Y`):
+   prefixing every reply body with `dev-loop fixer: ` (e.g. `dev-loop fixer: changed X to Y`)
+   and passing the literal reply text inline as `body` — never an @-file reference or a file
+   path (a path is unreadable to every later reader of the thread; a resumed run reads your
+   replies, so only literal text is useful):
    you post under the same PAT login as the owner, and this prefix is what lets a resumed
    run tell your replies from the owner's inline answers (step 1) - your replies are context
    on what was already fixed, never human steering.

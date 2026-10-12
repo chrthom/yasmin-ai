@@ -7,8 +7,9 @@ harness — Mistral models via OpenCode — executed headless on the workflow ru
 full local toolset (edit files, `npm run build`, `npm test`, `npm run lint`, `npx prettier`).
 
 GitHub is the source of truth (issues, PRs, reviews, labels). The loop is fully event-driven:
-every dispatch follows a GitHub event. No role ever chains another workflow directly; the
-chain is the GitHub event the previous role's push fires.
+every dispatch follows a GitHub event; the chain is usually the GitHub event the previous
+role's push fires — direct workflow chaining is the deliberate exception, not the rule (see
+the enumeration in Non-events by design).
 
 ## Architecture
 
@@ -73,12 +74,13 @@ partitioned by review shape, not identity alone):
   the PR is a draft is never dispatched (the fixer gate skips drafts on every event) and has
   no consumption path - marking the PR ready fires only a fresh reviewer run, whose newer
   review supersedes the draft-time one on every resume path - so re-submit it once the PR is
-  ready. If the head moves past a human findings review while a fix for another review is in
-  flight, the fixer never drops it silently: it posts a PR comment marking the review stale
-  (re-submit on the current head if the findings persist) and chains the reviewer on the
-  moved head - a dedupe-bounded backstop (the fix push's own `synchronize` event usually
-  re-reviews the moved head first, and the fresh review re-surfaces the findings only if it
-  independently finds them; escalation if the chain fails).
+  ready. If the head moves past a human findings review before it is consumed (another
+  review's fix in flight, or a manual push), the fixer never drops it silently: it posts a
+  PR comment marking the review stale (re-submit on the current head if the findings
+  persist) and chains the reviewer on the moved head - a dedupe-bounded backstop (the fix
+  push's own `synchronize` event usually re-reviews the moved head first, and the fresh
+  review re-surfaces the findings only if it independently finds them; escalation if the
+  chain fails).
   The review id stays consumable on every path: the fixer's verdict re-check is shape-based
   (only marker reviews are held to `Verdict: CHANGES_NEEDED`), so the post-step's built-in
   auto-retry and a manual `workflow_dispatch` re-dispatch of a human findings review work.
@@ -119,13 +121,14 @@ Non-events by design:
   fixer's push fires `synchronize`, which re-triggers the reviewer. The chained dispatches
   are reviewer→fixer (a `CHANGES_NEEDED` verdict with the posted review's id; the red-CI
   no-findings dispatch) and fixer→reviewer (a no-op `FIXED` on an unchanged head; a human
-  findings review made stale by another fix's push, so its findings were never consumed).
+  findings review made stale by an unattributed head move — another review's fix or a manual
+  push — so its findings were never consumed by a fixer run for it).
 
 ## Post-step state machine (all post-steps, no agent involvement)
 
 | Post-step | Condition | Action |
 | --- | --- | --- |
-| reviewer | `Verdict: CHANGES_NEEDED` | dispatch the fixer with the posted review's id (direct chain is the single exception: no GitHub event carries the review id) |
+| reviewer | `Verdict: CHANGES_NEEDED` | dispatch the fixer with the posted review's id (a direct chain: no GitHub event carries the review id; one of the chained dispatches enumerated in Non-events by design) |
 | reviewer | `Verdict: NEEDS_HUMAN` | label `needs-human` + marker escalation comment `@chrthom` |
 | reviewer | head SHA moved since review start | re-dispatch reviewer (stale review is not acted on) |
 | fixer | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer |
@@ -407,8 +410,9 @@ which is also the recovery path if a webhook event was ever missed.
 - No workflow touches an issue or PR without the `dev-loop` label.
 - Review runs exactly once per head SHA; pushes to draft PRs never trigger it; a `needs-human`
   label parks the item; drafts are the human parking brake and the loop never flips them.
-- A push to a ready PR (fix commits or CI auto-format) triggers re-review via `synchronize` —
-  no role chains the reviewer directly.
+- A push to a ready PR (fix commits or CI auto-format) triggers re-review via `synchronize`;
+  a role chains the reviewer directly only in the backstop cases enumerated in Non-events by
+  design.
 - `CHANGES_NEEDED` triggers the fixer exactly once; the fixer's push re-enters the loop via
   its own event; the cycle escalates at 8 iterations, in code.
 - A conflicted PR gets a merge commit resolving both sides from the fixer workflow (findings

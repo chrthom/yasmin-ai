@@ -101,6 +101,9 @@ jobs:
           # under the owner's PAT, so this is the single identity both the
           # marker and the human branch trust (no hardcoded login).
           REPO_OWNER: ${{ github.repository_owner }}
+          # Run link for the gate's stale-review escalation comment (matches
+          # the post-step's RUN_URL convention).
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
@@ -378,13 +381,13 @@ jobs:
               exit 0
             else
               # A human findings review skipped here would be silently
-              # dropped: the moving commit fixed another review (a fixer run
-              # already in flight when the owner submitted) and never saw
-              # these findings - no reply, no signal, and the owner cannot
-              # tell consumption from a drop. A retry whose first attempt
-              # pushed nothing (moved_by_fix=0) lands here too: the movement
-              # is not that attempt's fix, so the findings were equally not
-              # consumed by it. Chain the reviewer instead: its
+              # dropped: the movement is unattributed (another review's fix,
+              # or a manual push by the owner) and no fixer run for this
+              # review saw these findings - no reply, no signal, and the
+              # owner cannot tell consumption from a drop. A retry whose
+              # first attempt pushed nothing (moved_by_fix=0) lands here
+              # too: the movement is not that attempt's fix, so the findings
+              # were equally not consumed by it. Chain the reviewer instead: its
               # fresh review of the moved head re-enters the loop and its
               # head-SHA dedupe bounds it (mirrors the stale-verdict
               # re-dispatch in dev-loop-review.yml). The chain is only a
@@ -393,11 +396,11 @@ jobs:
               # read the human review's body), so a PR comment also marks the
               # review stale for the owner - never a review POST, which is
               # the human findings channel. Escalate if the chain fails, so
-              # the owner knows the findings went unconsumed.
-              echo "Head SHA ($head_sha_before) moved past the human findings review $review_id ($reviewed_sha) while a fix for another review ran; the findings were not consumed by it. Chaining the reviewer on the moved head."
+              # the owner knows no fixer run consumed the findings.
+              echo "Head SHA ($head_sha_before) moved past the human findings review $review_id ($reviewed_sha) before it was consumed (another review's fix or a manual push may have moved it). Chaining the reviewer on the moved head."
               if gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
                 cat > /tmp/dev-loop-notice.md <<EOF
-          dev-loop notice: human findings review ${review_id} is stale - the head moved (${reviewed_sha} -> ${head_sha_before}) while a fix for another review ran, so its findings were not consumed by it. A fresh review of the moved head is queued (a backstop: its findings re-enter the loop only if the fresh review re-surfaces them); re-submit the review on the current head if the findings persist.
+          dev-loop notice: human findings review ${review_id} is stale - the head moved past the review's commit (${reviewed_sha} -> ${head_sha_before}) before it was consumed (another review's fix or a manual push may have moved it). A fresh review of the moved head is queued (a backstop: its findings re-enter the loop only if the fresh review re-surfaces them); re-submit the review on the current head if the findings persist.
 
           PR: #${PR_NUMBER}
           Review: ${review_id}
@@ -413,10 +416,11 @@ jobs:
                 gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
                 cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @$REPO_OWNER dev-loop fixer escalation: human findings review $review_id was skipped - the head moved ($reviewed_sha -> $head_sha_before) while a fix for another review ran, so its findings were not consumed - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
+          @$REPO_OWNER dev-loop fixer escalation: human findings review $review_id was skipped - the head moved past the review's commit ($reviewed_sha -> $head_sha_before) before it was consumed (another review's fix or a manual push may have moved it) - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
 
           PR: #${PR_NUMBER}
           Review: ${review_id}
+          Run: ${RUN_URL}
           EOF
                 gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
               fi
