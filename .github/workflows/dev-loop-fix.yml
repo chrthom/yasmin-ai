@@ -4,14 +4,15 @@ on:
   pull_request_review:
     types: [submitted]
   pull_request:
-    types: [unlabeled]
-  # Conflict path (docs/dev-loop.md): CI completed on a dev-loop PR whose
-  # mergeable is CONFLICTING dispatches a conflict-only fixer run. The name
-  # check below couples to ci.yml's `name: CI` - renaming ci.yml disables
-  # this path; keep them in sync.
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+    # synchronize: conflict origin 1 - the PR's own push can make it CONFLICTING.
+    # unlabeled: the needs-human resume path.
+    types: [synchronize, unlabeled]
+  # Conflict origin 2 (docs/dev-loop.md): a push to main can make open ready
+  # PRs CONFLICTING. One scan per merge to main instead of one run per CI
+  # completion on every branch; the scan itself costs only gh api calls, the
+  # agent runs only for PRs that are actually conflicting.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -36,12 +37,20 @@ permissions:
   actions: write
 
 concurrency:
-  group: dev-loop-pr-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
+  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}
   cancel-in-progress: false
 
 jobs:
   fix:
     name: Fixer (review findings and/or conflict -> fix commits / merge commit)
+    # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
+    # label other than needs-human, or a synchronize on a draft or fork PR,
+    # can never start the fixer - skip before a runner is allocated. The
+    # gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
+      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.draft) &&
+      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.head.repo.id != github.event.repository.id)
     # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
     # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
     # re-dispatch in the reviewer (docs/dev-loop.md).
@@ -66,10 +75,9 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          # On workflow_run the payload has no pull_request object: fall back
-          # to the PR the CI run belongs to. The gate's workflow_run branch
-          # re-resolves the PR from head_branch/head_sha and overwrites this.
-          PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
+          # synchronize/unlabeled carry the PR in the payload; push does not
+          # (the push-path scan below resolves candidate PRs itself).
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           UNLABELED_NAME: ${{ github.event.label.name }}
@@ -78,9 +86,6 @@ jobs:
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
-          WR_EVENT_NAME: ${{ github.event.workflow_run.name }}
-          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -eu
           if [ -z "$PR_NUMBER" ]; then
@@ -106,31 +111,38 @@ jobs:
             --description "dev-loop: human decision required" 2>/dev/null || true
           gh label create dev-loop --color 46A1AA \
             --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
-          # workflow_run (ci.yml completed) conflict path: the payload has no PR
-          # object - resolve the PR from head_branch/head_sha, apply the repo-ID
-          # fork gate (PR #93), and only proceed on mergeable == CONFLICTING.
-          if [ "$EVENT_NAME" = "workflow_run" ]; then
-            # Coupled to ci.yml's `name: CI` (the on.workflow_run filter is
-            # name-based); renaming ci.yml disables the conflict path.
-            if [ "$WR_EVENT_NAME" != "CI" ]; then
-              echo "workflow_run is for '$WR_EVENT_NAME', not CI; skipping."
+          # Conflict origin 2: a push to main can leave open ready dev-loop PRs
+          # CONFLICTING. One scan per merge to main (docs/dev-loop.md): find all
+          # conflicting candidates, dispatch each (conflict-only, no review
+          # findings), and let the one-run-per-head-SHA dedupe bound the runs.
+          if [ "$EVENT_NAME" = "push" ]; then
+            candidates="$(gh pr list --state open --label dev-loop \
+              --json number,headRefOid,headRepository,isDraft,mergeable \
+              | jq -r '[.[] | select(.isDraft == false)
+                        | select(.headRepository.id == $repo_id)
+                        | select(.mergeable == "CONFLICTING")] 
+                       | .[].number' --arg repo_id "$REPO_ID")"
+            if [ -z "$candidates" ]; then
+              echo "No conflicting open dev-loop PRs after the push to main; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            wr_pr="$(gh pr list --head "$WR_HEAD_BRANCH" --state open --json number,headRefOid \
-              | jq -r --arg sha "$WR_HEAD_SHA" '[.[] | select(.headRefOid == $sha)] | first | .number // empty')"
-            if [ -z "$wr_pr" ]; then
-              echo "No open PR with head branch '$WR_HEAD_BRANCH' at head SHA $WR_HEAD_SHA; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            PR_NUMBER="$wr_pr"
-            wr_repo_id="$(gh pr view "$PR_NUMBER" --json headRepository --jq '.headRepository.id')"
-            if [ "$wr_repo_id" != "$REPO_ID" ]; then
-              echo "PR #$PR_NUMBER is from a fork (head repo $wr_repo_id != $REPO_ID); skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+            # Dispatch one conflict-only fixer run per candidate PR via
+            # workflow_dispatch; the dispatched run resolves the PR from the
+            # input, re-checks CONFLICTING live, and enforces the head-SHA
+            # dedupe. The scan run itself never runs the agent.
+            for pr in $candidates; do
+              gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$pr" -f review_id="" -f retry=0
+              echo "Dispatched conflict-only fixer run for PR #$pr."
+            done
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Conflict origin 1: the PR's own synchronize can make it
+          # CONFLICTING. Only a genuinely conflicting PR proceeds; the fixer
+          # prompt handles a missing review (conflict-only run).
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "synchronize" ]; then
             pr_json="$(gh pr view "$PR_NUMBER" --json labels,isDraft,mergeable,headRefOid)"
             if ! printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
               echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
@@ -139,11 +151,6 @@ jobs:
             fi
             if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
               echo "PR #$PR_NUMBER is labeled needs-human; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ]; then
-              echo "PR #$PR_NUMBER is draft; the loop never touches drafts. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -158,22 +165,11 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            head_sha_before="$(printf '%s' "$pr_json" | jq -r '.headRefOid')"
-            # Conflict-dispatch dedupe: one fixer run per head SHA - a
-            # long-conflicted PR is not re-run on every CI tick. The branch's
-            # ref still points at the CI head SHA iff no fixer pushed a merge
-            # commit resolving the conflict from this head.
-            remote_sha="$(git ls-remote origin "refs/heads/$WR_HEAD_BRANCH" | cut -f1)"
-            if [ "$remote_sha" != "$WR_HEAD_SHA" ]; then
-              echo "Head already moved past the CI head SHA ($WR_HEAD_SHA -> $remote_sha); a conflict fix already ran. Skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            branch="$WR_HEAD_BRANCH"
+            branch="$(gh pr view "$PR_NUMBER" --json headRefName | jq -r '.headRefName')"
             echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
             echo "review_id=" >> "$GITHUB_OUTPUT"
             echo "branch=$branch" >> "$GITHUB_OUTPUT"
-            echo "head_sha_before=$head_sha_before" >> "$GITHUB_OUTPUT"
+            echo "head_sha_before=$(printf '%s' "$pr_json" | jq -r '.headRefOid')" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
@@ -228,10 +224,24 @@ jobs:
               | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
           if [ -z "$review_id" ]; then
-            # Manual dispatch with an empty review id: conflict-only run (the
-            # workflow_run path also resolves to an empty review id). Proceed
-            # without findings; the fixer prompt handles a missing review.
-            echo "No CHANGES_NEEDED marker review on PR #$PR_NUMBER; treating this as a conflict-only run."
+            # Dispatch with an empty review id: conflict-only run (the
+            # push-to-main scan and the synchronize path resolve to this).
+            # Re-check live that the PR is actually CONFLICTING: the dispatch
+            # may queue behind another fixer run that already resolved the
+            # conflict. Proceed without findings; the fixer prompt handles a
+            # missing review.
+            mergeable=""
+            for _ in 1 2 3 4 5; do
+              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
+              [ "$mergeable" != "UNKNOWN" ] && break
+              sleep 10
+            done
+            if [ "$mergeable" != "CONFLICTING" ]; then
+              echo "PR #$PR_NUMBER mergeable is '$mergeable', not CONFLICTING; nothing conflict-only to do. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "PR #$PR_NUMBER is CONFLICTING; treating this as a conflict-only run."
           fi
           if [ -n "$review_id" ]; then
             review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
