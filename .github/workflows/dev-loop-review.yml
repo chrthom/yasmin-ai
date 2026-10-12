@@ -563,6 +563,17 @@ jobs:
 
           $body_findings"
           fi
+          # One pending review per user per PR: a stale pending review from a
+          # previously failed post blocks every new POST with 422 (observed on
+          # PR #106). Delete any pending review of the token user before
+          # posting - pending reviews carry no findings, so nothing is lost.
+          pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
+            | jq -r '[.[] | select(.state == "PENDING")] | first | .id // empty')"
+          if [ -n "$pending_review_id" ]; then
+            echo "Deleting stale pending review $pending_review_id before posting (it would 422-block the POST)."
+            gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
+              || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
+          fi
           cat > /tmp/dev-loop-review.json <<EOF
           {
             "commit_id": "$REVIEWED_SHA",
@@ -571,9 +582,19 @@ jobs:
             "comments": $(printf '%s' "$findings_json" | jq '[.[] | select((.path // empty | length) > 0 and (.line // 0) > 0) | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
           }
           EOF
-          if ! review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id)"; then
-            review_post_id=""
+          if ! jq -e . /tmp/dev-loop-review.json >/dev/null 2>&1; then
+            escalate "the review payload is not valid JSON (body/comments build failed); verdict was $verdict - see the run log"
+            exit 0
           fi
+          review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>&1 || true)"
+          case "$review_post_id" in
+            ''|*[!0-9]*)
+              # gh emits the error object (not an id) on failure - never pass
+              # it on; log it in full for diagnosis.
+              echo "::warning::Inline review POST failed: $review_post_id"
+              review_post_id=""
+              ;;
+          esac
           if [ -z "$review_post_id" ]; then
             # GitHub rejects inline comments outside the diff: retry once with
             # every finding in the body (PR #80 behavior) before escalating.
@@ -588,11 +609,17 @@ jobs:
             jq --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
               '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
               > /tmp/dev-loop-review.json
-            review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>/dev/null || true)"
-            if [ -z "$review_post_id" ]; then
-              escalate "the review post failed (gh api rejected the payload); verdict was $verdict - see the run log"
+            if ! jq -e . /tmp/dev-loop-review.json >/dev/null 2>&1; then
+              escalate "the fallback review payload is not valid JSON; verdict was $verdict - see the run log"
               exit 0
             fi
+            review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>&1 || true)"
+            case "$review_post_id" in
+              ''|*[!0-9]*)
+                escalate "the review post failed (inline and fallback both rejected: $review_post_id); verdict was $verdict - see the run log"
+                exit 0
+                ;;
+            esac
           fi
 
           case "$verdict" in
@@ -601,6 +628,15 @@ jobs:
               exit 0
               ;;
             CHANGES_NEEDED)
+              case "$review_post_id" in
+                ''|*[!0-9]*)
+                  # Unreachable with the hardened post above, but a non-numeric
+                  # id must never reach the fixer (PR #106: the 422 error JSON
+                  # was dispatched as a review id and crashed the fixer gate).
+                  escalate "internal error: review_post_id is not numeric ('$review_post_id'); the review stands - retry the fixer via workflow_dispatch"
+                  exit 0
+                  ;;
+              esac
               echo "Verdict CHANGES_NEEDED: dispatching the fixer with the exact review id ($review_post_id)."
               # Pass the posted review's id, not "latest": a second
               # CHANGES_NEEDED review landing before the fixer's gate must
