@@ -572,30 +572,37 @@ jobs:
           # token user's own (the repo owner; the list-reviews endpoint returns
           # every user's pending review and reviews are world-postable on this
           # public repo, so a third party's draft must not be touched), and
-          # ONLY one with zero draft comments AND an empty body: the owner's
-          # pending review may be a human findings review being drafted in the
-          # GitHub UI (or autosaved via the API with its body already set),
-          # and deleting it would silently destroy the owner's draft findings
-          # - the body is the primary human findings payload. A loop leftover
-          # never carries comments or a body; one that does is left alone (it
-          # 422-blocks the POST - the warning below makes that visible
-          # instead).
+          # ONLY one provably not the owner's draft findings: zero draft
+          # comments AND an empty body, or a first-line
+          # <!-- dev-loop-review --> marker - an invisible HTML comment the
+          # owner cannot see or type in the GitHub UI, with the human findings
+          # channel non-marker by definition, so a marker-prefixed pending
+          # review is a loop leftover (e.g. a misbehaving actor POSTing a
+          # body-carrying review) that must self-heal too, or it 422-blocks
+          # every future POST. Anything else may be the owner's findings
+          # review being drafted in the GitHub UI (or autosaved via the API
+          # with its body already set) - the body is the primary human
+          # findings payload - and is left alone (it 422-blocks the POST; the
+          # warning below makes that visible instead).
           pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
             | jq -r --arg owner "$REPO_OWNER" '[.[] | select(.state == "PENDING") | select(.user.login == $owner)] | first | .id // empty')"
           if [ -n "$pending_review_id" ]; then
             # Fail closed: an unknown comment count or body means "maybe a
             # draft" - the POST can still 422, which escalates visibly, but a
-            # human draft is never destroyed on a query failure.
+            # human draft is never destroyed on a query failure. The marker
+            # check stays outside fail-closed: a marker-prefixed body proves
+            # loop origin even when the comment count is unknown.
             pending_comments="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id/comments" \
               --jq 'length' 2>/dev/null || echo unknown)"
             pending_body="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" \
               --jq '.body // ""' 2>/dev/null || echo unknown)"
-            if [ "$pending_comments" = "0" ] && [ -z "$(printf '%s' "$pending_body" | tr -d '[:space:]')" ]; then
-              echo "Deleting comment-less, body-less stale pending review $pending_review_id before posting (it would 422-block the POST)."
+            if { [ "$pending_comments" = "0" ] && [ -z "$(printf '%s' "$pending_body" | tr -d '[:space:]')" ]; } \
+              || printf '%s' "$pending_body" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
+              echo "Deleting stale pending review $pending_review_id before posting (comment- and body-less, or marker-prefixed i.e. provably a loop leftover, not a human draft; it would 422-block the POST)."
               gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
                 || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
             else
-              echo "::warning::Pending review $pending_review_id carries ${pending_comments} draft comment(s) or a non-empty draft body (likely the owner's review draft in the GitHub UI); NOT deleting it. If it is a loop leftover, delete it manually - it 422-blocks the review POST."
+              echo "::warning::Pending review $pending_review_id carries ${pending_comments} draft comment(s) or a non-marker draft body (likely the owner's review draft in the GitHub UI); NOT deleting it. If it is a loop leftover, delete it manually - it 422-blocks the review POST."
             fi
           fi
           cat > /tmp/dev-loop-review.json <<EOF

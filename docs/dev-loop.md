@@ -69,10 +69,16 @@ partitioned by review shape, not identity alone):
   The body text is mandatory: the job-level `if` pre-filters every empty-body review event
   before a runner is allocated, so a comment-only owner submission (fresh inline threads,
   no review body - not replies) is ignored exactly like a reply-only one; put at least a
-  summary sentence in the review body so the channel fires. If the head moves past a human
-  findings review while a fix for another review is in flight, the fixer never drops it
-  silently: it chains the reviewer on the moved head (fresh findings re-enter the loop;
-  escalation if the chain fails).
+  summary sentence in the review body so the channel fires. A findings review submitted while
+  the PR is a draft is never dispatched (the fixer gate skips drafts on every event) and has
+  no consumption path - marking the PR ready fires only a fresh reviewer run, whose newer
+  review supersedes the draft-time one on every resume path - so re-submit it once the PR is
+  ready. If the head moves past a human findings review while a fix for another review is in
+  flight, the fixer never drops it silently: it posts a PR comment marking the review stale
+  (re-submit on the current head if the findings persist) and chains the reviewer on the
+  moved head - a dedupe-bounded backstop (the fix push's own `synchronize` event usually
+  re-reviews the moved head first, and the fresh review re-surfaces the findings only if it
+  independently finds them; escalation if the chain fails).
   The review id stays consumable on every path: the fixer's verdict re-check is shape-based
   (only marker reviews are held to `Verdict: CHANGES_NEEDED`), so the post-step's built-in
   auto-retry and a manual `workflow_dispatch` re-dispatch of a human findings review work.
@@ -200,10 +206,13 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   not inside CI: CI stays fast, deterministic and trusted; the agentic, budgeted,
   escalation-capable run would otherwise make "the build is red" mean two different things.
 - **Review-post hardening**: before posting, the post-step deletes a stale pending review of
-  the token user **only if it carries zero draft comments AND an empty body**
-  (one-pending-review-per-user-per-PR is an API limit; a comment-less, body-less leftover from
-  a failed post 422-blocks every future POST - the PR #106 wedge; a pending review WITH draft
-  comments or a body may be the owner's findings review being drafted in the GitHub UI - the
+  the token user **only if it carries zero draft comments AND an empty body, or its body's
+  first line is the `<!-- dev-loop-review -->` marker**
+  (one-pending-review-per-user-per-PR is an API limit; a leftover from a failed post
+  422-blocks every future POST - the PR #106 wedge - and a marker-prefixed leftover, being
+  provably not a human draft (the marker is invisible in the GitHub UI and the human channel
+  is non-marker by definition), self-heals too; a pending review WITH draft comments or a
+  non-marker body may be the owner's findings review being drafted in the GitHub UI - the
   token user is the owner, and the body is the primary human findings payload - and is never
   deleted), validates the payload file is valid JSON, surfaces gh's full error object in the
   log instead of discarding it, and never dispatches the fixer with a non-numeric review id.

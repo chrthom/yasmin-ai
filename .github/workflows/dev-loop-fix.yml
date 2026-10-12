@@ -345,14 +345,27 @@ jobs:
               # tell consumption from a drop. Chain the reviewer instead: its
               # fresh review of the moved head re-enters the loop and its
               # head-SHA dedupe bounds it (mirrors the stale-verdict
-              # re-dispatch in dev-loop-review.yml). Escalate if the chain
-              # fails, so the owner knows the findings went unconsumed.
+              # re-dispatch in dev-loop-review.yml). The chain is only a
+              # dedupe-bounded backstop (the fix push's synchronize usually
+              # reviews the moved head first, and the fresh reviewer does not
+              # read the human review's body), so a PR comment also marks the
+              # review stale for the owner - never a review POST, which is
+              # the human findings channel. Escalate if the chain fails, so
+              # the owner knows the findings went unconsumed.
               echo "Head SHA ($head_sha_before) moved past the human findings review $review_id ($reviewed_sha) while a fix for another review ran; the findings were not consumed by it. Chaining the reviewer on the moved head."
-              if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+              if gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+                cat > /tmp/dev-loop-notice.md <<EOF
+          dev-loop notice: human findings review ${review_id} is stale - the head moved (${reviewed_sha} -> ${head_sha_before}) while a fix for another review ran, so its findings were not consumed by it. A fresh review of the moved head is queued (a backstop: its findings re-enter the loop only if the fresh review re-surfaces them); re-submit the review on the current head if the findings persist.
+
+          PR: #${PR_NUMBER}
+          Review: ${review_id}
+          EOF
+                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-notice.md >/dev/null || true
+              else
                 gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null || true
                 cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop fixer escalation: human findings review $review_id was skipped - the head moved ($reviewed_sha -> $head_sha_before) while a fix for another review ran, so its findings were not consumed - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
+          @$REPO_OWNER dev-loop fixer escalation: human findings review $review_id was skipped - the head moved ($reviewed_sha -> $head_sha_before) while a fix for another review ran, so its findings were not consumed - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
 
           PR: #${PR_NUMBER}
           Review: ${review_id}
