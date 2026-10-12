@@ -254,7 +254,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       // advances the watermark exactly like any completed run -- otherwise the window would
       // stay pinned to the last non-empty night forever.
       await setWatermark(collectedAt);
-      console.log('INFO Nothing to process (no conversations, no undelivered notes); skipping phases 2-7');
+      // The outbox claim is only honest when the read succeeded: after a failed notes read the
+      // outbox state is unknown (stderr already carries the error), so stdout must not say
+      // 'no undelivered notes'.
+      console.log(
+        'INFO Nothing to process (no conversations, ' +
+          (notesConsolidated ? 'no undelivered notes' : 'outbox state unknown (read failed)') +
+          '); skipping phases 2-7'
+      );
       return { jobId, status: 'completed', conversationsProcessed: 0, filesUpdated: 0, filesCreated: 0 };
     }
 
