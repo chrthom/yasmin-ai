@@ -159,8 +159,11 @@ jobs:
           # suffix, so "doesn't close #<N>" must match too. Both greps work
           # per line: a negated reference on one line does not void a
           # genuine closing reference on another line of the same body.
-          closing_re="(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://[^[:space:]')]*${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
-          negated_re="((^|[^[:alpha:]])(not|no|never|won'?t|cannot)|n'?t)[[:space:]]+(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://[^[:space:]')]*${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
+          # The URL form is host-pinned to github.com: GitHub only
+          # auto-closes on URLs that resolve to this repo's issue, so a
+          # look-alike URL on another host must not attribute the PR.
+          closing_re="(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://(www\.)?github\.com/${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
+          negated_re="((^|[^[:alpha:]])(not|no|never|won'?t|cannot)|n'?t)[[:space:]]+(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://(www\.)?github\.com/${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
           for pr in $timeline_prs; do
             if ! pr_body="$(gh pr view "$pr" --json body --jq '.body // ""' 2>"$WORK_DIR/pr-body-$pr.err")"; then
               echo "::warning::Could not read PR #$pr's body; the cross-referenced PR is not attributed to this issue."
@@ -219,11 +222,12 @@ jobs:
           # Runs whose artifacts predate the naming scheme are not
           # attributable and are skipped (docs/dev-loop.md).
           if ! GH_TOKEN="$GITHUB_TOKEN" gh api "repos/${GH_REPO}/actions/artifacts" --paginate < /dev/null > "$WORK_DIR/artifacts.raw.json" 2>"$WORK_DIR/artifacts.err"; then
+            # The report cannot be built without the artifact list, so the
+            # step fails red like the gate/Post transient failures - the
+            # one-shot issue-close event must not be lost to a green run.
             echo "::warning::Could not list the run artifacts; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
             cat "$WORK_DIR/artifacts.err" || true
-            # gh api --paginate emits one object per page; an empty file (not
-            # a bare []) keeps the page-flattening jq below well-formed.
-            : > "$WORK_DIR/artifacts.raw.json"
+            exit 1
           fi
           jq -s '[.[].artifacts[]?]' "$WORK_DIR/artifacts.raw.json" > "$WORK_DIR/artifacts.json"
           # With no linked PRs the reviewer/fixer branch is dropped from the
@@ -240,9 +244,12 @@ jobs:
                         + ")-[0-9]+-[0-9]+$"
                    else "" end)
               )) | [.id, .name, (.expired | tostring)] | @tsv' "$WORK_DIR/artifacts.json" > "$WORK_DIR/matched.tsv" 2>"$WORK_DIR/match.err"; then
+            # Same failure treatment as the artifact listing above: with no
+            # matched artifacts the report would silently vanish into a
+            # green run, so fail red and point at the backstop retry.
             echo "::warning::Artifact name matching failed; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
             cat "$WORK_DIR/match.err" || true
-            : > "$WORK_DIR/matched.tsv"
+            exit 1
           fi
           matched="$(grep -c . "$WORK_DIR/matched.tsv" || true)"
           echo "Matched $matched attributable dev-loop run artifact(s) for issue #$ISSUE_NUMBER."
