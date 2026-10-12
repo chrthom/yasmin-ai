@@ -4,9 +4,17 @@ on:
   pull_request_review:
     types: [submitted]
   pull_request:
-    # synchronize: conflict origin 1 - the PR's own push can make it CONFLICTING.
     # unlabeled: the needs-human resume path.
-    types: [synchronize, unlabeled]
+    # No synchronize trigger: conflict origin 1 (the PR's own push making it
+    # CONFLICTING) is covered by the reviewer's CI-gate red-dispatch - a
+    # conflicted head cannot produce green check runs, so the reviewer
+    # dispatches the fixer in no-findings mode (conflicts and/or failing CI,
+    # PR #107). A fixer synchronize trigger would race the reviewer's own
+    # synchronize run for the shared dev-loop-pr-<N> concurrency slot on
+    # every fix push and cancel the pending review (observed on PR #106,
+    # head a1bc960: the fixer's synchronize run started last, cancelled the
+    # pending reviewer, then gate-skipped - the loop stalled).
+    types: [unlabeled]
   # Conflict origin 2 (docs/dev-loop.md): a push to main can make open ready
   # PRs CONFLICTING. One scan per merge to main instead of one run per CI
   # completion on every branch; the scan itself costs only gh api calls, the
@@ -49,8 +57,6 @@ jobs:
     # gate below remains as defense in depth.
     if: >-
       !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
-      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.draft) &&
-      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.head.repo.id != github.event.repository.id) &&
       !(github.event_name == 'pull_request_review' && github.event.review.body == '')
     # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
     # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
@@ -138,39 +144,6 @@ jobs:
               echo "Dispatched conflict-only fixer run for PR #$pr."
             done
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Conflict origin 1: the PR's own synchronize can make it
-          # CONFLICTING. Only a genuinely conflicting PR proceeds; the fixer
-          # prompt handles a missing review (conflict-only run).
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "synchronize" ]; then
-            pr_json="$(gh pr view "$PR_NUMBER" --json labels,isDraft,mergeable,headRefOid)"
-            if ! printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
-              echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-              echo "PR #$PR_NUMBER is labeled needs-human; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            mergeable=""
-            for _ in 1 2 3 4 5; do
-              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
-              [ "$mergeable" != "UNKNOWN" ] && break
-              sleep 10
-            done
-            if [ "$mergeable" != "CONFLICTING" ]; then
-              echo "PR #$PR_NUMBER mergeable is '$mergeable', not CONFLICTING; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            branch="$(gh pr view "$PR_NUMBER" --json headRefName | jq -r '.headRefName')"
-            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-            echo "review_id=" >> "$GITHUB_OUTPUT"
-            echo "branch=$branch" >> "$GITHUB_OUTPUT"
-            echo "head_sha_before=$(printf '%s' "$pr_json" | jq -r '.headRefOid')" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
