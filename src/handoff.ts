@@ -7,6 +7,7 @@ import {
 } from './mistral/mistral_api';
 import { extractMessageText, isDialogueMessage } from './nightly/reflection';
 import { PREVIOUS_CONVERSATION_CAPTURE_RE, SUMMARY_CAPTURE_RE, cleanStoredText, xmlBlock } from './protocol';
+import { stripChannelHistoryBlock } from './channel_history';
 
 // When a live conversation is restarted (turn limit or poisoned-conversation respawn) the new one has no
 // history. The handoff replays a summary of the old conversation plus its last few turns inside a
@@ -36,7 +37,9 @@ export const extractTurns = (messages: ConversationMessage[]): { turns: Turn[]; 
       message.role === 'user' || (!message.role && !message.type.includes('output')) ? 'user' : 'assistant';
     const raw = extractMessageText(message.content);
     if (role === 'user' && priorContext === undefined) {
-      priorContext = PREVIOUS_CONVERSATION_CAPTURE_RE.exec(raw)?.[1]?.trim();
+      // Strip the channel-history block (untrusted third-party chatter) before capturing prior context, so
+      // a <previous_conversation> smuggled into the transcript can never be read as trusted harness input.
+      priorContext = PREVIOUS_CONVERSATION_CAPTURE_RE.exec(stripChannelHistoryBlock(raw))?.[1]?.trim();
     }
     const text = role === 'user' ? cleanStoredText(raw) : raw.trim();
     if (text.length > 0) {

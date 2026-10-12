@@ -10,6 +10,7 @@ export const SynologyRequestSchema = z.object({
     .min(1)
     .max(config.validation.maxUsernameLength)
     .regex(/^[a-zA-Z0-9_-]+$/),
+  channel_id: z.coerce.number().int().nonnegative().optional(),
   post_id: z.coerce.number().int().nonnegative().optional(),
   thread_id: z.coerce.number().int().nonnegative().optional(),
   timestamp: z.coerce.number().int().positive().optional()

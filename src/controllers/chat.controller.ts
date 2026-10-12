@@ -4,6 +4,7 @@ import { config } from '../config';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
 import { createRequestLogger } from '../middleware/requestTracing';
+import { buildChannelHistoryBlock } from '../channel_history';
 
 interface ChatControllerOptions {
   token: string;
@@ -11,6 +12,7 @@ interface ChatControllerOptions {
   shortAnswer: boolean;
   stripPrefix?: string;
   sendToSynology?: boolean;
+  includeChannelHistory?: boolean;
 }
 
 async function processRequest(
@@ -18,15 +20,45 @@ async function processRequest(
   synologyClient: SynologyClient,
   userText: string,
   username: string,
-  shortAnswer: boolean
+  shortAnswer: boolean,
+  channelContext?: string
 ): Promise<string> {
   try {
-    const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
+    let prompt = userText;
+    if (channelContext) {
+      prompt = `${channelContext}\n\n${userText}`;
+    }
+    const outputs = await chatAgent.processRequest(prompt, username, shortAnswer);
     const text = chatAgent.convertMultiPart(outputs);
     return text ? synologyClient.formatAnswer(text) : '';
   } catch (error) {
     console.error('Error in processRequest:', error);
     throw new Error('Failed to process chat request');
+  }
+}
+
+async function fetchChannelHistory(
+  synologyClient: SynologyClient,
+  logger: ReturnType<typeof createRequestLogger>,
+  channelId: number,
+  postId: number,
+  botUserId: number,
+  stripPrefix: string | undefined,
+  token: string
+): Promise<string | undefined> {
+  try {
+    const posts = await synologyClient.fetchPreviousMessages(
+      channelId,
+      postId,
+      config.synology.history.prevCount,
+      token
+    );
+    const transcript = synologyClient.formatChannelHistory(posts, botUserId, stripPrefix);
+    if (!transcript) return undefined;
+    return buildChannelHistoryBlock(transcript);
+  } catch (error) {
+    logger.warn('Failed to fetch channel history; continuing without it', { error });
+    return undefined;
   }
 }
 
@@ -60,12 +92,25 @@ export function createChatController(
         userText = userText.replace(options.stripPrefix, '').trim();
       }
 
+      let channelContext: string | undefined;
+      if (options.includeChannelHistory && reqBody.channel_id && reqBody.post_id) {
+        channelContext = await fetchChannelHistory(
+          synologyClient,
+          logger,
+          reqBody.channel_id,
+          reqBody.post_id,
+          config.synology.history.botUserId,
+          options.stripPrefix,
+          options.token
+        );
+      }
       const answer = await processRequest(
         chatAgent,
         synologyClient,
         userText,
         reqBody.username,
-        options.shortAnswer
+        options.shortAnswer,
+        channelContext
       );
 
       if (options.responseStatus === 200) {
@@ -100,8 +145,9 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
     token: config.synology.tokens.slash,
     responseStatus: 200,
     shortAnswer: true,
-    stripPrefix: '/yasmin',
-    sendToSynology: false
+    stripPrefix: config.synology.history.slashPrefix,
+    sendToSynology: false,
+    includeChannelHistory: true
   });
 }
 
@@ -110,6 +156,7 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
     token: config.synology.tokens.group,
     responseStatus: 200,
     shortAnswer: true,
-    sendToSynology: false
+    sendToSynology: false,
+    includeChannelHistory: true
   });
 }

@@ -1,4 +1,5 @@
 import { config } from './config';
+import { stripChannelHistoryBlock } from './channel_history';
 
 /**
  * Single source of truth for the XML protocol tags the live agent injects into user prompts,
@@ -56,13 +57,13 @@ export const shortAnswerHint = (): string =>
   `Your answer must be shorter than ${config.chat.shortAnswerMaxChars} characters.`;
 
 /**
- * Removes everything the harness (not the user) injected into a stored user message: handoff
- * blocks, context entries, the title manifest, the "You are talking to" line, and the
- * short-answer hint built by shortAnswerHint() -- the hint regex is built from the same
+ * Removes everything the harness (not the user) injected into a stored user message: channel
+ * history, handoff blocks, context entries, the title manifest, the "You are talking to" line,
+ * and the short-answer hint built by shortAnswerHint() -- the hint regex is built from the same
  * config value (escaped), so prompt and cleanup can no longer drift apart.
  */
 export const cleanStoredText = (text: string): string =>
-  text
+  stripChannelHistoryBlock(text)
     .replace(PREVIOUS_CONVERSATION_BLOCK_RE, '')
     .replace(AVAILABLE_CONTEXT_ENTRIES_BLOCK_RE, '')
     .replace(CONTEXT_ENTRY_BLOCK_RE, '')
