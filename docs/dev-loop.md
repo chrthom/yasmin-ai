@@ -46,7 +46,7 @@ picking the item up on future events.
 | `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate |
 | `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN`, human reviews and **reply-only submissions (empty review body)** start nothing - a job-level `if` skips them before runner allocation, because the fixer's own inline replies would otherwise spawn fixer runs whose concurrency-slot claims cancel a pending re-review of the just-pushed fix (the PR #106 race) |
-| `pull_request: [synchronize]` + `mergeable == CONFLICTING` | fixer (conflict-only run) | conflict origin 1: the PR's own push made it conflicting; one fixer run per head SHA |
+| (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106) |
 | `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
 | `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
 | `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
@@ -64,6 +64,9 @@ Non-events by design:
 
 - `pull_request: [converted_to_draft]` is **never a trigger** — a draft PR is simply never
   reviewed; no dispatch is needed to express that.
+- The **fixer has no `synchronize` trigger**: a fix push spawns only the reviewer, so the
+  two roles never race for the shared concurrency slot (PR #106 stall); conflict origin 1
+  is covered by the reviewer's red-dispatch instead.
 - `pull_request: [synchronize]` on **draft** PRs is a non-event (no review of intermediate
   draft states; the loop resumes when a human flips the PR ready, which fires
   `ready_for_review`).
@@ -97,9 +100,10 @@ There is no separate merger role. The fixer's scope grows by merge-conflict reso
   merge commit, resolving both sides minimally, then proceeds to the findings (conflicts first:
   `npm run build`/`npm test` cannot run meaningfully on a conflicted tree).
 - The conflict triggers dispatch the **same** fixer workflow with a conflict-only task: no
-  open `CHANGES_NEEDED` review, only the conflict. Origin 1 is the PR's own `synchronize`
-  (gate checks `CONFLICTING` live); origin 2 is a `push` to `main`, whose gate scans open
-  dev-loop PRs and dispatches one conflict-only run per conflicting PR.
+  open `CHANGES_NEEDED` review, only the conflict. Origin 1 is the reviewer's red-dispatch
+  (the PR's own push made it conflicting; the conflicted head's checks are red); origin 2
+  is a `push` to `main`, whose gate scans open dev-loop PRs and dispatches one
+  conflict-only run per conflicting PR.
 - Conflict-dispatch dedupe: one fixer run per head SHA — the dispatched conflict-only run
   re-checks `CONFLICTING` live and skips if the head has already moved (another fixer
   resolved it); the next push (or a manual `workflow_dispatch`) moves the head and re-offers.
