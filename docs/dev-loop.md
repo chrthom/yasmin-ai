@@ -43,7 +43,7 @@ picking the item up on future events.
 
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
-| `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if `needs-human` or a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue |
+| `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if `needs-human` or a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. No `unlabeled` trigger: `needs-human` is ignored on issues (removal is not a resume event; `workflow_dispatch` is the retry backstop) |
 | `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
 | `workflow_run` (`ci.yml` completed) + `mergeable == CONFLICTING` | fixer (conflict-only run) | covers both conflict origins: PR diverges, or `main` moved under it; one fixer run per head SHA |
@@ -56,7 +56,9 @@ any label other than `dev-loop`, `unlabeled` for any label other than `needs-hum
 the fixer a `workflow_run` for another workflow or for the `main` branch (no PR, no conflict
 path). This keeps the loop's own state transitions (escalations adding/removing `needs-human`)
 from spawning gated no-op runs; the in-job gate remains as defense in depth and still enforces
-label/draft/fork/SHA rules against the live API state.
+label/draft/fork/SHA rules against the live API state. On issues, `needs-human` is ignored
+entirely: the implementer has no `unlabeled` trigger, so removing the label never re-runs it
+(`workflow_dispatch` is the retry backstop).
 
 Non-events by design:
 

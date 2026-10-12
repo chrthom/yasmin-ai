@@ -2,7 +2,10 @@ name: Dev Loop Implement
 
 on:
   issues:
-    types: [opened, reopened, labeled, unlabeled]
+    # No unlabeled trigger: needs-human is ignored on issues, so removing it is
+    # not a resume event for the implementer - the manual backstop
+    # (workflow_dispatch) covers a retry after a needs-human escalation.
+    types: [opened, reopened, labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -28,13 +31,11 @@ concurrency:
 jobs:
   implement:
     name: Implementer (issue -> draft PR)
-    # Job-level event filter (docs/dev-loop.md): a labeled event for any label
-    # other than dev-loop, or an unlabeled event for any label other than
-    # needs-human, can never start the implementer - skip before a runner is
-    # allocated. The gate below remains as defense in depth.
+    # Job-level event filter (docs/dev-loop.md): a labeled event for any
+    # label other than dev-loop can never start the implementer - skip before
+    # a runner is allocated. The gate below remains as defense in depth.
     if: >-
-      !(github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name != 'dev-loop') &&
-      !(github.event_name == 'issues' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human')
+      !(github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name != 'dev-loop')
     runs-on: ubuntu-latest
     # 15 min above --time-limit (5400 s = 90 min), per docs/dev-loop.md budgets table
     timeout-minutes: 105
@@ -59,7 +60,6 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           EVENT_ACTION: ${{ github.event.action }}
           LABELED_NAME: ${{ github.event.label.name }}
-          UNLABELED_NAME: ${{ github.event.label.name }}
         run: |
           set -eu
           if [ -z "$ISSUE_NUMBER" ]; then
@@ -71,11 +71,6 @@ jobs:
           # no loop. `labeled: dev-loop` starts the loop on an existing issue.
           if [ "$EVENT_ACTION" = "labeled" ] && [ "$LABELED_NAME" != "dev-loop" ]; then
             echo "Labeled '$LABELED_NAME', not dev-loop; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$EVENT_ACTION" = "unlabeled" ] && [ "$UNLABELED_NAME" != "needs-human" ]; then
-            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
