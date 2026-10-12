@@ -107,8 +107,8 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          # synchronize/unlabeled carry the PR in the payload; push does not
-          # (the push-path scan below resolves candidate PRs itself).
+          # unlabeled/pull_request_review carry the PR in the payload; push does
+          # not (the push-path scan below resolves candidate PRs itself).
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
