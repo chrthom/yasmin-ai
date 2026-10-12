@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; none = conflict-only no-findings run (resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
+        description: Review id whose findings to fix; none = no-findings run (conflict scan and red-CI dispatch; resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
         required: false
         default: ''
         type: string
@@ -118,7 +118,7 @@ jobs:
             prs_json="[]"
             for _ in 1 2 3 4 5; do
               prs_json="$(gh pr list --state open --label dev-loop -L 200 \
-                --json number,headRefOid,headRepository,isDraft,mergeable)"
+                --json number,headRepository,isDraft,mergeable)"
               if ! printf '%s' "$prs_json" | jq -e \
                 'any(.[]; .isDraft == false and .headRepository.id == $repo_id and .mergeable == "UNKNOWN")' \
                 --arg repo_id "$REPO_NODE_ID" >/dev/null; then
@@ -142,7 +142,7 @@ jobs:
               exit 0
             fi
             # Dispatch one conflict-only fixer run per candidate PR via
-            # workflow_dispatch; review_id=none is the conflict-only sentinel
+            # workflow_dispatch; review_id=none is the no-findings sentinel
             # the gate resolves as an explicit no-findings run (an empty
             # review id would fall into the gate's resume resolution and
             # pull an outstanding CHANGES_NEEDED review's findings in). The
@@ -171,6 +171,9 @@ jobs:
           # Fork PRs: never touch them (pull_request_review events carry the PR too).
           # Compare repository IDs: head.repo.id and repository.id share the
           # repository ID space; the owner is a user/org ID and never matches.
+          # workflow_dispatch runs carry no PR in their event payload, so this
+          # check never fires there — the push scan's same-repo candidate
+          # filter is the fork gate for scan-dispatched runs (docs/dev-loop.md).
           if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$REPO_ID" ]; then
             echo "PR #$PR_NUMBER is from a fork; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -216,11 +219,11 @@ jobs:
           if [ -n "$EVENT_REVIEW_ID" ]; then
             review_id="$EVENT_REVIEW_ID"
           elif [ "$REVIEW_ID_INPUT" = "none" ]; then
-            # review_id=none is the conflict-only sentinel (the push-to-main
-            # scan, the post-step's no-findings retry): an explicit
-            # no-findings run. An empty input would fall through to the
-            # resume resolution below and pull an outstanding CHANGES_NEEDED
-            # review's findings in.
+            # review_id=none is the no-findings sentinel (the push-to-main
+            # scan, the reviewer's red-CI dispatch, the post-step's
+            # no-findings retry): an explicit no-findings run. An empty input
+            # would fall through to the resume resolution below and pull an
+            # outstanding CHANGES_NEEDED review's findings in.
             review_id=""
           elif [ -n "$REVIEW_ID_INPUT" ]; then
             review_id="$REVIEW_ID_INPUT"
@@ -239,11 +242,11 @@ jobs:
               | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
           if [ -z "$review_id" ]; then
-            # No findings to fix: the conflict-only sentinel resolved to an
-            # empty review id above (the push-to-main scan, the post-step's
-            # no-findings retry), or the resume resolution found no
-            # outstanding CHANGES_NEEDED review (the reviewer's red-CI
-            # dispatch with an empty input lands there). Re-check live
+            # No findings to fix: the no-findings sentinel resolved to an
+            # empty review id above (the push-to-main scan, the reviewer's
+            # red-CI dispatch, the post-step's no-findings retry), or the
+            # resume resolution found no outstanding CHANGES_NEEDED review
+            # (a manual dispatch with an empty input). Re-check live
             # that there is actually work to do - the dispatch may queue
             # behind another fixer run that already resolved the conflict or
             # the CI failure. Proceed without findings; the fixer prompt
