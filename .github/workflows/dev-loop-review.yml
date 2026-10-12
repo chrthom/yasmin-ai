@@ -133,6 +133,69 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # CI gate (docs/dev-loop.md): review only a CI-green, format-stable
+          # head. The reviewer would otherwise burn a full review cycle on a
+          # red head whose findings the fixer produces anyway, or race the
+          # auto-formatter's push. Poll the head's check runs (bounded, fail
+          # open to the pre-gate behavior on timeout):
+          #   - green + tip unchanged -> proceed to the review
+          #   - red + tip unchanged   -> dispatch the fixer (CI-failure mode,
+          #                               empty review id) and skip
+          #   - tip moved             -> skip: the push (e.g. chore: auto-format
+          #                               from ci.yml) fires synchronize, which
+          #                               starts a fresh reviewer on the new head
+          ci_wait_start=$(date +%s)
+          ci_state=""
+          while [ $(( $(date +%s) - ci_wait_start )) -lt 1200 ]; do
+            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            if [ "$tip_now" != "$head_sha" ]; then
+              ci_state="moved"
+              break
+            fi
+            ci_json="$(gh api "repos/${GH_REPO}/commits/${head_sha}/check-runs" 2>/dev/null || true)"
+            ci_summary="$(printf '%s' "$ci_json" \
+              | jq -r '[.check_runs[]?] | {total: length, done: [.[] | select(.status == "completed")] | length, failed: [.[] | select(.status == "completed" and .conclusion == "failure")] | length} | @json' 2>/dev/null || true)"
+            ci_total="$(printf '%s' "$ci_summary" | jq -r '.total // 0' 2>/dev/null || echo 0)"
+            ci_done="$(printf '%s' "$ci_summary" | jq -r '.done // 0' 2>/dev/null || echo 0)"
+            ci_failed="$(printf '%s' "$ci_summary" | jq -r '.failed // 0' 2>/dev/null || echo 0)"
+            if [ "$ci_total" -gt 0 ] && [ "$ci_done" -ge "$ci_total" ]; then
+              if [ "$ci_failed" -gt 0 ]; then
+                ci_state="red"
+              else
+                ci_state="green"
+              fi
+              break
+            fi
+            sleep 30
+          done
+          if [ "${ci_state:-}" = "moved" ]; then
+            echo "Head moved ($head_sha -> $tip_now) while waiting for CI (auto-format or another push); skipping. The new head's synchronize event re-offers the review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${ci_state:-}" = "red" ]; then
+            # Re-check the tip right before dispatching: a format push racing
+            # the poll would otherwise send the fixer after a stale red state.
+            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            if [ "$tip_now" != "$head_sha" ]; then
+              echo "Head moved ($head_sha -> $tip_now) after red CI; skipping. The new head's synchronize event re-offers the review."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "CI is red on head $head_sha with the tip unchanged; dispatching the fixer (CI-failure mode, no review findings)."
+            if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="" -f retry=0; then
+              echo "Fixer dispatched for the CI failure; its push will re-enter the loop via synchronize."
+            else
+              echo "::warning::Failed to dispatch the fixer for the red CI; proceeding with the review instead."
+            fi
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${ci_state:-}" = "" ]; then
+            echo "CI wait timed out or no check runs on head $head_sha; proceeding with the review (fail open)."
+          else
+            echo "CI is green on head $head_sha with the tip unchanged; proceeding with the review."
+          fi
           # Iteration cap: count marker reviews in the current escalation epoch
           # (since the last dev-loop-escalation comment). At MAX_ITERATIONS the
           # loop parks the PR instead of dispatching - agents cannot see or
