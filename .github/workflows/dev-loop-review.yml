@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   review:
-    name: Reviewer (PR -> marker review -> state post-step)
+    name: Reviewer
     # Job-level event filter (docs/dev-loop.md): a labeled event for any label
     # other than dev-loop, or an unlabeled event for any label other than
     # needs-human, can never start the reviewer - skip before a runner is
