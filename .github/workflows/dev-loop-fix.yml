@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; empty = conflict-only run if the PR is conflicting, otherwise the latest CHANGES_NEEDED marker review
+        description: Review id whose findings to fix; empty = no-findings run (resolve merge conflicts and/or failing CI checks)
         required: false
         default: ''
         type: string
@@ -224,24 +224,38 @@ jobs:
               | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
           if [ -z "$review_id" ]; then
-            # Dispatch with an empty review id: conflict-only run (the
-            # push-to-main scan and the synchronize path resolve to this).
-            # Re-check live that the PR is actually CONFLICTING: the dispatch
-            # may queue behind another fixer run that already resolved the
-            # conflict. Proceed without findings; the fixer prompt handles a
-            # missing review.
+            # Dispatch with an empty review id: no-findings run (the
+            # push-to-main scan, the synchronize conflict path and the
+            # reviewer's red-CI dispatch resolve to this). Re-check live
+            # that there is actually work to do - the dispatch may queue
+            # behind another fixer run that already resolved the conflict or
+            # the CI failure. Proceed without findings; the fixer prompt
+            # handles a missing review (conflict and/or CI-failure task).
             mergeable=""
             for _ in 1 2 3 4 5; do
               mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
               [ "$mergeable" != "UNKNOWN" ] && break
               sleep 10
             done
-            if [ "$mergeable" != "CONFLICTING" ]; then
-              echo "PR #$PR_NUMBER mergeable is '$mergeable', not CONFLICTING; nothing conflict-only to do. Skipping."
+            head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            ci_red="false"
+            ci_json="$(gh api "repos/${GH_REPO}/commits/${head_tip}/check-runs" 2>/dev/null || true)"
+            # Exclude the dev-loop's own check runs (job names kept in sync
+            # with the three dev-loop workflows): a failed Reviewer run on
+            # the same SHA is not a CI failure to fix.
+            ci_failed="$(printf '%s' "$ci_json" \
+              | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
+            [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
+            if [ "$mergeable" != "CONFLICTING" ] && [ "$ci_red" != "true" ]; then
+              echo "PR #$PR_NUMBER mergeable is '$mergeable' and CI is not red; nothing conflict- or CI-failure-related to do. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "PR #$PR_NUMBER is CONFLICTING; treating this as a conflict-only run."
+            if [ "$mergeable" = "CONFLICTING" ]; then
+              echo "PR #$PR_NUMBER is CONFLICTING; treating this as a conflict-only run (plus CI failures if any)."
+            else
+              echo "PR #$PR_NUMBER has red CI checks on head $head_tip; treating this as a CI-failure run (plus conflicts if any)."
+            fi
           fi
           if [ -n "$review_id" ]; then
             review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
