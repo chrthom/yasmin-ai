@@ -606,7 +606,12 @@ jobs:
           dev-loop review of $REVIEWED_SHA (cost: \$$cost).
 
           $all_findings"
-            jq --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
+            # -n (null input): without it jq emits the object once per input
+            # document, and a step with no stdin produces zero documents - an
+            # empty payload file that then fails the validation below (the
+            # PR #113 escalation; the fallback had never run before #108
+            # surfaced it).
+            jq -n --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
               '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
               > /tmp/dev-loop-review.json
             if ! jq -e . /tmp/dev-loop-review.json >/dev/null 2>&1; then
