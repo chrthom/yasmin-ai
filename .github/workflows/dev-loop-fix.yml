@@ -45,7 +45,17 @@ permissions:
   actions: write
 
 concurrency:
-  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}
+  # Resume events (unlabeled: needs-human removed) fire BOTH the reviewer and
+  # the fixer in the same second; sharing one group made the newer pending run
+  # cancel the other - observed on PR #115: the fixer resume run cancelled the
+  # pending re-review, then gate-skipped, leaving the head unreviewed. The
+  # unlabeled-resume fixer runs into a distinct sub-group so both resume paths
+  # run: a fix push landing mid-review is already handled by the reviewer's
+  # stale-head re-dispatch (the older verdict is never acted on). All other
+  # events keep the shared group (review/fix serialization on normal cycles).
+  group: >-
+    dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}${{
+    (github.event_name == 'pull_request' && github.event.action == 'unlabeled') && '-resume' || '' }}
   cancel-in-progress: false
 
 jobs:
