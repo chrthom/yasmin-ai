@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   fix:
-    name: Fixer (review findings and/or conflict -> fix commits / merge commit)
+    name: Fixer
     # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
     # label other than needs-human, or a synchronize on a draft or fork PR,
     # can never start the fixer - skip before a runner is allocated. The
