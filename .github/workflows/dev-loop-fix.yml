@@ -37,6 +37,11 @@ on:
         required: false
         default: '0'
         type: string
+      moved_by_fix:
+        description: Internal, set by the auto-retry only - '1' when the dispatching attempt observed the head move (do not edit)
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: write
@@ -102,6 +107,11 @@ jobs:
           # Retry counter of a workflow_dispatch re-run (the post-step's
           # auto-retry passes retry=1); empty on event triggers, hence || '0'.
           RETRY_INPUT: ${{ inputs.retry || '0' }}
+          # Auto-retry attribution flag: '1' when the attempt dispatching the
+          # retry observed the head move past its start SHA (its own pushed
+          # fix). The stale-review retry branch plain-skips only on an
+          # attributed movement; empty on event triggers, hence || '0'.
+          MOVED_BY_FIX_INPUT: ${{ inputs.moved_by_fix || '0' }}
         run: |
           set -eu
           if [ -z "$PR_NUMBER" ]; then
@@ -311,10 +321,13 @@ jobs:
           # landed since - this review is already being acted on. Skip. A human
           # findings review is the exception: the moving commit fixed a DIFFERENT
           # review and never saw its findings, so it is chained to the reviewer
-          # below instead of dropped - except on a workflow_dispatch retry
-          # (retry >= 1), which re-submits the SAME review id after the first
-          # attempt already consumed it and pushed its fix: the movement is
-          # expected, and the retry skips like a marker review. On the
+          # below instead of dropped. A workflow_dispatch retry re-submits
+          # the SAME review id after the first attempt already consumed it, so
+          # the movement is expected ONLY when it is that attempt's own pushed
+          # fix: the auto-retry dispatch carries the post-step's
+          # head-before/after observation (moved_by_fix), an attributed
+          # movement skips like a marker review, and an unattributed one
+          # falls through to the notice+chain branch. On the
           # unlabeled resume path the human decides a re-fix is needed, so the
           # check does not apply. Exception: if every commit between the reviewed
           # SHA and the current head is a CI auto-format commit (message
@@ -343,17 +356,24 @@ jobs:
               echo "Head SHA ($head_sha_before) already moved past the reviewed SHA ($reviewed_sha) by a non-auto-format commit; a fix for review $review_id already ran. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
-            elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null; then
+            elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null && [ "${MOVED_BY_FIX_INPUT:-0}" = "1" ]; then
               # A workflow_dispatch retry (the post-step's auto-retry on an
               # unparseable outcome) re-submits the SAME review id after the
-              # first attempt already consumed it: the head moving past the
-              # reviewed SHA is that attempt's own pushed fix, not another
-              # review's. Plain skip like the marker branch above - no notice,
-              # no reviewer chain: the first attempt's push fired synchronize,
-              # which already re-reviews the moved head. A malformed manual
-              # retry value fails the test and falls through to the branch
-              # below (the pre-fix behavior).
-              echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT); the first attempt already pushed a fix for review $review_id. Skipping."
+              # first attempt already consumed it. Plain-skip ONLY on an
+              # attributed movement (moved_by_fix=1): the dispatching
+              # post-step observed the head move while its run still held the
+              # per-PR concurrency slot, so the movement is that attempt's
+              # own pushed fix - not another review's. Plain skip like the
+              # marker branch above - no notice, no reviewer chain: the
+              # first attempt's push fired synchronize, which already
+              # re-reviews the moved head. An unattributed movement
+              # (moved_by_fix=0: the first attempt pushed nothing, and a
+              # fixer run for another review, queued behind it in the FIFO
+              # per-PR concurrency group, moved the head in between), a
+              # malformed manual retry value and a manual re-dispatch
+              # (defaults) all fail a test above and fall through to the
+              # notice+chain branch below - never a silent drop.
+              echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT, moved_by_fix=$MOVED_BY_FIX_INPUT) whose first attempt pushed the fix for review $review_id. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             else
@@ -361,7 +381,10 @@ jobs:
               # dropped: the moving commit fixed another review (a fixer run
               # already in flight when the owner submitted) and never saw
               # these findings - no reply, no signal, and the owner cannot
-              # tell consumption from a drop. Chain the reviewer instead: its
+              # tell consumption from a drop. A retry whose first attempt
+              # pushed nothing (moved_by_fix=0) lands here too: the movement
+              # is not that attempt's fix, so the findings were equally not
+              # consumed by it. Chain the reviewer instead: its
               # fresh review of the moved head re-enters the loop and its
               # head-SHA dedupe bounds it (mirrors the stale-verdict
               # re-dispatch in dev-loop-review.yml). The chain is only a
@@ -381,7 +404,13 @@ jobs:
           EOF
                 gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-notice.md >/dev/null || true
               else
-                gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null || true
+                # Unguarded on purpose (no || true), matching the post-step's
+                # escalate(): if both gh calls fail here the gate step must go
+                # red instead of ending a green skipped run with no PR-visible
+                # signal - this branch is the one place the gate promises an
+                # escalation for unconsumed human findings (set -e fails the
+                # step on a gh error).
+                gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
                 cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @$REPO_OWNER dev-loop fixer escalation: human findings review $review_id was skipped - the head moved ($reviewed_sha -> $head_sha_before) while a fix for another review ran, so its findings were not consumed - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
@@ -389,7 +418,7 @@ jobs:
           PR: #${PR_NUMBER}
           Review: ${review_id}
           EOF
-                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null || true
+                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
               fi
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
@@ -692,11 +721,21 @@ jobs:
               # transient, unlike a deterministic parse failure. Retry once via
               # workflow_dispatch, passing the same review id so the gate does
               # not have to re-resolve it; the counter in the input prevents a
-              # loop. No fix was pushed, so the head is unchanged and the retry
-              # runs on the same state.
+              # loop. A truncated run may or may not have pushed: observe the
+              # head and pass the observation as moved_by_fix, so the retry's
+              # stale-review branch can attribute a movement - plain-skip only
+              # when this attempt's own push moved the head, while a movement
+              # by a fixer run for another review, queued behind this one in
+              # the FIFO per-PR concurrency group, goes to the notice+chain
+              # branch instead of a silent skip.
+              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+              moved_by_fix=0
+              if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
+                moved_by_fix=1
+              fi
               if [ "$RETRY_COUNT" -lt 1 ] \
-                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1; then
-                echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1). Transcript artifact preserved for diagnosis."
+                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1 -f moved_by_fix="$moved_by_fix"; then
+                echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1, moved_by_fix=$moved_by_fix). Transcript artifact preserved for diagnosis."
                 exit 0
               fi
               escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"

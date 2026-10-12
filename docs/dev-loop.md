@@ -82,6 +82,11 @@ partitioned by review shape, not identity alone):
   The review id stays consumable on every path: the fixer's verdict re-check is shape-based
   (only marker reviews are held to `Verdict: CHANGES_NEEDED`), so the post-step's built-in
   auto-retry and a manual `workflow_dispatch` re-dispatch of a human findings review work.
+  The retry's stale-review skip is attribution-aware: the auto-retry carries the first
+  attempt's head-before/after observation (`moved_by_fix`), so a head moved by that
+  attempt's own pushed fix plain-skips (its findings were consumed; `synchronize`
+  re-reviews the moved head), while a head moved by another review's fix gets the
+  stale-review notice and reviewer chain - the unattributed case is never a silent skip.
 - **Answers while parked** (`needs-human`): inline replies to review comments and answers under
   the `<!-- dev-loop-escalation -->` comment are NOT triggers (empty-body replies are
   pre-filtered); they are consumed by the resume path - removing `needs-human` re-fixes the
