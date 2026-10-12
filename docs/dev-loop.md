@@ -190,7 +190,8 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
   `opencode-(reviewer|fixer)-output-pr-<M>-…` for the PR roles — the only artifact metadata
   that can be filtered without a download (run metadata carries neither the issue nor the
   dispatch inputs). The report resolves the issue's PRs two ways — cross-referenced PRs whose
-  live body still carries a closing keyword reference (`Closes|Fixes|Resolves #<N>`; a
+  live body still carries a closing keyword reference (`Closes|Fixes|Resolves #<N>` or the
+  issue-URL form; a
   cross-reference event fires for any mention, so the mention alone must not attribute costs)
   plus the `vibe/issue-<N>-*` branch convention — then matches artifact names. The
   association assumes the loop's one-PR-per-issue convention: a PR that closes (or
@@ -206,7 +207,10 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
   role and links every run.
 - **Retention**: artifacts expire with the default retention (90 days); an issue closed
   after some of its artifacts expired reports over what remains and notes the unavailable
-  count (the totals undercount those runs).
+  count (the totals undercount those runs). A reviewer/fixer run still in flight when the
+  issue closes uploads its artifact after the close-event report has run, so that run is
+  missing from the totals until someone re-runs the `workflow_dispatch` backstop (the
+  marker-deduped edit then folds the late run in).
 - **Idempotency**: the report comment is marker-deduped
   (`<!-- dev-loop-cost-report -->`); a re-run edits the existing comment instead of
   double-posting.

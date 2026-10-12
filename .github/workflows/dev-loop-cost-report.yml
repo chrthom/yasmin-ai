@@ -65,6 +65,18 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # `gh issue view` also resolves PR numbers (PRs share the issue
+          # number space), so a typo'd workflow_dispatch input pointing at
+          # a PR would pass the live-state gate below and post the report
+          # on the PR (the issue-comments API accepts PRs) - a number that
+          # resolves to a PR is refused outright. The automatic issues event
+          # always carries a real issue number, so this only guards the
+          # backstop's manual input.
+          if gh pr view "$ISSUE_NUMBER" --json number >/dev/null 2>&1; then
+            echo "::warning::$ISSUE_NUMBER is a pull request, not an issue; refusing to produce a cost report."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Live-state gate: the issue must be closed as completed and carry
           # the dev-loop label (docs/dev-loop.md opt-in). stateReason from
           # `gh issue view` is upper case; the event payload's state_reason
@@ -108,9 +120,10 @@ jobs:
           # A cross-reference timeline event fires for ANY mention of the
           # issue (comments, review bodies, edited-away text), so a
           # cross-referenced PR is only attributed when its live body
-          # still carries a Closes|Fixes|Resolves #<N> keyword reference
-          # - otherwise unrelated PRs' reviewer/fixer costs would be
-          # double-counted across issues.
+          # still carries a closing reference - Closes|Fixes|Resolves #<N>
+          # or the issue-URL form GitHub also auto-closes on - otherwise
+          # unrelated PRs' reviewer/fixer costs would be double-counted
+          # across issues.
           timeline_prs="$(jq -s 'add // []
             | [.[] | select(.event == "cross-referenced")
                        | .source.issue
@@ -123,16 +136,21 @@ jobs:
               cat "$WORK_DIR/pr-body-$pr.err" || true
               continue
             fi
-            if printf '%s\n' "$pr_body" | grep -Eqi "(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)#${ISSUE_NUMBER}([^0-9]|$)"; then
+            if printf '%s\n' "$pr_body" | grep -Eqi "(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://[^[:space:]')]*${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"; then
               closing_prs+="${pr}"$'\n'
             fi
           done
-          if ! gh pr list --state all --limit 1000 --json number,headRefName > "$WORK_DIR/prlist.json" 2>"$WORK_DIR/prlist.err"; then
+          # Branch-convention scan over the FULL PR list: `gh pr list` caps
+          # at --limit, so the raw pulls API is paginated to the end instead
+          # (--paginate emits one array per page; the add below flattens them
+          # like the timeline jq above).
+          if ! gh api "repos/${GH_REPO}/pulls?state=all&per_page=100" --paginate < /dev/null > "$WORK_DIR/prlist.raw.json" 2>"$WORK_DIR/prlist.err"; then
             echo "::warning::Could not list the repository's PRs for the branch-convention scan; the report may undercount runs from branch-matched PRs."
             cat "$WORK_DIR/prlist.err" || true
-            printf '[]' > "$WORK_DIR/prlist.json"
+            printf '[]' > "$WORK_DIR/prlist.raw.json"
           fi
-          branch_prs="$(jq -r --arg n "$ISSUE_NUMBER" '[.[] | select(.headRefName | startswith("vibe/issue-" + $n + "-")) | .number] | .[]' "$WORK_DIR/prlist.json" 2>/dev/null || true)"
+          branch_prs="$(jq -s --arg n "$ISSUE_NUMBER" 'add // []
+            | [.[] | select(.head.ref | startswith("vibe/issue-" + $n + "-")) | .number] | .[]' "$WORK_DIR/prlist.raw.json" 2>/dev/null || true)"
           linked_prs="$(printf '%s\n%s\n' "$closing_prs" "$branch_prs" | sed '/^$/d' | sort -un)"
           prs_json="$(printf '[%s]' "$(printf '%s\n' "$linked_prs" | sed '/^$/d' | paste -sd, -)")"
           printf '%s' "$prs_json" > "$WORK_DIR/prs.json"
@@ -260,6 +278,11 @@ jobs:
           total_runs="$(jq -r '.runs' "$WORK_DIR/agg.json")"
           total_cost="$(jq -r '.cost' "$WORK_DIR/agg.json")"
           total_tokens="$(jq -r '.tokens' "$WORK_DIR/agg.json")"
+          # 'across 1 runs' would read wrong; singularize the count word.
+          runs_word="runs"
+          if [ "$total_runs" = "1" ]; then
+            runs_word="run"
+          fi
 
           # Display helpers: money as $X.YZ, cost-weighted tokens in M/k
           # notation (the budgets table in docs/dev-loop.md uses the same).
@@ -319,7 +342,7 @@ jobs:
           <!-- dev-loop-cost-report -->
           **Dev-loop cost report for issue #${ISSUE_NUMBER}**
 
-          **Dev-loop total: $(fmt_cost "$total_cost") across ${total_runs} runs** (${summary_roles}) - cost-weighted tokens: $(fmt_tokens "$total_tokens").
+          **Dev-loop total: $(fmt_cost "$total_cost") across ${total_runs} ${runs_word}** (${summary_roles}) - cost-weighted tokens: $(fmt_tokens "$total_tokens").
 
           | Role | Runs | Cost | Cost-weighted tokens |
           | --- | --- | --- | --- |
