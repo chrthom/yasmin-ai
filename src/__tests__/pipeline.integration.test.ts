@@ -356,6 +356,14 @@ describe('nightly pipeline integration', () => {
     expect(mockSetWatermark).toHaveBeenCalledTimes(1);
     expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
 
+    // Phase 1 persists the collected batch right away (the crash-recovery watermark for a resume):
+    // a fresh NON-empty run must record processedConversationIds + '1-collect' so a crash later in
+    // the run replays exactly this batch instead of re-collecting.
+    expect(mockUpdateJobLog).toHaveBeenCalledWith(1, {
+      processedConversationIds: ['conv-1', 'conv-2', 'conv-3'],
+      lastCompletedPhase: '1-collect'
+    });
+
     expect(mockInsertNextVersion).toHaveBeenCalledWith(
       'journals/alice/conv-1.md',
       'Journal about Alice',
