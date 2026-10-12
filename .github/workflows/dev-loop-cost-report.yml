@@ -1,0 +1,289 @@
+name: Dev Loop Cost Report
+
+on:
+  issues:
+    # Only a closed-as-completed dev-loop issue gets a cost report
+    # (docs/dev-loop.md): not_planned (won't do) and duplicate closes are
+    # skipped by the job-level if below, before a runner is allocated; the
+    # gate re-checks the live issue state as defense in depth.
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to report on (manual backstop / retry)
+        required: true
+        type: string
+
+permissions:
+  issues: write
+  actions: read
+
+concurrency:
+  group: dev-loop-cost-report-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Cost report
+    # Job-level event filter (docs/dev-loop.md): only a closed-as-completed
+    # dev-loop issue can produce a report - not_planned/duplicate closes and
+    # unlabeled issues skip before a runner is allocated. The gate below
+    # re-checks the live issue state as defense in depth and is the only
+    # gate on the workflow_dispatch backstop, so a manual retry can never
+    # post for a not_planned/duplicate close either.
+    if: >-
+      github.event_name != 'issues' ||
+      (github.event.issue.state_reason == 'completed' &&
+       contains(github.event.issue.labels.*.name, 'dev-loop'))
+    runs-on: ubuntu-latest
+    # Pure GitHub API aggregation (no agent run, no npm); minutes at most.
+    timeout-minutes: 15
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          WORK_DIR: ${{ runner.temp }}/dev-loop-cost
+        run: |
+          set -eu
+          mkdir -p "$WORK_DIR"
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "No issue number in event/input; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Live-state gate: the issue must be closed as completed and carry
+          # the dev-loop label (docs/dev-loop.md opt-in). stateReason from
+          # `gh issue view` is upper case; the event payload's state_reason
+          # is lower case - normalize before comparing.
+          if ! issue_json="$(gh issue view "$ISSUE_NUMBER" --json number,state,stateReason,labels 2>/dev/null)"; then
+            echo "Issue #$ISSUE_NUMBER not found; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          state="$(printf '%s' "$issue_json" | jq -r '.state')"
+          state_reason="$(printf '%s' "$issue_json" | jq -r '.stateReason // ""' | tr '[:upper:]' '[:lower:]')"
+          if [ "$state" != "CLOSED" ] || [ "$state_reason" != "completed" ]; then
+            echo "Issue #$ISSUE_NUMBER is $state (reason: ${state_reason:-none}); only closed-as-completed issues get a cost report. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s' "$issue_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The PRs that served this issue, resolved two ways for robustness:
+          # cross-referenced timeline events (the implementer PR's Closes #<N>
+          # body reference) and the loop's branch convention vibe/issue-<N>-*
+          # (covers a PR that failed to reference the issue in its body).
+          if ! gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/timeline" --paginate > "$WORK_DIR/timeline.json" 2>"$WORK_DIR/timeline.err"; then
+            echo "::warning::Could not read the issue timeline; relying on the branch-convention PR scan alone."
+            cat "$WORK_DIR/timeline.err" || true
+            printf '[]' > "$WORK_DIR/timeline.json"
+          fi
+          timeline_prs="$(jq -s 'add // []
+            | [.[] | select(.event == "cross-referenced")
+                       | .source.issue
+                       | select(.pull_request != null)
+                       | .number] | unique | .[]' "$WORK_DIR/timeline.json" 2>/dev/null || true)"
+          branch_prs="$(gh pr list --state all --limit 1000 --json number,headRefName 2>/dev/null \
+            | jq -r --arg n "$ISSUE_NUMBER" '[.[] | select(.headRefName | startswith("vibe/issue-" + $n + "-")) | .number] | .[]' 2>/dev/null || true)"
+          linked_prs="$(printf '%s\n%s\n' "$timeline_prs" "$branch_prs" | sed '/^$/d' | sort -un)"
+          prs_json="$(printf '[%s]' "$(printf '%s\n' "$linked_prs" | sed '/^$/d' | paste -sd, -)")"
+          printf '%s' "$prs_json" > "$WORK_DIR/prs.json"
+          echo "Issue #$ISSUE_NUMBER is closed as completed with the dev-loop label; linked PRs: $prs_json"
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Collect run costs
+        id: collect
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          # Artifact listing/download uses the job token (actions: read) so
+          # the report does not depend on the fine-grained PAT's scopes; gh
+          # prefers GH_TOKEN, so the artifact calls override it inline.
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.gate.outputs.issue_number }}
+          WORK_DIR: ${{ runner.temp }}/dev-loop-cost
+        run: |
+          set -u
+          prs="$(cat "$WORK_DIR/prs.json")"
+          # All opencode artifacts, matched by name: the role workflows record
+          # their association target in the artifact name (issue-<N> for the
+          # implementer, pr-<M> for reviewer/fixer runs of a linked PR) - the
+          # only artifact metadata that can be filtered without a download.
+          # Runs whose artifacts predate the naming scheme are not
+          # attributable and are skipped (docs/dev-loop.md).
+          GH_TOKEN="$GITHUB_TOKEN" gh api "repos/${GH_REPO}/actions/artifacts" --paginate < /dev/null > "$WORK_DIR/artifacts.raw.json"
+          jq -s '[.[].artifacts[]?]' "$WORK_DIR/artifacts.raw.json" > "$WORK_DIR/artifacts.json"
+          jq -r --argjson prs "$prs" --arg issue "$ISSUE_NUMBER" '
+            .[] | select(.name | test(
+              ("^opencode-implementer-output-issue-" + $issue + "-[0-9]+-[0-9]+$")
+              + "|"
+              + ("^opencode-(reviewer|fixer)-output-pr-(" + ($prs | map(tostring) | join("|")) + ")-[0-9]+-[0-9]+$")
+            )) | [.id, .name, (.expired | tostring)] | @tsv' "$WORK_DIR/artifacts.json" > "$WORK_DIR/matched.tsv"
+          matched="$(grep -c . "$WORK_DIR/matched.tsv" || true)"
+          echo "Matched $matched attributable dev-loop run artifact(s) for issue #$ISSUE_NUMBER."
+          : > "$WORK_DIR/runs.jsonl"
+          unavailable=0
+          while IFS=$'\t' read -r art_id art_name art_expired; do
+            if [ -z "$art_id" ]; then
+              continue
+            fi
+            role="$(printf '%s' "$art_name" | sed -E 's/^opencode-([a-z]+)-output-.*/\1/')"
+            run_id="$(printf '%s' "$art_name" | sed -E 's/^opencode-[a-z]+-output-(issue-[0-9]+|pr-[0-9]+)-([0-9]+)-[0-9]+$/\2/')"
+            if [ "$art_expired" = "true" ]; then
+              echo "Artifact $art_name has expired; its run cannot be counted."
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            dl="$WORK_DIR/artifacts/$art_name"
+            mkdir -p "$dl"
+            if ! GH_TOKEN="$GITHUB_TOKEN" gh api "repos/${GH_REPO}/actions/artifacts/${art_id}/zip" < /dev/null > "$dl/artifact.zip" 2>"$dl/download.err" \
+              || ! unzip -o -q "$dl/artifact.zip" -d "$dl"; then
+              echo "::warning::Could not download or extract artifact $art_name."
+              cat "$dl/download.err" || true
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            if [ ! -f "$dl/stream.ndjson" ]; then
+              echo "::warning::Artifact $art_name carries no stream.ndjson; skipping the run."
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            # Same aggregation as the role post-steps: cost = sum of the
+            # per-step cost fields, tokens = the cost-weighted sum the
+            # MAX_TOKENS watchdog cap enforces. Round the per-run cost to
+            # cents so the reported per-run numbers have no float artifacts.
+            cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' "$dl/stream.ndjson" 2>/dev/null || echo 0)"
+            tokens="$(jq -s '[.[].part.tokens // empty
+              | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' "$dl/stream.ndjson" 2>/dev/null || echo 0)"
+            printf '{"role":"%s","run_id":"%s","cost":%s,"tokens":%s}\n' "$role" "$run_id" "$cost" "$tokens" >> "$WORK_DIR/runs.jsonl"
+          done < "$WORK_DIR/matched.tsv"
+          runs_found=false
+          if [ -s "$WORK_DIR/runs.jsonl" ]; then
+            runs_found=true
+          else
+            echo "No attributable dev-loop run artifacts for issue #$ISSUE_NUMBER; nothing to report."
+          fi
+          echo "runs_found=$runs_found" >> "$GITHUB_OUTPUT"
+          echo "unavailable=$unavailable" >> "$GITHUB_OUTPUT"
+
+      - name: Post cost report comment
+        if: steps.gate.outputs.skip != 'true' && steps.collect.outputs.runs_found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.gate.outputs.issue_number }}
+          UNAVAILABLE: ${{ steps.collect.outputs.unavailable }}
+          RUNS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs
+          WORK_DIR: ${{ runner.temp }}/dev-loop-cost
+        run: |
+          set -u
+          # Per-role and grand totals from the collected runs. The sums are
+          # float arithmetic over per-run cents/tokens; the display rounding
+          # below removes the float artifacts (same approach as the role
+          # post-steps).
+          jq -s '{
+            runs: length,
+            cost: (map(.cost) | add // 0),
+            tokens: (map(.tokens) | add // 0),
+            roles: (group_by(.role) | map({
+              role: .[0].role,
+              runs: length,
+              cost: (map(.cost) | add // 0),
+              tokens: (map(.tokens) | add // 0)
+            }))
+          }' "$WORK_DIR/runs.jsonl" > "$WORK_DIR/agg.json"
+          total_runs="$(jq -r '.runs' "$WORK_DIR/agg.json")"
+          total_cost="$(jq -r '.cost' "$WORK_DIR/agg.json")"
+          total_tokens="$(jq -r '.tokens' "$WORK_DIR/agg.json")"
+
+          # Display helpers: money as $X.YZ, cost-weighted tokens in M/k
+          # notation (the budgets table in docs/dev-loop.md uses the same).
+          fmt_cost() {
+            LC_ALL=C printf '$%.2f' "$1"
+          }
+          fmt_tokens() {
+            if [ "$(jq -n --argjson t "$1" '$t >= 1000000' 2>/dev/null)" = "true" ]; then
+              LC_ALL=C printf '%.2fM' "$(jq -n --argjson t "$1" '$t / 1000000' 2>/dev/null)"
+            elif [ "$(jq -n --argjson t "$1" '$t >= 1000' 2>/dev/null)" = "true" ]; then
+              LC_ALL=C printf '%dk' "$(jq -n --argjson t "$1" '($t / 1000) | round | floor' 2>/dev/null)"
+            else
+              LC_ALL=C printf '%d' "$(jq -n --argjson t "$1" '$t | round | floor' 2>/dev/null)"
+            fi
+          }
+
+          # Markdown table rows are appended to files (printf keeps the
+          # per-row newline); the heredoc below embeds each file's contents
+          # on a line of its own.
+          : > "$WORK_DIR/role_rows.md"
+          summary_roles=""
+          for role in implementer reviewer fixer; do
+            agg="$(jq -c --arg role "$role" '.roles[] | select(.role == $role)' "$WORK_DIR/agg.json" 2>/dev/null || true)"
+            if [ -z "$agg" ]; then
+              continue
+            fi
+            role_cost="$(printf '%s' "$agg" | jq -r '.cost')"
+            role_tokens="$(printf '%s' "$agg" | jq -r '.tokens')"
+            role_runs="$(printf '%s' "$agg" | jq -r '.runs')"
+            printf '| %s | %s | %s | %s |\n' "$role" "$role_runs" "$(fmt_cost "$role_cost")" "$(fmt_tokens "$role_tokens")" >> "$WORK_DIR/role_rows.md"
+            if [ -n "$summary_roles" ]; then
+              summary_roles="${summary_roles}, "
+            fi
+            summary_roles="${summary_roles}${role}: $(fmt_cost "$role_cost") / $(fmt_tokens "$role_tokens") tokens"
+          done
+
+          : > "$WORK_DIR/run_rows.md"
+          while IFS= read -r line; do
+            if [ -z "$line" ]; then
+              continue
+            fi
+            run_id="$(printf '%s' "$line" | jq -r '.run_id')"
+            role="$(printf '%s' "$line" | jq -r '.role')"
+            cost="$(printf '%s' "$line" | jq -r '.cost')"
+            tokens="$(printf '%s' "$line" | jq -r '.tokens')"
+            printf '| [#%s](%s/%s) | %s | %s | %s |\n' "$run_id" "$RUNS_URL" "$run_id" "$role" "$(fmt_cost "$cost")" "$(fmt_tokens "$tokens")" >> "$WORK_DIR/run_rows.md"
+          done < "$WORK_DIR/runs.jsonl"
+
+          note=""
+          if [ "$UNAVAILABLE" -gt 0 ]; then
+            note="$(printf '\n\n%s further matched artifact(s) were unavailable (expired or failed to download); the totals undercount those runs.' "$UNAVAILABLE")"
+          fi
+
+          cat > "$WORK_DIR/body.md" <<EOF
+          <!-- dev-loop-cost-report -->
+          **Dev-loop cost report for issue #${ISSUE_NUMBER}**
+
+          **Dev-loop total: $(fmt_cost "$total_cost") across ${total_runs} runs** (${summary_roles}) - cost-weighted tokens: $(fmt_tokens "$total_tokens").
+
+          | Role | Runs | Cost | Cost-weighted tokens |
+          | --- | --- | --- | --- |
+          $(cat "$WORK_DIR/role_rows.md")
+          | **Total** | **${total_runs}** | **$(fmt_cost "$total_cost")** | **$(fmt_tokens "$total_tokens")** |
+
+          <details><summary>Per run</summary>
+
+          | Run | Role | Cost | Cost-weighted tokens |
+          | --- | --- | --- | --- |
+          $(cat "$WORK_DIR/run_rows.md")
+          </details>
+
+          Cost is the sum of the per-step costs in each run's \`stream.ndjson\` artifact (per-run rounded to cents); tokens are cost-weighted (input + output + cache.write + 0.1 × cache.read), the same semantics as the loop's token caps.${note}
+          EOF
+          jq -n --arg body "$(cat "$WORK_DIR/body.md")" '{body: $body}' > "$WORK_DIR/payload.json"
+
+          # Marker dedupe (docs/dev-loop.md): at most one cost report comment
+          # per issue - a re-run (close event replay, manual backstop) edits
+          # the existing comment instead of double-posting.
+          existing_id="$(gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments" --paginate \
+            | jq -s 'add // [] | map(select(.body | startswith("<!-- dev-loop-cost-report -->"))) | first | .id // empty' 2>/dev/null || true)"
+          if [ -n "$existing_id" ]; then
+            echo "A cost report comment already exists (id $existing_id); editing it instead of double-posting."
+            gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing_id}" --input "$WORK_DIR/payload.json" >/dev/null
+          else
+            gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments" -X POST --input "$WORK_DIR/payload.json" >/dev/null
+          fi

@@ -49,7 +49,8 @@ picking the item up on future events.
 | (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106) |
 | `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
 | `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
-| `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
+| `issues: [closed]` | cost report | gated on the `dev-loop` label and `state_reason == completed` (job-level `if` on the event payload; `not_planned`/`duplicate` closes skip before a runner is allocated). Sums the stream artifacts of every dev-loop run that served the issue and posts/edits the marker-deduped report comment (see below) |
+| `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent; the cost-report backstop takes an issue number and re-checks the live close reason, so a retry can never post for a not-planned/duplicate close |
 
 Job-level event filters (all three role workflows): every role job carries an `if:` that
 skips events which can never start that role *before a runner is allocated* — `labeled` for
@@ -173,6 +174,40 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   fetches the failing check logs). An auto-format push never reaches the fixer this way —
   the formatter's own push moves the tip, so the waiting reviewer skips and the new head's
   `synchronize` starts a fresh cycle; the formatted head's CI is green by construction.
+
+## Cost report on issue close
+
+When a dev-loop issue is closed as completed, the cost-report workflow
+(`.github/workflows/dev-loop-cost-report.yml`) posts the total AI token usage and cost
+accumulated by every dev-loop agent run that served it — implementer, reviewer and fixer
+alike. Closes with `state_reason` `not_planned` (won't do) or `duplicate` and unlabeled
+issues never get a report: the job-level `if` checks the event payload before a runner is
+allocated, and the gate re-checks the live issue state, so the `workflow_dispatch` backstop
+(a manual retry) can never post for a not-planned/duplicate close either.
+
+- **Run-to-issue association**: the three role workflows record their target in the artifact
+  name — `opencode-implementer-output-issue-<N>-<run_id>-<run_attempt>` for the implementer,
+  `opencode-(reviewer|fixer)-output-pr-<M>-…` for the PR roles — the only artifact metadata
+  that can be filtered without a download (run metadata carries neither the issue nor the
+  dispatch inputs). The report resolves the issue's PRs from the issue timeline's
+  cross-references (the implementer PR's `Closes #<N>` body reference) plus the
+  `vibe/issue-<N>-*` branch convention, then matches artifact names. Runs whose artifacts
+  predate the naming scheme are not attributable; the report then finds nothing and posts no
+  comment, so the first reported issue is the first one fully served after the scheme.
+- **Aggregation**: per run, cost is the sum of `part.cost` and tokens the cost-weighted sum
+  (input + output + cache.write + 0.1 × cache.read, the cap semantics) over the
+  `step_finish` events in the run's `stream.ndjson` artifact — the same jq the role
+  post-steps use, per-run cost rounded to cents; the comment breaks the totals down per
+  role and links every run.
+- **Retention**: artifacts expire with the default retention (90 days); an issue closed
+  after some of its artifacts expired reports over what remains and notes the unavailable
+  count (the totals undercount those runs).
+- **Idempotency**: the report comment is marker-deduped
+  (`<!-- dev-loop-cost-report -->`); a re-run edits the existing comment instead of
+  double-posting.
+- **Authentication**: the comment is posted with `DEV_LOOP_TOKEN` (PAT rule); artifact
+  listing/download uses the job token with `actions: read`, so the fine-grained PAT needs no
+  scope change.
 
 ## New files
 

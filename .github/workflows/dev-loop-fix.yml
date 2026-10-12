@@ -442,7 +442,12 @@ jobs:
         if: always() && steps.gate.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: opencode-fixer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          # The PR number in the name associates the artifact with its dev-loop
+          # issue (via the linked PR) for the cost report workflow
+          # (docs/dev-loop.md): artifact names are the only artifact metadata
+          # that can be filtered without a download. Runs whose artifacts
+          # predate this naming scheme are not attributable and are skipped.
+          name: opencode-fixer-output-pr-${{ steps.gate.outputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             out/stream.ndjson
             out/opencode.stderr
