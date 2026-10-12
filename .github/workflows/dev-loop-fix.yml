@@ -111,20 +111,27 @@ jobs:
               --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
             # The push just made GitHub recompute every open PR's mergeability,
             # so a single list may still report UNKNOWN; re-list boundedly
-            # (the 5x10s pattern the dispatched run's re-check below uses) and
-            # dispatch PRs still UNKNOWN afterwards anyway: the dispatched run
-            # re-checks CONFLICTING live and skips non-conflicting PRs, so
-            # over-dispatching is safe by design.
+            # (up to 5 lists, 10s apart) and dispatch PRs still UNKNOWN
+            # afterwards anyway: the dispatched run re-checks CONFLICTING
+            # live and skips non-conflicting PRs, so over-dispatching is safe
+            # by design. Draft and needs-human PRs are excluded from the
+            # wait: the candidate filter below drops them anyway, so an
+            # UNKNOWN parked PR must not hold the scan for nothing.
             prs_json="[]"
-            for _ in 1 2 3 4 5; do
+            for attempt in 1 2 3 4 5; do
               prs_json="$(gh pr list --state open --label dev-loop -L 200 \
                 --json number,headRepository,isDraft,mergeable,labels)"
               if ! printf '%s' "$prs_json" | jq -e \
-                'any(.[]; .isDraft == false and .headRepository.id == $repo_id and .mergeable == "UNKNOWN")' \
+                'any(.[]; .isDraft == false and .headRepository.id == $repo_id
+                      and all(.labels[]?; .name != "needs-human")
+                      and .mergeable == "UNKNOWN")' \
                 --arg repo_id "$REPO_NODE_ID" >/dev/null; then
                 break
               fi
-              sleep 10
+              # The candidates below are built from this prs_json, so sleep
+              # only when another list follows - a trailing sleep after the
+              # final list would wait for data nobody reads.
+              [ "$attempt" = 5 ] || sleep 10
             done
             # gh's JSON carries the GraphQL node id in headRepository.id, so
             # compare against repository.node_id - the numeric REST id in
@@ -215,6 +222,18 @@ jobs:
           if ! gh pr view "$PR_NUMBER" --json labels \
             | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
             echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Draft is a human parking brake (docs/dev-loop.md): the loop never
+          # touches a draft PR on any event. The push-to-main scan filters
+          # drafts at list time, but a dispatched run may sit in the
+          # dev-loop-pr-<N> concurrency slot long after the PR was converted
+          # to draft, so re-check live here - this covers every dispatch
+          # origin (push scan, red-CI, manual/retry). Mirrors the reviewer's
+          # gate order in dev-loop-review.yml.
+          if [ "$(gh pr view "$PR_NUMBER" --json isDraft --jq .isDraft)" = "true" ]; then
+            echo "PR #$PR_NUMBER is draft; the loop never touches drafts on any event. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
