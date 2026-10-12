@@ -42,6 +42,15 @@ concurrency:
 jobs:
   fix:
     name: Fixer (review findings and/or conflict -> fix commits / merge commit)
+    # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
+    # label other than needs-human can never resume the fixer, and a
+    # workflow_run for another workflow or a branch with no PR behind it
+    # (main) has no conflict path - skip before a runner is allocated. The
+    # gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
+      !(github.event_name == 'workflow_run' && github.event.workflow_run.name != 'CI') &&
+      !(github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main')
     # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
     # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
     # re-dispatch in the reviewer (docs/dev-loop.md).

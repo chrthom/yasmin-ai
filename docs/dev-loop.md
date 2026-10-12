@@ -50,6 +50,14 @@ picking the item up on future events.
 | `issues/pull_request: [unlabeled]` on `needs-human` | resume | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label |
 | `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
 
+Job-level event filters (all three role workflows): every role job carries an `if:` that
+skips events which can never start that role *before a runner is allocated* — `labeled` for
+any label other than `dev-loop`, `unlabeled` for any label other than `needs-human`, and on
+the fixer a `workflow_run` for another workflow or for the `main` branch (no PR, no conflict
+path). This keeps the loop's own state transitions (escalations adding/removing `needs-human`)
+from spawning gated no-op runs; the in-job gate remains as defense in depth and still enforces
+label/draft/fork/SHA rules against the live API state.
+
 Non-events by design:
 
 - `pull_request: [converted_to_draft]` is **never a trigger** — a draft PR is simply never
