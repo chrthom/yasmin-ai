@@ -567,7 +567,7 @@ jobs:
           # previously failed post blocks every new POST with 422 (observed on
           # PR #106). Delete any pending review of the token user before
           # posting - pending reviews carry no findings, so nothing is lost.
-          pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" \
+          pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
             | jq -r '[.[] | select(.state == "PENDING")] | first | .id // empty')"
           if [ -n "$pending_review_id" ]; then
             echo "Deleting stale pending review $pending_review_id before posting (it would 422-block the POST)."
