@@ -192,7 +192,11 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
   dispatch inputs). The report resolves the issue's PRs two ways — cross-referenced PRs whose
   live body still carries a closing keyword reference (`Closes|Fixes|Resolves #<N>`; a
   cross-reference event fires for any mention, so the mention alone must not attribute costs)
-  plus the `vibe/issue-<N>-*` branch convention — then matches artifact names. Runs whose
+  plus the `vibe/issue-<N>-*` branch convention — then matches artifact names. The
+  association assumes the loop's one-PR-per-issue convention: a PR that closes (or
+  branch-matches) two dev-loop issues contributes its full reviewer/fixer run costs to
+  each issue's report, so shared costs are double-counted across the issues (splitting
+  them is not implemented). Runs whose
   artifacts predate the naming scheme are not attributable; the report then finds nothing and
   posts no comment, so the first reported issue is the first one fully served after the scheme.
 - **Aggregation**: per run, cost is the sum of `part.cost` and tokens the cost-weighted sum

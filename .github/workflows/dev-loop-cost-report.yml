@@ -267,7 +267,9 @@ jobs:
             LC_ALL=C printf '$%.2f' "$1"
           }
           fmt_tokens() {
-            if [ "$(jq -n --argjson t "$1" '$t >= 1000000' 2>/dev/null)" = "true" ]; then
+            # M from 999500 on: values just below 1M would otherwise round up
+            # to an odd '1000k' in the k branch (e.g. 999999 -> '1000k').
+            if [ "$(jq -n --argjson t "$1" '$t >= 999500' 2>/dev/null)" = "true" ]; then
               LC_ALL=C printf '%.2fM' "$(jq -n --argjson t "$1" '$t / 1000000' 2>/dev/null)"
             elif [ "$(jq -n --argjson t "$1" '$t >= 1000' 2>/dev/null)" = "true" ]; then
               LC_ALL=C printf '%dk' "$(jq -n --argjson t "$1" '($t / 1000) | round | floor' 2>/dev/null)"
@@ -352,9 +354,20 @@ jobs:
             cat "$WORK_DIR/comments-jq.err" || true
             exit 1
           fi
+          # The post/edit gets the same failure treatment as the dedupe
+          # calls above: warn with the backstop-retry hint, surface gh's
+          # stderr, and fail the step so the red run points at the retry.
           if [ -n "$existing_id" ]; then
             echo "A cost report comment already exists (id $existing_id); editing it instead of double-posting."
-            gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing_id}" --input "$WORK_DIR/payload.json" >/dev/null
+            if ! gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing_id}" --input "$WORK_DIR/payload.json" >/dev/null 2>"$WORK_DIR/post.err"; then
+              echo "::warning::Could not post the cost report comment; no comment was posted. Re-run the workflow_dispatch backstop to retry."
+              cat "$WORK_DIR/post.err" || true
+              exit 1
+            fi
           else
-            gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments" -X POST --input "$WORK_DIR/payload.json" >/dev/null
+            if ! gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments" -X POST --input "$WORK_DIR/payload.json" >/dev/null 2>"$WORK_DIR/post.err"; then
+              echo "::warning::Could not post the cost report comment; no comment was posted. Re-run the workflow_dispatch backstop to retry."
+              cat "$WORK_DIR/post.err" || true
+              exit 1
+            fi
           fi
