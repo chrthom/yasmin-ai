@@ -215,7 +215,7 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 
 ### 6.1 Phases
 
-**Phase 1 — Collect.** Acquire lock (§6.2). Watermark = last successful `completed_at` (fallback 24 h if none/corrupt; guard against future timestamps from clock skew). `listConversations(sinceWatermark)`; persist ids to `processed_conversation_ids`. Empty → mark `completed`, release, exit.
+**Phase 1 — Collect.** Acquire lock (§6.2). Watermark = last successful `completed_at` (fallback 24 h if none/corrupt; guard against future timestamps from clock skew). `listConversations(sinceWatermark)`; persist ids to `processed_conversation_ids`. Empty (fresh **or** resumed, and no undelivered pending `intraday_notes`) → mark `completed` with `conversations_processed: 0`, advance the watermark, release, exit — phases 2-7 are skipped entirely (no LLM calls, no Mistral writes/deletes). A non-empty pending-notes outbox keeps the run going even with zero conversations, so undelivered notes are always consolidated rather than stranded by the skip; the outbox snapshot is therefore taken right after collect.
 
 **Phase 2 — Journal.** For each conversation: `getConversationMessages` → `askAgent(nightly, journalPrompt(messages))` → structured journal. Write to `memory_archive` (`journals/<user>/<conv_id>.md`, version 1) **and** upload to Mistral. On failure: retry (backoff); still failing → add to `skipped_conversation_ids`, continue (a skipped conversation is **not** deleted in Phase 7, so it retries next night). Cap journal length; oversized → summarize-again with a tighter instruction.
 

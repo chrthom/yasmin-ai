@@ -185,22 +185,77 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       // they were family conversations on a later run.
       const filtered = allConversations.filter(c => c.agentId === config.mistral.agentId);
 
-      if (filtered.length === 0) {
+      // The batch is persisted only when non-empty: an empty batch has nothing to resume and is
+      // handled by the empty-batch short-circuit below, which completes the job row directly.
+      if (filtered.length > 0) {
         await updateJobLog(jobId, {
-          status: 'completed',
-          completedAt: collectedAt,
-          lastCompletedPhase: '1-collect',
-          conversationsProcessed: 0
+          processedConversationIds: filtered.map(c => c.id),
+          lastCompletedPhase: '1-collect'
         });
-        return { jobId, status: 'completed', conversationsProcessed: 0, filesUpdated: 0, filesCreated: 0 };
       }
 
-      await updateJobLog(jobId, {
-        processedConversationIds: filtered.map(c => c.id),
-        lastCompletedPhase: '1-collect'
-      });
-
       conversations = filtered.map(c => ({ id: c.id, name: c.name || c.id }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pending-notes snapshot (evidence for Phase 3, bound for Phase 6.5)
+    // -----------------------------------------------------------------------
+    // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
+    // evidence so a message that never reached its recipient still survives in long-term
+    // memory. A failed read must not fail the run -- consolidation continues on journals alone.
+    // This snapshot is deliberately taken right after Phase 1 (not later, inside Phase 3):
+    // the empty-batch short-circuit below needs the outbox state to decide whether the run
+    // really has nothing to do.
+    let undeliveredNotes: IntradayNote[] = [];
+    // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
+    // never a note the live agent staged after the snapshot while the pipeline was running.
+    // Taking the snapshot this early is the safe direction for that bound -- a note staged
+    // later during the run is neither consolidated nor deleted, so it simply survives for the
+    // next nightly run. The watermark is MAX(id) over ALL notes (delivered ones included), not
+    // over the undelivered subset: with only delivered notes the undelivered max would be 0 and
+    // the bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
+    let notesSnapshotMaxId = 0;
+    let notesConsolidated = true;
+    try {
+      notesSnapshotMaxId = await getIntradayNotesMaxId();
+      undeliveredNotes = await getUnconsolidatedNotes(notesSnapshotMaxId);
+      if (undeliveredNotes.length > 0) {
+        console.log(
+          'INFO Feeding ' + undeliveredNotes.length + ' undelivered pending note(s) to the integrate agent'
+        );
+      }
+    } catch (error) {
+      // The notes themselves were never consolidated here, so phase 6.5 must NOT delete them;
+      // they stay in the outbox and are included again tomorrow.
+      console.error('ERROR Failed to load undelivered pending notes; continuing without them: ' + error);
+      notesConsolidated = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty-batch short-circuit (skip Phases 2-7 when there is nothing to do)
+    // -----------------------------------------------------------------------
+    // Applies to BOTH collect paths: a fresh run that found no conversations AND a resumed run
+    // whose effective batch is empty (the resumed branch always replays a non-empty id list,
+    // but the guard keeps that invariant enforced rather than accidental -- e.g. for the
+    // crashed-before-the-batch-write orphan that falls through to fresh collection). The
+    // undelivered-notes check is part of the skip condition: the outbox consolidation rides
+    // along with Phases 3/4, so with pending notes there IS work only this job can do and the
+    // run must continue (with zero conversations) to consolidate them. A failed notes read
+    // also lands here -- the skip performs no outbox writes, so those notes are never lost;
+    // they stay pending and are picked up by the next run.
+    if (conversations.length === 0 && undeliveredNotes.length === 0) {
+      await updateJobLog(jobId, {
+        status: 'completed',
+        completedAt: collectedAt,
+        lastCompletedPhase: '1-collect',
+        conversationsProcessed: 0
+      });
+      // The Phase-1 snapshot was taken and everything up to it has been seen, so the empty run
+      // advances the watermark exactly like any completed run -- otherwise the window would
+      // stay pinned to the last non-empty night forever.
+      await setWatermark(collectedAt);
+      console.log('INFO Nothing to process (no conversations, no undelivered notes); skipping phases 2-7');
+      return { jobId, status: 'completed', conversationsProcessed: 0, filesUpdated: 0, filesCreated: 0 };
     }
 
     // -----------------------------------------------------------------------
@@ -250,33 +305,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     await updateJobLog(jobId, { lastCompletedPhase: '2-journal' });
 
     // -----------------------------------------------------------------------
-    // Phase 3 -- Integrate (always runs in full, fresh or resumed -- see spec notes)
+    // Phase 3 -- Integrate (runs in full, fresh or resumed; only the empty-batch
+    // short-circuit above skips it -- see spec notes)
     // -----------------------------------------------------------------------
-    // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
-    // evidence so a message that never reached its recipient still survives in long-term
-    // memory. A failed read must not fail the run -- consolidation continues on journals alone.
-    let undeliveredNotes: IntradayNote[] = [];
-    // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
-    // never a note the live agent staged after the snapshot while the review loop was running.
-    // The watermark is MAX(id) over ALL notes (delivered ones included), not over the
-    // undelivered subset: with only delivered notes the undelivered max would be 0 and the
-    // bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
-    let notesSnapshotMaxId = 0;
-    let notesConsolidated = true;
-    try {
-      notesSnapshotMaxId = await getIntradayNotesMaxId();
-      undeliveredNotes = await getUnconsolidatedNotes(notesSnapshotMaxId);
-      if (undeliveredNotes.length > 0) {
-        console.log(
-          'INFO Feeding ' + undeliveredNotes.length + ' undelivered pending note(s) to the integrate agent'
-        );
-      }
-    } catch (error) {
-      // The notes themselves were never consolidated here, so phase 6.5 must NOT delete them;
-      // they stay in the outbox and are included again tomorrow.
-      console.error('ERROR Failed to load undelivered pending notes; continuing without them: ' + error);
-      notesConsolidated = false;
-    }
+    // The undelivered pending notes were already snapshotted right after Phase 1 (see above);
+    // they ride along as extra evidence, so with zero conversations but a non-empty outbox the
+    // run still consolidates them here instead of skipping.
     const integrateResult = await runIntegrate(executeIntegrateTool, undeliveredNotes);
     // Scratch conversation of the nightly agent; journal/review/compact calls use store:false instead.
     if (integrateResult.conversationId) {

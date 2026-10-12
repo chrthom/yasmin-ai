@@ -174,6 +174,11 @@ consolidates the day's Synology conversations into long-term memory after the fa
 At a high level, each run:
 
 1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
+   If the collected batch is empty — fresh **or** resumed — and the `intraday_notes` outbox holds no undelivered
+   notes, the run **short-circuits** right there: it records a `completed` job row with `conversationsProcessed: 0`,
+   advances the watermark, releases the lock, and skips phases 2-7 entirely (no LLM calls, no Mistral writes or
+   deletes). A non-empty outbox keeps the consolidation path running even with zero conversations, so undelivered
+   notes are never stranded by the skip.
 2. **Journals** each conversation into a per-conversation markdown summary.
 3. **Integrates** today's journals into proposed updates to a small set of verbose long-term memory files
    (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`, `topics/<topic>.md`, `general/topic-index.md`), using a dedicated nightly Mistral
