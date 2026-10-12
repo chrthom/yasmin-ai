@@ -317,6 +317,25 @@ jobs:
             exit 0
           fi
 
+          if [ "$rc" = "1" ]; then
+            # opencode exits 1 for config/infra failures AND for sessions that
+            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
+            # loop: a failed websearch/webfetch (no provider key configured)
+            # marks the session errored even when the agent completed its work
+            # with a valid contract line. The outcome line is the ground truth:
+            # treat the session as completed when it parses, and escalate only
+            # when it does not.
+            contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
+              | awk 'NF { line = $0 } END { if (line) print line }' \
+              | grep -E '^(PR_URL:|NO_PR:|WALL:)' || true)"
+            if [ -z "$contract_line" ]; then
+              escalate "opencode failed (exit 1, no contract line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+              exit 0
+            fi
+            echo "opencode exited 1 but the final message carries a contract line; treating the session as completed (tool errors were recovered)."
+            rc=0
+          fi
+
           if [ "$rc" = "0" ]; then
             # Final assistant text = last non-empty line across all text events.
             outcome_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
@@ -353,14 +372,6 @@ jobs:
             esac
           fi
 
-          if [ "$rc" = "1" ]; then
-            # opencode exits 1 for both config errors (e.g. invalid credentials,
-            # deterministic - a retry fails identically) and infrastructure
-            # failures (API unreachable). They are not reliably separable by
-            # exit code, so never auto-retry; manual retry stays available via
-            # the workflow_dispatch retry input.
-            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
-            exit 0
+          if [ "$rc" != "0" ]; then
+            escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
           fi
-
-          escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
