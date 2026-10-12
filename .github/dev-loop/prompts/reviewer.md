@@ -24,7 +24,10 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    be `UNKNOWN` right after a push; re-query a few times. If it is `CONFLICTING`, the fixer
    workflow resolves the conflict independently (dispatched by CI completion); a conflicted PR
    is never `CLEAN`, so report the conflict itself as a `blocker` finding and continue the
-   review of the rest of the diff - do not abort.
+   review of the rest of the diff - do not abort. Note: `gh pr diff <N>` on a
+   conflicted PR omits the conflicted files (GitHub cannot merge them to
+   produce the diff) - if you need their content, read them from the checked
+   out head SHA directly.
 2. Read `AGENTS.md` for architecture, code style and commands. Read the PR, its linked issue and
    the diff: `gh pr view <N> --comments`, `gh pr diff <N>`, plus the linked issue via
    `gh issue view`. Read earlier reviews whose body starts with `<!-- dev-loop-review -->`

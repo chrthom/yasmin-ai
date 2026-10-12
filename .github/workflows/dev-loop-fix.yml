@@ -5,6 +5,13 @@ on:
     types: [submitted]
   pull_request:
     types: [unlabeled]
+  # Conflict path (docs/dev-loop.md): CI completed on a dev-loop PR whose
+  # mergeable is CONFLICTING dispatches a conflict-only fixer run. The name
+  # check below couples to ci.yml's `name: CI` - renaming ci.yml disables
+  # this path; keep them in sync.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -12,7 +19,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; empty = latest marker review
+        description: Review id whose findings to fix; empty = conflict-only run if the PR is conflicting, otherwise the latest CHANGES_NEEDED marker review
         required: false
         default: ''
         type: string
@@ -59,7 +66,10 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          # On workflow_run the payload has no pull_request object: fall back
+          # to the PR the CI run belongs to. The gate's workflow_run branch
+          # re-resolves the PR from head_branch/head_sha and overwrites this.
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           UNLABELED_NAME: ${{ github.event.label.name }}
@@ -100,6 +110,8 @@ jobs:
           # object - resolve the PR from head_branch/head_sha, apply the repo-ID
           # fork gate (PR #93), and only proceed on mergeable == CONFLICTING.
           if [ "$EVENT_NAME" = "workflow_run" ]; then
+            # Coupled to ci.yml's `name: CI` (the on.workflow_run filter is
+            # name-based); renaming ci.yml disables the conflict path.
             if [ "$WR_EVENT_NAME" != "CI" ]; then
               echo "workflow_run is for '$WR_EVENT_NAME', not CI; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
