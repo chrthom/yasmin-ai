@@ -172,33 +172,6 @@ jobs:
             echo "head_sha_before=$(printf '%s' "$pr_json" | jq -r '.headRefOid')" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-            pr_json="$(gh pr view "$PR_NUMBER" --json labels,isDraft,mergeable,headRefOid)"
-            if ! printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
-              echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-              echo "PR #$PR_NUMBER is labeled needs-human; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ]; then
-              echo "PR #$PR_NUMBER is draft; the loop never touches drafts. Skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            mergeable=""
-            for _ in 1 2 3 4 5; do
-              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
-              [ "$mergeable" != "UNKNOWN" ] && break
-              sleep 10
-            done
-            if [ "$mergeable" != "CONFLICTING" ]; then
-              echo "PR #$PR_NUMBER mergeable is '$mergeable', not CONFLICTING; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
           # starts the fixer. CLEAN and human reviews start nothing. The
           # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.

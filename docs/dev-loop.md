@@ -48,7 +48,7 @@ picking the item up on future events.
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
 | `pull_request: [synchronize]` + `mergeable == CONFLICTING` | fixer (conflict-only run) | conflict origin 1: the PR's own push made it conflicting; one fixer run per head SHA |
 | `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
-| `issues/pull_request: [unlabeled]` on `needs-human` | resume | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label |
+| `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
 | `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
 
 Job-level event filters (all three role workflows): every role job carries an `if:` that
