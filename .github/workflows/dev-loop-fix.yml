@@ -50,7 +50,8 @@ jobs:
     if: >-
       !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
       !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.draft) &&
-      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.head.repo.id != github.event.repository.id)
+      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.head.repo.id != github.event.repository.id) &&
+      !(github.event_name == 'pull_request_review' && github.event.review.body == '')
     # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
     # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
     # re-dispatch in the reviewer (docs/dev-loop.md).
