@@ -14,7 +14,7 @@ Reviewer feedback (correct the proposal to satisfy every point):
 {{feedback}}
 
 Today's journal entries, the evidence base for this update:
-{{journalsText}}
+{{journalsText}}{{undeliveredNotesBlock}}
 
 If this update is for {{path}} and the path is self-reflection/profile.md, the corrected content MUST be first person: {{selfProfileVoiceRule}}
 

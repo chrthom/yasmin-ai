@@ -774,6 +774,57 @@ describe('nightly pipeline integration', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
+  it('empty batch + undelivered notes: review and revision ground in the notes, so the note survives into memory', async () => {
+    // The quiet-night loss guard: the reviewer's evidence base must include the undelivered notes.
+    // Without them a note-derived fact looks invented (the journals are empty on this path), gets
+    // rejected, and Phase 6.5 would still empty the outbox -- silently losing the note's content.
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
+    const notes = [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ];
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce(notes);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/zara.md',
+        content: 'Zara profile with the note fact',
+        isNew: true
+      });
+      return { finalText: 'staged the note fact', iterations: 1 };
+    });
+    // The first review rejects (as it would with empty journals), the revision re-grounds in the
+    // notes, the re-review approves.
+    mockRunReview
+      .mockResolvedValueOnce({ approved: false, reason: 'fact not grounded in the journals' })
+      .mockResolvedValueOnce({ approved: true, reason: 'grounded in the note' });
+
+    const result = await runNightlyPipeline();
+
+    // Every review call and the revision call carried the notes as evidence.
+    expect(mockRunReview).toHaveBeenCalledTimes(2);
+    expect(mockRunReview.mock.calls[0][6]).toEqual(notes);
+    expect(mockRunReview.mock.calls[1][6]).toEqual(notes);
+    expect(mockReviseProposal).toHaveBeenCalledTimes(1);
+    expect(mockReviseProposal.mock.calls[0][6]).toEqual(notes);
+
+    // The note-derived fact was archived, so emptying the outbox no longer loses it.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/zara.md',
+      'Zara profile with the note fact',
+      expect.any(Date)
+    );
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(5);
+
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
   it('empty batch + failed notes read: skips (no LLM calls) and leaves the outbox untouched', async () => {
     // The outbox state is unknown, but the skip performs no outbox writes -- pending notes are
     // never lost, they stay for the next run. And with zero conversations there is no journal
@@ -1274,6 +1325,7 @@ describe('nightly pipeline integration', () => {
       seeded.createdAt.toISOString(),
       expect.any(Array),
       0,
+      [],
       []
     );
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);

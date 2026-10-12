@@ -377,6 +377,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       ...stagedUpdates.filter(update => update.path === TOPIC_INDEX_PATH)
     ];
 
+    // The undelivered pending notes snapshot (taken right after Phase 1) rides along as review and
+    // revision evidence for the same reason it rides along in Phase 3: on a quiet night with zero
+    // conversations the journals are empty, so without the notes here the reviewer would reject a
+    // note-derived fact as invented -- and Phase 6.5 would still empty the outbox afterwards,
+    // silently losing the note's content from long-term memory.
     for (const update of orderedUpdates) {
       try {
         // A failed barrier load leaves no basis for duplicate judgement: skip topics/ proposals
@@ -405,7 +410,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           lastTouchedAt,
           todaysJournals,
           0,
-          barrierForUpdate
+          barrierForUpdate,
+          undeliveredNotes
         );
 
         // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
@@ -423,7 +429,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             proposal,
             verdict.reason,
             todaysJournals,
-            revisionConversationId
+            revisionConversationId,
+            undeliveredNotes
           );
           revisionConversationId = revised.conversationId || revisionConversationId;
           proposal = revised.content;
@@ -433,7 +440,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             lastTouchedAt,
             todaysJournals,
             revisions + 1,
-            barrierForUpdate
+            barrierForUpdate,
+            undeliveredNotes
           );
           revisions++;
         }
