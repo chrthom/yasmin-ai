@@ -2,7 +2,7 @@ name: Dev Loop Implement
 
 on:
   issues:
-    types: [opened, reopened, unlabeled]
+    types: [opened, reopened, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -51,11 +51,19 @@ jobs:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           EVENT_ACTION: ${{ github.event.action }}
+          LABELED_NAME: ${{ github.event.label.name }}
           UNLABELED_NAME: ${{ github.event.label.name }}
         run: |
           set -eu
           if [ -z "$ISSUE_NUMBER" ]; then
             echo "No issue number in event; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Opt-in gate, first line, before all other checks: no dev-loop label,
+          # no loop. `labeled: dev-loop` starts the loop on an existing issue.
+          if [ "$EVENT_ACTION" = "labeled" ] && [ "$LABELED_NAME" != "dev-loop" ]; then
+            echo "Labeled '$LABELED_NAME', not dev-loop; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -66,6 +74,14 @@ jobs:
           fi
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
+          gh label create dev-loop --color 46A1AA \
+            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
+          if ! gh issue view "$ISSUE_NUMBER" --json labels \
+            | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if gh issue view "$ISSUE_NUMBER" --json labels \
             | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
             echo "Issue #$ISSUE_NUMBER is labeled needs-human or skip-dev-loop; skipping."

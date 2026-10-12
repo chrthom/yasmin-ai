@@ -44,7 +44,7 @@ picking the item up on future events.
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
 | `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if `needs-human` or a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue |
-| `pull_request: [ready_for_review, synchronize]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA |
+| `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
 | `workflow_run` (`ci.yml` completed) + `mergeable == CONFLICTING` | fixer (conflict-only run) | covers both conflict origins: PR diverges, or `main` moved under it; one fixer run per head SHA |
 | `issues/pull_request: [unlabeled]` on `needs-human` | resume | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label |

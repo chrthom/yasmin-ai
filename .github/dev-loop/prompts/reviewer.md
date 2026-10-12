@@ -21,9 +21,13 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
 ## Steps
 
 1. Check mergeability first: `gh pr view <N> --json mergeable,mergeStateStatus`. `mergeable` can
-   be `UNKNOWN` right after a push; re-query a few times. If it is `CONFLICTING`, post no review
-   and stop with `CONFLICTING`: merge conflicts are resolved first, by the merger role, and a
-   conflicted PR is never `CLEAN`.
+   be `UNKNOWN` right after a push; re-query a few times. If it is `CONFLICTING`, the fixer
+   workflow resolves the conflict independently (dispatched by CI completion); a conflicted PR
+   is never `CLEAN`, so report the conflict itself as a `blocker` finding and continue the
+   review of the rest of the diff - do not abort. Note: `gh pr diff <N>` on a
+   conflicted PR omits the conflicted files (GitHub cannot merge them to
+   produce the diff) - if you need their content, read them from the checked
+   out head SHA directly.
 2. Read `AGENTS.md` for architecture, code style and commands. Read the PR, its linked issue and
    the diff: `gh pr view <N> --comments`, `gh pr diff <N>`, plus the linked issue via
    `gh issue view`. Read earlier reviews whose body starts with `<!-- dev-loop-review -->`
@@ -80,6 +84,5 @@ the four severities, and a `message` with the finding and the suggested fix. Fin
 be anchored to a diff line are still findings: anchor them to the nearest diff line of the file
 they concern. For `CLEAN`, `"findings"` is an empty array.
 
-For `CONFLICTING` or `WALL: <reason>`, the final message is exactly `CONFLICTING` or
-`WALL: <reason>` with no verdict. Any other first line makes the run unparseable and escalates
-to a human.
+For `WALL: <reason>`, the final message is exactly `WALL: <reason>` with no verdict. Any other
+first line makes the run unparseable and escalates to a human.

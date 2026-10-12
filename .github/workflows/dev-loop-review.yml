@@ -2,7 +2,11 @@ name: Dev Loop Review
 
 on:
   pull_request:
-    types: [opened, ready_for_review, synchronize, unlabeled]
+    # opened/labeled: the implementer opens a ready PR and adds the dev-loop
+    # label right after (a race the label gate alone would drop) - the draft
+    # gate skips draft opens, the head-SHA dedupe bounds double dispatch.
+    # labeled: dev-loop also starts the loop on an existing ready PR.
+    types: [opened, ready_for_review, synchronize, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -73,12 +77,26 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "$EVENT_ACTION" = "labeled" ] && [ "$UNLABELED_NAME" != "dev-loop" ]; then
+            echo "Labeled '$UNLABELED_NAME', not dev-loop; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
+          gh label create dev-loop --color 46A1AA \
+            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
           pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
-          if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ] \
-            && { [ "$EVENT_ACTION" = "synchronize" ] || [ "$EVENT_ACTION" = "opened" ]; }; then
-            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review, and a draft open waits for ready_for_review. Skipping."
+          # Three gates, in order (docs/dev-loop.md): dev-loop label -> not draft
+          # -> no needs-human. Draft is a human parking brake; the loop never
+          # flips it and never touches a draft PR on any event.
+          if ! printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ]; then
+            echo "PR #$PR_NUMBER is draft; the loop never touches drafts on any event. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -372,16 +390,6 @@ jobs:
           outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
 
           case "$outcome_line" in
-            CONFLICTING)
-              # Contract per reviewer.md step 1: a conflicted PR gets no review;
-              # the merger role handles it (same handling as the fixer).
-              echo "PR is conflicting; the merger role handles it. No review posted."
-              cat > /tmp/dev-loop-review.md <<EOF
-          The PR is conflicting; the dev-loop merger role handles it. No review was posted.
-          EOF
-              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-review.md >/dev/null
-              exit 0
-              ;;
             WALL:*)
               escalate "reviewer stopped early with ${outcome_line} (cost: \$$cost)"
               exit 0
@@ -491,13 +499,11 @@ jobs:
 
           case "$verdict" in
             CLEAN)
-              echo "Verdict CLEAN: marking PR ready."
-              gh pr ready "$PR_NUMBER" 2>/dev/null || echo "PR is already ready (re-review); nothing to do."
+              echo "Verdict CLEAN: the PR stands ready for a human merge decision; no state change."
               exit 0
               ;;
             CHANGES_NEEDED)
-              echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer with the exact review id ($review_post_id)."
-              gh pr ready --undo "$PR_NUMBER" 2>/dev/null || true
+              echo "Verdict CHANGES_NEEDED: dispatching the fixer with the exact review id ($review_post_id)."
               # Pass the posted review's id, not "latest": a second
               # CHANGES_NEEDED review landing before the fixer's gate must
               # not make the fixer act on the wrong review.
