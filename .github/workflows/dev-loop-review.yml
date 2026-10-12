@@ -574,10 +574,10 @@ jobs:
           # public repo, so a third party's draft must not be touched), and
           # ONLY one provably not the owner's draft findings: zero draft
           # comments AND an empty body, or a first-line
-          # <!-- dev-loop-review --> marker - an invisible HTML comment the
-          # owner cannot see or type in the GitHub UI, with the human findings
-          # channel non-marker by definition, so a marker-prefixed pending
-          # review is a loop leftover (e.g. a misbehaving actor POSTing a
+          # <!-- dev-loop-review --> marker - an HTML comment that renders
+          # invisibly in the GitHub UI; the human findings channel is
+          # non-marker by definition, so a marker-prefixed pending review
+          # is a loop leftover (e.g. a misbehaving actor POSTing a
           # body-carrying review) that must self-heal too, or it 422-blocks
           # every future POST. Anything else may be the owner's findings
           # review being drafted in the GitHub UI (or autosaved via the API

@@ -85,14 +85,14 @@ partitioned by review shape, not identity alone):
 - **Answers while parked** (`needs-human`): inline replies to review comments and answers under
   the `<!-- dev-loop-escalation -->` comment are NOT triggers (empty-body replies are
   pre-filtered); they are consumed by the resume path - removing `needs-human` re-fixes the
-  newest owner findings review: the newest owner review overall, kept only when its shape is
-  consumable (a marker review needs `Verdict: CHANGES_NEEDED`; a human findings review must be
-  non-marker `COMMENTED`). A newer non-CHANGES_NEEDED marker verdict stands on its own and
+  newest owner findings review: the newest owner review with a body, kept only when its shape
+  is consumable (a marker review needs `Verdict: CHANGES_NEEDED`; a human findings review must
+  be non-marker `COMMENTED`). A newer non-CHANGES_NEEDED marker verdict stands on its own and
   suppresses an older human findings review (the reviewer workflow's unlabeled resume path
   re-reviews with a fresh budget instead), so a fixer run that escalated on a human review -
   WALL, watchdog, deadline or a pre-agent failure - resumes into that same review only while
-  it stays the newest owner review, instead of dead-ending on a stale marker review or a
-  silent no-op. The fixer prompt reads the review-comment threads (`pulls/<N>/comments`,
+  it stays the newest owner review with a body, instead of dead-ending on a stale marker review
+  or a silent no-op. The fixer prompt reads the review-comment threads (`pulls/<N>/comments`,
   which includes `in_reply_to_id` threaded replies that neither the review-scoped endpoints
   nor `gh pr view --comments` show) and the escalation conversation, where the owner's
   answers override the review.
