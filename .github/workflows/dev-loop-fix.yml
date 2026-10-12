@@ -125,7 +125,7 @@ jobs:
               exit 0
             fi
             PR_NUMBER="$wr_pr"
-            wr_repo_id="$(gh pr view "$PR_NUMBER" --json headRepositoryId --jq .headRepositoryId)"
+            wr_repo_id="$(gh pr view "$PR_NUMBER" --json headRepository --jq '.headRepository.id')"
             if [ "$wr_repo_id" != "$REPO_ID" ]; then
               echo "PR #$PR_NUMBER is from a fork (head repo $wr_repo_id != $REPO_ID); skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
