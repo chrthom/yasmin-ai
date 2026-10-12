@@ -47,7 +47,7 @@ picking the item up on future events.
 | `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN`, human reviews and **reply-only submissions (empty review body)** start nothing - a job-level `if` skips them before runner allocation, because the fixer's own inline replies would otherwise spawn fixer runs whose concurrency-slot claims cancel a pending re-review of the just-pushed fix (the PR #106 race) |
 | (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106) |
-| `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
+| `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR (`review_id=none` sentinel; `UNKNOWN` mergeability re-listed boundedly, leftovers dispatched and re-checked live) |
 | `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
 | `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
 
@@ -100,10 +100,15 @@ There is no separate merger role. The fixer's scope grows by merge-conflict reso
   merge commit, resolving both sides minimally, then proceeds to the findings (conflicts first:
   `npm run build`/`npm test` cannot run meaningfully on a conflicted tree).
 - The conflict triggers dispatch the **same** fixer workflow with a conflict-only task: no
-  open `CHANGES_NEEDED` review, only the conflict. Origin 1 is the reviewer's red-dispatch
+  open `CHANGES_NEEDED` review, only the conflict — the push-scan's dispatches pass
+  `review_id=none`, a sentinel the fixer gate resolves as an explicit no-findings run (an
+  empty review id would fall into the gate's resume resolution and pull an outstanding
+  `CHANGES_NEEDED` review's findings in). Origin 1 is the reviewer's red-dispatch
   (the PR's own push made it conflicting; the conflicted head's checks are red); origin 2
   is a `push` to `main`, whose gate scans open dev-loop PRs and dispatches one
-  conflict-only run per conflicting PR.
+  conflict-only run per conflicting PR (a mergeability of `UNKNOWN` right after the push
+  is re-listed boundedly; PRs still `UNKNOWN` are dispatched anyway — the dispatched run
+  re-checks `CONFLICTING` live and skips non-conflicting PRs).
 - Conflict-dispatch dedupe: one fixer run per head SHA — the dispatched conflict-only run
   re-checks `CONFLICTING` live and skips if the head has already moved (another fixer
   resolved it); the next push (or a manual `workflow_dispatch`) moves the head and re-offers.
@@ -141,8 +146,10 @@ verifies the claim against reality (head SHA moved) before relying on it.
 - **Own-repo PRs only**: compare `pull_request.head.repo.id` against `repository.id` (same
   repository-ID space; an owner ID never matches — see PR #93); never `pull_request_target`.
   Fork PRs are skipped, as in PR #80. The `push: main` conflict scan resolves candidate PRs
-  via `gh pr list` (which carries `headRepository.id`) and applies the same repo-ID check;
-  the dispatched conflict-only run re-checks it on the resolved PR.
+  via `gh pr list`, whose `headRepository.id` is a GraphQL node id — the scan therefore
+  compares it against `repository.node_id`, not the numeric REST id (each check stays in
+  its own ID space: REST ids in the event payload, GraphQL node ids in gh's JSON); the
+  dispatched conflict-only run re-applies the fork gate on the resolved PR.
 - **Three reviewer gates, in order**: `dev-loop` label present → not draft → no `needs-human`
   label. A PR failing any gate is never reviewed. Draft is a human parking brake; the loop
   never flips it either way.

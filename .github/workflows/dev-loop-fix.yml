@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; empty = no-findings run (resolve merge conflicts and/or failing CI checks)
+        description: Review id whose findings to fix; none = conflict-only no-findings run (resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
         required: false
         default: ''
         type: string
@@ -92,6 +92,9 @@ jobs:
           REVIEW_BODY: ${{ github.event.review.body }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
+          # GraphQL node id for the push-scan's repo filter: gh pr list's
+          # headRepository.id is a node id, not the numeric REST id.
+          REPO_NODE_ID: ${{ github.event.repository.node_id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
         run: |
           set -eu
@@ -106,24 +109,49 @@ jobs:
           if [ "$EVENT_NAME" = "push" ]; then
             gh label create dev-loop --color 46A1AA \
               --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
-            candidates="$(gh pr list --state open --label dev-loop \
-              --json number,headRefOid,headRepository,isDraft,mergeable \
+            # The push just made GitHub recompute every open PR's mergeability,
+            # so a single list may still report UNKNOWN; re-list boundedly
+            # (the 5x10s pattern the dispatched run's re-check below uses) and
+            # dispatch PRs still UNKNOWN afterwards anyway: the dispatched run
+            # re-checks CONFLICTING live and skips non-conflicting PRs, so
+            # over-dispatching is safe by design.
+            prs_json="[]"
+            for _ in 1 2 3 4 5; do
+              prs_json="$(gh pr list --state open --label dev-loop -L 200 \
+                --json number,headRefOid,headRepository,isDraft,mergeable)"
+              if ! printf '%s' "$prs_json" | jq -e \
+                'any(.[]; .isDraft == false and .headRepository.id == $repo_id and .mergeable == "UNKNOWN")' \
+                --arg repo_id "$REPO_NODE_ID" >/dev/null; then
+                break
+              fi
+              sleep 10
+            done
+            # gh's JSON carries the GraphQL node id in headRepository.id, so
+            # compare against repository.node_id - the numeric REST id in
+            # repository.id never matches. The fork gate below compares two
+            # numeric ids from the event payload; each check stays in its
+            # own ID space.
+            candidates="$(printf '%s' "$prs_json" \
               | jq -r '[.[] | select(.isDraft == false)
                         | select(.headRepository.id == $repo_id)
-                        | select(.mergeable == "CONFLICTING")] 
-                       | .[].number' --arg repo_id "$REPO_ID")"
+                        | select(.mergeable == "CONFLICTING" or .mergeable == "UNKNOWN")]
+                       | .[].number' --arg repo_id "$REPO_NODE_ID")"
             if [ -z "$candidates" ]; then
               echo "No conflicting open dev-loop PRs after the push to main; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             # Dispatch one conflict-only fixer run per candidate PR via
-            # workflow_dispatch; the dispatched run resolves the PR from the
-            # input, re-checks CONFLICTING live, and enforces the head-SHA
-            # dedupe. The scan run itself never runs the agent.
+            # workflow_dispatch; review_id=none is the conflict-only sentinel
+            # the gate resolves as an explicit no-findings run (an empty
+            # review id would fall into the gate's resume resolution and
+            # pull an outstanding CHANGES_NEEDED review's findings in). The
+            # dispatched run resolves the PR from the input, re-checks
+            # CONFLICTING live, and enforces the head-SHA dedupe. The scan
+            # run itself never runs the agent.
             for pr in $candidates; do
               gh workflow run dev-loop-fix.yml --ref main \
-                -f pr_number="$pr" -f review_id="" -f retry=0
+                -f pr_number="$pr" -f review_id=none -f retry=0
               echo "Dispatched conflict-only fixer run for PR #$pr."
             done
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -187,6 +215,13 @@ jobs:
           # review on the PR (resume path).
           if [ -n "$EVENT_REVIEW_ID" ]; then
             review_id="$EVENT_REVIEW_ID"
+          elif [ "$REVIEW_ID_INPUT" = "none" ]; then
+            # review_id=none is the conflict-only sentinel (the push-to-main
+            # scan, the post-step's no-findings retry): an explicit
+            # no-findings run. An empty input would fall through to the
+            # resume resolution below and pull an outstanding CHANGES_NEEDED
+            # review's findings in.
+            review_id=""
           elif [ -n "$REVIEW_ID_INPUT" ]; then
             review_id="$REVIEW_ID_INPUT"
           else
@@ -204,9 +239,11 @@ jobs:
               | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
           if [ -z "$review_id" ]; then
-            # Dispatch with an empty review id: no-findings run (the
-            # push-to-main scan, the synchronize conflict path and the
-            # reviewer's red-CI dispatch resolve to this). Re-check live
+            # No findings to fix: the conflict-only sentinel resolved to an
+            # empty review id above (the push-to-main scan, the post-step's
+            # no-findings retry), or the resume resolution found no
+            # outstanding CHANGES_NEEDED review (the reviewer's red-CI
+            # dispatch with an empty input lands there). Re-check live
             # that there is actually work to do - the dispatch may queue
             # behind another fixer run that already resolved the conflict or
             # the CI failure. Proceed without findings; the fixer prompt
@@ -577,9 +614,13 @@ jobs:
               # workflow_dispatch, passing the same review id so the gate does
               # not have to re-resolve it; the counter in the input prevents a
               # loop. No fix was pushed, so the head is unchanged and the retry
-              # runs on the same state.
+              # runs on the same state. A no-findings run retries with the
+              # same review_id=none sentinel: an empty input would fall into
+              # the gate's resume resolution and pull an outstanding
+              # CHANGES_NEEDED review in.
+              retry_review_id="${REVIEW_ID:-none}"
               if [ "$RETRY_COUNT" -lt 1 ] \
-                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1; then
+                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1; then
                 echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1). Transcript artifact preserved for diagnosis."
                 exit 0
               fi
