@@ -209,9 +209,11 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
   role and links every run.
 - **Retention**: artifacts expire with the default retention (90 days); an issue closed
   after some of its artifacts expired reports over what remains and notes the unavailable
-  count (the totals undercount those runs). A reviewer/fixer run still in flight when the
-  issue closes uploads its artifact after the close-event report has run, so that run is
-  missing from the totals until someone re-runs the `workflow_dispatch` backstop (the
+  count (the totals undercount those runs); if every matched artifact is unavailable, the
+  report posts a no-data comment carrying that count instead of totals (a successful
+  backstop re-run replaces it via the marker dedupe). A reviewer/fixer run still in flight
+  when the issue closes uploads its artifact after the close-event report has run, so that
+  run is missing from the totals until someone re-runs the `workflow_dispatch` backstop (the
   marker-deduped edit then folds the late run in).
 - **Idempotency**: the report comment is marker-deduped
   (`<!-- dev-loop-cost-report -->`); a re-run edits the existing comment instead of
