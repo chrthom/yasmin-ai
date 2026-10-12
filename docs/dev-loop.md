@@ -43,7 +43,7 @@ picking the item up on future events.
 
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
-| `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if `needs-human` or a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. No `unlabeled` trigger: `needs-human` is ignored on issues (removal is not a resume event; `workflow_dispatch` is the retry backstop) |
+| `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate |
 | `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
 | `workflow_run` (`ci.yml` completed) + `mergeable == CONFLICTING` | fixer (conflict-only run) | covers both conflict origins: PR diverges, or `main` moved under it; one fixer run per head SHA |
@@ -56,9 +56,9 @@ any label other than `dev-loop`, `unlabeled` for any label other than `needs-hum
 the fixer a `workflow_run` for another workflow or for the `main` branch (no PR, no conflict
 path). This keeps the loop's own state transitions (escalations adding/removing `needs-human`)
 from spawning gated no-op runs; the in-job gate remains as defense in depth and still enforces
-label/draft/fork/SHA rules against the live API state. On issues, `needs-human` is ignored
-entirely: the implementer has no `unlabeled` trigger, so removing the label never re-runs it
-(`workflow_dispatch` is the retry backstop).
+label/draft/fork/SHA rules against the live API state. On issues, `needs-human` is informational
+only: the implementer's escalation removes `dev-loop` (parking) and re-adding `dev-loop` resumes
+— there is no `unlabeled` trigger and no `needs-human` gate on the issue path.
 
 Non-events by design:
 
@@ -287,7 +287,8 @@ Per-role specifics:
 
 - **implementer fails** → nothing exists yet on GitHub except the issue. Post-step comments on
   the issue ("dev-loop implementer failed: <reason>, run: <link>") and labels it `needs-human`.
-  The issue is never lost; removing the label re-triggers the implementer with a fresh budget.
+  The issue is never lost; re-adding the `dev-loop` label re-triggers the implementer with a
+  fresh budget (the escalation removed it to park the issue).
 - **reviewer fails** → the PR sits ready-for-review with no review. Post-step comments
   on the PR with the failure reason. Human can re-run the job or push a trivial change to
   re-trigger `synchronize`. A ready PR with zero findings stays unmergeable by review policy,
@@ -332,6 +333,8 @@ which is also the recovery path if a webhook event was ever missed.
   its own event; the cycle escalates at 8 iterations, in code.
 - A conflicted PR gets a merge commit resolving both sides from the fixer workflow (findings
   or `workflow_run` conflict-only path), and the push is re-reviewed.
-- `needs-human` parks an item; removing the label resumes it with a fresh budget.
+- On PRs, `needs-human` parks the item; removing it resumes it with a fresh budget. On issues,
+  `needs-human` is informational only: the implementer's escalation parks the issue by removing
+  `dev-loop`, and re-adding `dev-loop` resumes it with a fresh budget.
 - Every role run is bounded by the step/token caps and the job timeout; the transcript
   artifact preserves what happened within those bounds.

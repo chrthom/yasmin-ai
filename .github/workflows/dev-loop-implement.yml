@@ -84,12 +84,10 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if gh issue view "$ISSUE_NUMBER" --json labels \
-            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-            echo "Issue #$ISSUE_NUMBER is labeled needs-human; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # needs-human on an issue is informational only: parking is done by
+          # removing the dev-loop label (the escalation post-step does exactly
+          # that), and the resume path is re-adding dev-loop. The gate therefore
+          # does not skip on needs-human.
           if [ -n "$(git ls-remote origin "refs/heads/vibe/issue-$ISSUE_NUMBER-*")" ]; then
             echo "Branch vibe/issue-$ISSUE_NUMBER-* already exists; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -269,7 +267,10 @@ jobs:
         run: |
           set -u
           escalate() {
-            gh issue edit "$ISSUE_NUMBER" --add-label needs-human >/dev/null
+            # Park the issue: remove dev-loop (the opt-in gate then skips future
+            # events) and add needs-human as the informational marker. Resume =
+            # re-adding dev-loop (labeled: dev-loop re-triggers the implementer).
+            gh issue edit "$ISSUE_NUMBER" --remove-label dev-loop --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @chrthom dev-loop implementer escalation: $1
@@ -288,7 +289,7 @@ jobs:
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
             fi
-            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or remove the needs-human label"
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or re-add the dev-loop label"
             exit 0
           fi
 
