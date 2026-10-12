@@ -117,12 +117,15 @@ Non-events by design:
 - `pull_request: [synchronize]` on **draft** PRs is a non-event (no review of intermediate
   draft states; the loop resumes when a human flips the PR ready, which fires
   `ready_for_review`).
-- Direct workflow chaining between roles is the deliberate exception, not the rule: the
-  fixer's push fires `synchronize`, which re-triggers the reviewer. The chained dispatches
+- Direct workflow chaining is the deliberate exception, not the rule: the fixer's push
+  fires `synchronize`, which re-triggers the reviewer. The cross-role chained dispatches
   are reviewer→fixer (a `CHANGES_NEEDED` verdict with the posted review's id; the red-CI
   no-findings dispatch) and fixer→reviewer (a no-op `FIXED` on an unchanged head; a human
   findings review made stale by an unattributed head move — another review's fix or a manual
-  push — so its findings were never consumed by a fixer run for it).
+  push — so its findings were never consumed by a fixer run for it); the same-role
+  re-dispatches — the reviewer's stale-head re-review, the one-shot unparseable-outcome
+  auto-retry of both role post-steps, the fixer's push-to-main conflict-scan fanout — are
+  enumerated where they occur (post-step state machine, Failure handling, event map).
 
 ## Post-step state machine (all post-steps, no agent involvement)
 
@@ -336,7 +339,11 @@ a hard guarantee; the harness cap remains the enforcement and the two complement
 ## Failure handling
 
 Principle: a failed role run never chains, never retries itself, and always leaves a visible
-GitHub trace. No silent stuck states. Every failure path ends in exactly one of:
+GitHub trace. No silent stuck states. "Never retries itself" is scoped to the deterministic
+failure codes below (rc 1, rc 99, rc 124 — never auto-retried); the one exception is the
+unparseable-outcome row: exit 0 without a contract line is presumed a truncated, transient
+run, so the post-step auto-retries it once via `workflow_dispatch` before escalating. Every
+failure path ends in exactly one of:
 (a) a `needs-human` label + marker escalation comment (`@chrthom`, reason, pointers),
 (b) a benign no-op, or (c) an Actions-visible failed run that the dispatch backstop can re-tick.
 
@@ -361,7 +368,7 @@ signal, 99 watchdog kill (convention of this workflow, not opencode's):
 | wall-clock timeout (belt above the time limit) | job killed by `timeout-minutes` (no opencode exit code) | red run; the re-run backstop covers it |
 | usage/config error (bad flag, missing API key) | exit 1 (`Error: ...` in stderr) | escalate; deterministic, a retry fails the same way |
 | tool-failure loop (agent retries failing commands) | watchdog kills opencode after N consecutive failed tool calls (`state.status == "failed"`, or non-zero shell exit in `state.metadata.metadata.exit`) | escalate: the agent could not use its tools; a full budget spent on failing calls is pure waste (this happened on the first live run) |
-| agent finished but outcome unparseable | exit 0, final `text` event doesn't match the contract | escalate with reason "unparseable outcome" + link to the transcript artifact; the transcript is preserved for diagnosis |
+| agent finished but outcome unparseable | exit 0, final `text` event doesn't match the contract | one-shot auto-retry via `workflow_dispatch` (retry=1; the fixer's retry also passes `moved_by_fix`, the first attempt's head-before/after observation, so the retry's stale-review skip stays attribution-aware); on the retried run escalate with reason "unparseable outcome (retry exhausted)" + link to the transcript artifact; the transcript is preserved for diagnosis |
 | agent reported `WALL:` / `NO_PR:` | exit 0, parseable | the designed escalation: implementer comments its questions on the issue + labels it; fixer escalates on the PR |
 | workflow step failed *outside* opencode (npm ci, install, push rejected) | step exit code | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice (run attempt > 1), escalate instead of leaving it red silently |
 
