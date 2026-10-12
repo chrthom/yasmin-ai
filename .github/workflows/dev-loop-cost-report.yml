@@ -71,8 +71,18 @@ jobs:
           # on the PR (the issue-comments API accepts PRs) - a number that
           # resolves to a PR is refused outright. The automatic issues event
           # always carries a real issue number, so this only guards the
-          # backstop's manual input.
-          if gh pr view "$ISSUE_NUMBER" --json number >/dev/null 2>&1; then
+          # backstop's manual input. Like the live-state gate below, only
+          # a could-not-resolve/not-found failure proves "not a PR" and
+          # proceeds quietly; any other gh failure (rate limit, 5xx, network)
+          # is transient and must fail red with the backstop-retry hint
+          # instead of being mistaken for "not a PR".
+          if ! gh pr view "$ISSUE_NUMBER" --json number >/dev/null 2>"$WORK_DIR/pr-gate.err"; then
+            if ! grep -Eqi 'could not resolve|not found|http 404' "$WORK_DIR/pr-gate.err"; then
+              echo "::warning::Could not check whether #$ISSUE_NUMBER is a pull request; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
+              cat "$WORK_DIR/pr-gate.err" || true
+              exit 1
+            fi
+          else
             echo "::warning::$ISSUE_NUMBER is a pull request, not an issue; refusing to produce a cost report."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -118,25 +128,38 @@ jobs:
             printf '[]' > "$WORK_DIR/timeline.json"
           fi
           # A cross-reference timeline event fires for ANY mention of the
-          # issue (comments, review bodies, edited-away text), so a
-          # cross-referenced PR is only attributed when its live body
-          # still carries a closing reference - Closes|Fixes|Resolves #<N>
-          # or the issue-URL form GitHub also auto-closes on - otherwise
-          # unrelated PRs' reviewer/fixer costs would be double-counted
-          # across issues.
-          timeline_prs="$(jq -s 'add // []
+          # issue (comments, review bodies, edited-away text) and can
+          # originate in another repository, whose local PR numbers mean
+          # something different here - so only same-repo cross-references
+          # are considered, and a cross-referenced PR is only attributed
+          # when its live body still carries a closing reference -
+          # Closes|Fixes|Resolves #<N> or the issue-URL form GitHub also
+          # auto-closes on - otherwise unrelated PRs' reviewer/fixer
+          # costs would be double-counted across issues.
+          timeline_prs="$(jq -s --arg repo "${GH_REPO}" 'add // []
             | [.[] | select(.event == "cross-referenced")
                        | .source.issue
                        | select(.pull_request != null)
+                       | select((.url // "") | startswith("https://api.github.com/repos/" + $repo + "/issues/"))
                        | .number] | unique | .[]' "$WORK_DIR/timeline.json" 2>/dev/null || true)"
           closing_prs=""
+          # Closing-reference pattern (keyword + separator + this issue's
+          # number or issue URL). A negation word immediately before the
+          # keyword (not|no|never|won't|n't, e.g. "does not close #<N>")
+          # explicitly negates the close and must not attribute the PR;
+          # the n't form has no left word boundary on purpose - it is a
+          # suffix, so "doesn't close #<N>" must match too. Both greps work
+          # per line: a negated reference on one line does not void a
+          # genuine closing reference on another line of the same body.
+          closing_re="(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://[^[:space:]')]*${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
+          negated_re="((^|[^[:alpha:]])(not|no|never|won'?t)|n'?t)[[:space:]]+(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://[^[:space:]')]*${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
           for pr in $timeline_prs; do
             if ! pr_body="$(gh pr view "$pr" --json body --jq '.body // ""' 2>"$WORK_DIR/pr-body-$pr.err")"; then
               echo "::warning::Could not read PR #$pr's body; the cross-referenced PR is not attributed to this issue."
               cat "$WORK_DIR/pr-body-$pr.err" || true
               continue
             fi
-            if printf '%s\n' "$pr_body" | grep -Eqi "(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://[^[:space:]')]*${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"; then
+            if [ -n "$(printf '%s\n' "$pr_body" | grep -Ei "$closing_re" | grep -Eiv "$negated_re")" ]; then
               closing_prs+="${pr}"$'\n'
             fi
           done

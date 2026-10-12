@@ -192,7 +192,9 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
   dispatch inputs). The report resolves the issue's PRs two ways — cross-referenced PRs whose
   live body still carries a closing keyword reference (`Closes|Fixes|Resolves #<N>` or the
   issue-URL form; a
-  cross-reference event fires for any mention, so the mention alone must not attribute costs)
+  cross-reference event fires for any mention, so the mention alone must not attribute costs;
+  cross-references from other repositories are ignored — their local PR numbers mean
+  something different here — and so are negated references like "does not close #<N>")
   plus the `vibe/issue-<N>-*` branch convention — then matches artifact names. The
   association assumes the loop's one-PR-per-issue convention: a PR that closes (or
   branch-matches) two dev-loop issues contributes its full reviewer/fixer run costs to
