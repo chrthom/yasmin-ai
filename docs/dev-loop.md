@@ -158,6 +158,12 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 - Conflict resolution runs in the **fixer workflow** (`synchronize` / `push: main` triggers),
   not inside CI: CI stays fast, deterministic and trusted; the agentic, budgeted,
   escalation-capable run would otherwise make "the build is red" mean two different things.
+- **Review-post hardening**: before posting, the post-step deletes any stale
+  pending review of the token user (one-pending-review-per-user-per-PR is an
+  API limit; a leftover from a failed post 422-blocks every future POST - the
+  PR #106 wedge), validates the payload file is valid JSON, surfaces gh's full
+  error object in the log instead of discarding it, and never dispatches the
+  fixer with a non-numeric review id.
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
   fetches the failing check logs). An auto-format push never reaches the fixer this way —
