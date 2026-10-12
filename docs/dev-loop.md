@@ -44,7 +44,7 @@ picking the item up on future events.
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
 | `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate |
-| `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
+| `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
 | `pull_request: [synchronize]` + `mergeable == CONFLICTING` | fixer (conflict-only run) | conflict origin 1: the PR's own push made it conflicting; one fixer run per head SHA |
 | `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
@@ -158,6 +158,11 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 - Conflict resolution runs in the **fixer workflow** (`synchronize` / `push: main` triggers),
   not inside CI: CI stays fast, deterministic and trusted; the agentic, budgeted,
   escalation-capable run would otherwise make "the build is red" mean two different things.
+- **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
+  (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
+  fetches the failing check logs). An auto-format push never reaches the fixer this way —
+  the formatter's own push moves the tip, so the waiting reviewer skips and the new head's
+  `synchronize` starts a fresh cycle; the formatted head's CI is green by construction.
 
 ## New files
 
@@ -271,9 +276,16 @@ GitHub trace. No silent stuck states. Every failure path ends in exactly one of:
 
 The opencode exit code and the event stream (`out/stream.ndjson` + `out/opencode.stderr`)
 are the discriminators. Opencode v2.0.26 exit codes (measured): 0 finished, 1 config or
-infrastructure failure (not reliably separable by rc — classify from stderr; never
-auto-retry), 124 deadline (`timeout(1)`), 130 killed by signal, 99 watchdog kill
-(convention of this workflow, not opencode's):
+infrastructure failure **or a session that recorded (recovered) tool errors** — v2.0.26
+exits 1 whenever any tool call errored, even when the agent recovered and completed its
+work with a valid contract line (observed on the #98/#99 loop: failed `websearch`/`webfetch`
+calls, no search-provider key configured, flip an otherwise successful run to rc 1; the
+role jobs now pass `TAVILY_API_KEY` and pin `"websearch": {"provider": "tavily"}` in the
+job-local `opencode.jsonc` when the secret is set, so websearch/webfetch work headless). The
+post-steps therefore treat rc 1 as finished **iff** the final message parses the role's
+outcome contract (`PR_URL:`/`NO_PR:`/`WALL:`, `VERDICT:`, `FIXED:`/`WALL:`), and escalate
+only when it does not. Remaining exit codes: 124 deadline (`timeout(1)`), 130 killed by
+signal, 99 watchdog kill (convention of this workflow, not opencode's):
 
 | What failed | Detection | Handling (post-step, in code) |
 | --- | --- | --- |
