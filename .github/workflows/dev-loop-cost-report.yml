@@ -135,13 +135,20 @@ jobs:
           # when its live body still carries a closing reference -
           # Closes|Fixes|Resolves #<N> or the issue-URL form GitHub also
           # auto-closes on - otherwise unrelated PRs' reviewer/fixer
-          # costs would be double-counted across issues.
-          timeline_prs="$(jq -s --arg repo "${GH_REPO}" 'add // []
+          # costs would be double-counted across issues. A jq failure here
+          # (a malformed timeline.json) must not silently empty timeline_prs
+          # - the report would degrade to the branch-convention scan alone
+          # on a green run - so it warns like the branch-scan jq below.
+          if ! timeline_prs="$(jq -s --arg repo "${GH_REPO}" 'add // []
             | [.[] | select(.event == "cross-referenced")
                        | .source.issue
                        | select(.pull_request != null)
                        | select((.url // "") | startswith("https://api.github.com/repos/" + $repo + "/issues/"))
-                       | .number] | unique | .[]' "$WORK_DIR/timeline.json" 2>/dev/null || true)"
+                       | .number] | unique | .[]' "$WORK_DIR/timeline.json" 2>"$WORK_DIR/timeline-scan.err")"; then
+            echo "::warning::Could not scan the issue timeline for cross-referenced PRs; the report may undercount runs from closing-reference PRs."
+            cat "$WORK_DIR/timeline-scan.err" || true
+            timeline_prs=""
+          fi
           closing_prs=""
           # Closing-reference pattern (keyword + separator + this issue's
           # number or issue URL). A negation word immediately before the
@@ -270,9 +277,20 @@ jobs:
             # per-step cost fields, tokens = the cost-weighted sum the
             # MAX_TOKENS watchdog cap enforces. Round the per-run cost to
             # cents so the reported per-run numbers have no float artifacts.
-            cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' "$dl/stream.ndjson" 2>/dev/null || echo 0)"
+            # A hard-killed run can leave a truncated final line in
+            # stream.ndjson, which fails jq -s: a parse failure means the
+            # run's data is unusable, so - like a missing stream.ndjson
+            # above - the run is counted as unavailable instead of being
+            # silently zeroed into the totals.
+            cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' "$dl/stream.ndjson" 2>"$dl/parse.err" || true)"
             tokens="$(jq -s '[.[].part.tokens // empty
-              | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' "$dl/stream.ndjson" 2>/dev/null || echo 0)"
+              | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' "$dl/stream.ndjson" 2>>"$dl/parse.err" || true)"
+            if [ -z "$cost" ] || [ -z "$tokens" ]; then
+              echo "::warning::Artifact $art_name carries an unparseable stream.ndjson; skipping the run."
+              cat "$dl/parse.err" || true
+              unavailable=$((unavailable + 1))
+              continue
+            fi
             printf '{"role":"%s","run_id":"%s","cost":%s,"tokens":%s}\n' "$role" "$run_id" "$cost" "$tokens" >> "$WORK_DIR/runs.jsonl"
           done < "$WORK_DIR/matched.tsv"
           runs_found=false
@@ -378,7 +396,7 @@ jobs:
 
           note=""
           if [ "$UNAVAILABLE" -gt 0 ]; then
-            note="$(printf '\n\n%s further matched artifact(s) were unavailable (expired or failed to download); the totals undercount those runs.' "$UNAVAILABLE")"
+            note="$(printf '\n\n%s further matched artifact(s) were unavailable (expired, failed to download, or unparseable); the totals undercount those runs.' "$UNAVAILABLE")"
           fi
 
           cat > "$WORK_DIR/body.md" <<EOF
@@ -411,7 +429,7 @@ jobs:
             {
               printf '<!-- dev-loop-cost-report -->\n'
               printf '**Dev-loop cost report for issue #%s**\n\n' "$ISSUE_NUMBER"
-              printf 'All %s matched artifact(s) were unavailable (expired or failed to download); no run data remains, so no totals are reported. Re-run the workflow_dispatch backstop to retry.\n' "$UNAVAILABLE"
+              printf 'All %s matched artifact(s) were unavailable (expired, failed to download, or unparseable); no run data remains, so no totals are reported. Re-run the workflow_dispatch backstop to retry.\n' "$UNAVAILABLE"
             } > "$WORK_DIR/body.md"
           fi
           jq -n --arg body "$(cat "$WORK_DIR/body.md")" '{body: $body}' > "$WORK_DIR/payload.json"
