@@ -237,6 +237,18 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # The same queue-delay window also covers a PR closed between the
+          # scan's gh pr list and this run's gate: it still passes every check
+          # above (closed PRs report mergeable UNKNOWN, and a conflicted
+          # head's checks are red, so the no-findings re-check below would
+          # find "work") - burning a full agent run on a merge commit pushed
+          # onto the closed PR's branch. Covers every dispatch origin (push
+          # scan, red-CI, manual/retry), mirroring the isDraft re-check.
+          if [ "$(gh pr view "$PR_NUMBER" --json state --jq .state)" != "OPEN" ]; then
+            echo "PR #$PR_NUMBER is not open; the loop never touches closed PRs. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if gh pr view "$PR_NUMBER" --json labels \
             | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
             echo "PR #$PR_NUMBER is labeled needs-human; skipping."
@@ -295,10 +307,13 @@ jobs:
             # the CI failure. Proceed without findings; the fixer prompt
             # handles a missing review (conflict and/or CI-failure task).
             mergeable=""
-            for _ in 1 2 3 4 5; do
+            for attempt in 1 2 3 4 5; do
               mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
               [ "$mergeable" != "UNKNOWN" ] && break
-              sleep 10
+              # mergeable is read after the loop, so sleep only when another
+              # attempt follows - a trailing sleep after the final attempt
+              # would wait for data nobody reads.
+              [ "$attempt" = 5 ] || sleep 10
             done
             head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
             ci_red="false"
