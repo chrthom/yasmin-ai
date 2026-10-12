@@ -2,7 +2,10 @@ name: Dev Loop Implement
 
 on:
   issues:
-    types: [opened, reopened, labeled, unlabeled]
+    # No unlabeled trigger: needs-human is ignored on issues, so removing it is
+    # not a resume event for the implementer - the manual backstop
+    # (workflow_dispatch) covers a retry after a needs-human escalation.
+    types: [opened, reopened, labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -28,6 +31,11 @@ concurrency:
 jobs:
   implement:
     name: Implementer (issue -> draft PR)
+    # Job-level event filter (docs/dev-loop.md): a labeled event for any
+    # label other than dev-loop can never start the implementer - skip before
+    # a runner is allocated. The gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name != 'dev-loop')
     runs-on: ubuntu-latest
     # 15 min above --time-limit (5400 s = 90 min), per docs/dev-loop.md budgets table
     timeout-minutes: 105
@@ -52,7 +60,6 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           EVENT_ACTION: ${{ github.event.action }}
           LABELED_NAME: ${{ github.event.label.name }}
-          UNLABELED_NAME: ${{ github.event.label.name }}
         run: |
           set -eu
           if [ -z "$ISSUE_NUMBER" ]; then
@@ -67,11 +74,6 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$EVENT_ACTION" = "unlabeled" ] && [ "$UNLABELED_NAME" != "needs-human" ]; then
-            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
           gh label create dev-loop --color 46A1AA \
@@ -82,12 +84,10 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if gh issue view "$ISSUE_NUMBER" --json labels \
-            | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
-            echo "Issue #$ISSUE_NUMBER is labeled needs-human or skip-dev-loop; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # needs-human on an issue is informational only: parking is done by
+          # removing the dev-loop label (the escalation post-step does exactly
+          # that), and the resume path is re-adding dev-loop. The gate therefore
+          # does not skip on needs-human.
           if [ -n "$(git ls-remote origin "refs/heads/vibe/issue-$ISSUE_NUMBER-*")" ]; then
             echo "Branch vibe/issue-$ISSUE_NUMBER-* already exists; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -267,7 +267,10 @@ jobs:
         run: |
           set -u
           escalate() {
-            gh issue edit "$ISSUE_NUMBER" --add-label needs-human >/dev/null
+            # Park the issue: remove dev-loop (the opt-in gate then skips future
+            # events) and add needs-human as the informational marker. Resume =
+            # re-adding dev-loop (labeled: dev-loop re-triggers the implementer).
+            gh issue edit "$ISSUE_NUMBER" --remove-label dev-loop --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @chrthom dev-loop implementer escalation: $1
@@ -286,7 +289,7 @@ jobs:
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
             fi
-            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or remove the needs-human label"
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or re-add the dev-loop label"
             exit 0
           fi
 

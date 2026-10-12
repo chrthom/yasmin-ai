@@ -32,6 +32,13 @@ concurrency:
 jobs:
   review:
     name: Reviewer (PR -> marker review -> state post-step)
+    # Job-level event filter (docs/dev-loop.md): a labeled event for any label
+    # other than dev-loop, or an unlabeled event for any label other than
+    # needs-human, can never start the reviewer - skip before a runner is
+    # allocated. The gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'dev-loop') &&
+      !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human')
     runs-on: ubuntu-latest
     # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
     timeout-minutes: 75
@@ -100,8 +107,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
-            echo "PR #$PR_NUMBER is labeled needs-human or skip-dev-loop; skipping."
+          if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
+            echo "PR #$PR_NUMBER is labeled needs-human; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
