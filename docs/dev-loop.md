@@ -279,8 +279,8 @@ role jobs now pass `TAVILY_API_KEY` and pin `"websearch": {"provider": "tavily"}
 job-local `opencode.jsonc` when the secret is set, so websearch/webfetch work headless). The
 post-steps therefore treat rc 1 as finished **iff** the final message parses the role's
 outcome contract (`PR_URL:`/`NO_PR:`/`WALL:`, `VERDICT:`, `FIXED:`/`WALL:`), and escalate
-only when it does not. 124 deadline (`timeout(1)`), 130 killed by signal, 99 watchdog kill
-(convention of this workflow, not opencode's):
+only when it does not. Remaining exit codes: 124 deadline (`timeout(1)`), 130 killed by
+signal, 99 watchdog kill (convention of this workflow, not opencode's):
 
 | What failed | Detection | Handling (post-step, in code) |
 | --- | --- | --- |

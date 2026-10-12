@@ -398,7 +398,7 @@ jobs:
             # through to normal handling when the contract line parses, and
             # escalate only when it does not.
             contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
-              | grep -E '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | tail -1 || true)"
+              | grep -E '^(VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)|WALL:)' | tail -1 || true)"
             if [ -z "$contract_line" ]; then
               escalate "opencode failed (exit 1, no VERDICT line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
               exit 0

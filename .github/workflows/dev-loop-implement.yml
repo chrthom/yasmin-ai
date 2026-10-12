@@ -387,4 +387,5 @@ jobs:
 
           if [ "$rc" != "0" ]; then
             escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
+            exit 0
           fi
