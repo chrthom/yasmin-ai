@@ -67,8 +67,8 @@ jobs:
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
           if gh issue view "$ISSUE_NUMBER" --json labels \
-            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-            echo "Issue #$ISSUE_NUMBER is labeled needs-human; skipping."
+            | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER is labeled needs-human or skip-dev-loop; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -278,7 +278,9 @@ jobs:
           # (opencode reports cost/tokens on every step_finish event). tokens
           # uses the same cost-weighted sum as the watchdog cap, so the
           # reported number matches what the cap enforced.
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          # Round to cents: every consumer prints $cost verbatim, and the raw
+          # sum has float artifacts (e.g. $0.16212848000000002).
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           tokens="$(jq -s '[.[].part.tokens // empty
             | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
@@ -314,7 +316,19 @@ jobs:
                 exit 0
                 ;;
               *)
-                escalate "unparseable outcome (exit 0, final message does not match the contract); transcript artifact preserved for diagnosis"
+                # A clean exit (rc=0) with no contract line is usually a
+                # truncated run (agent stopped mid-implementation, opencode
+                # gave up silently) - transient, unlike a deterministic parse
+                # failure. Retry once via workflow_dispatch; the counter in
+                # the retry input prevents a loop. The gate's branch-exists
+                # check (vibe/issue-<N>-*) makes a retry after a half-finished
+                # run safe: it skips if the implementer got far enough to push.
+                if [ "$RETRY_COUNT" -lt 1 ] \
+                  && gh workflow run dev-loop-implement.yml --ref main -f issue_number="$ISSUE_NUMBER" -f retry=1; then
+                  echo "Unparseable implementer outcome (cost: \$$cost, tokens: $tokens); re-dispatching the implementer once (retry=1). Transcript artifact preserved for diagnosis."
+                  exit 0
+                fi
+                escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"
                 exit 0
                 ;;
             esac

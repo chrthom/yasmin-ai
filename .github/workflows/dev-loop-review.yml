@@ -2,12 +2,17 @@ name: Dev Loop Review
 
 on:
   pull_request:
-    types: [ready_for_review, synchronize, unlabeled]
+    types: [opened, ready_for_review, synchronize, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
         description: PR number to review (manual backstop / fixer chain)
         required: true
+        type: string
+      retry:
+        description: Internal retry counter (do not edit)
+        required: false
+        default: '0'
         type: string
 
 permissions:
@@ -72,13 +77,13 @@ jobs:
             --description "dev-loop: human decision required" 2>/dev/null || true
           pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
           if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ] \
-            && [ "$EVENT_ACTION" = "synchronize" ]; then
-            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review. Skipping."
+            && { [ "$EVENT_ACTION" = "synchronize" ] || [ "$EVENT_ACTION" = "opened" ]; }; then
+            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review, and a draft open waits for ready_for_review. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-            echo "PR #$PR_NUMBER is labeled needs-human; skipping."
+          if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
+            echo "PR #$PR_NUMBER is labeled needs-human or skip-dev-loop; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -295,6 +300,7 @@ jobs:
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -327,7 +333,9 @@ jobs:
           # (opencode reports cost/tokens on every step_finish event). tokens
           # uses the same cost-weighted sum as the watchdog cap, so the
           # reported number matches what the cap enforced.
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          # Round to cents: every consumer prints $cost verbatim, and the raw
+          # sum has float artifacts (e.g. $0.16212848000000002).
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "99" ]; then
@@ -385,7 +393,18 @@ jobs:
           case "${verdict_line:-}" in
             VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
             *)
-              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract); transcript artifact preserved for diagnosis"
+              # A clean exit (rc=0) with no VERDICT line is usually a truncated
+              # run (agent stopped mid-investigation, opencode gave up silently)
+              # - transient, unlike a deterministic parse failure. Retry once
+              # via workflow_dispatch; the retry counter in the input prevents
+              # a loop. The retry run re-reviews the same head; no marker review
+              # was posted, so the reviewer gate's dedupe cannot block it.
+              if [ "$RETRY_COUNT" -lt 1 ] \
+                && gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER" -f retry=1; then
+                echo "Unparseable outcome with no VERDICT line (cost: \$$cost); re-dispatching the reviewer once (retry=1). Transcript artifact preserved for diagnosis."
+                exit 0
+              fi
+              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract; retry exhausted); transcript artifact preserved for diagnosis"
               exit 0
               ;;
           esac
