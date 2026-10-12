@@ -79,13 +79,17 @@ partitioned by review shape, not identity alone):
 - **Answers while parked** (`needs-human`): inline replies to review comments and answers under
   the `<!-- dev-loop-escalation -->` comment are NOT triggers (empty-body replies are
   pre-filtered); they are consumed by the resume path - removing `needs-human` re-fixes the
-  latest findings review: the newest owner-authored `CHANGES_NEEDED` marker review, or the
-  owner's human findings review when it is newer (a fixer run that escalated on a human
-  review - WALL, watchdog, deadline or a pre-agent failure - resumes into that same review
-  instead of dead-ending on a stale marker review or a silent no-op). The fixer prompt reads
-  the review-comment threads (`pulls/<N>/comments`, which includes `in_reply_to_id` threaded
-  replies that neither the review-scoped endpoints nor `gh pr view --comments` show) and the
-  escalation conversation, where the owner's answers override the review.
+  newest owner findings review: the newest owner review overall, kept only when its shape is
+  consumable (a marker review needs `Verdict: CHANGES_NEEDED`; a human findings review must be
+  non-marker `COMMENTED`). A newer non-CHANGES_NEEDED marker verdict stands on its own and
+  suppresses an older human findings review (the reviewer workflow's unlabeled resume path
+  re-reviews with a fresh budget instead), so a fixer run that escalated on a human review -
+  WALL, watchdog, deadline or a pre-agent failure - resumes into that same review only while
+  it stays the newest owner review, instead of dead-ending on a stale marker review or a
+  silent no-op. The fixer prompt reads the review-comment threads (`pulls/<N>/comments`,
+  which includes `in_reply_to_id` threaded replies that neither the review-scoped endpoints
+  nor `gh pr view --comments` show) and the escalation conversation, where the owner's
+  answers override the review.
 - **Steering an active cycle**: park first (`needs-human`), write the answers, then resume -
   this serializes human input instead of racing the cycle.
 - **Merge decision**: the loop never merges; the human merge click is the final act.
@@ -100,8 +104,11 @@ Non-events by design:
 - `pull_request: [synchronize]` on **draft** PRs is a non-event (no review of intermediate
   draft states; the loop resumes when a human flips the PR ready, which fires
   `ready_for_review`).
-- No direct workflow chaining between roles: the fixer's push fires `synchronize`, which
-  re-triggers the reviewer. Nothing else chains.
+- Direct workflow chaining between roles is the deliberate exception, not the rule: the
+  fixer's push fires `synchronize`, which re-triggers the reviewer. The chained dispatches
+  are reviewer→fixer (a `CHANGES_NEEDED` verdict with the posted review's id; the red-CI
+  no-findings dispatch) and fixer→reviewer (a no-op `FIXED` on an unchanged head; a human
+  findings review made stale by another fix's push, so its findings were never consumed).
 
 ## Post-step state machine (all post-steps, no agent involvement)
 
@@ -193,12 +200,13 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   not inside CI: CI stays fast, deterministic and trusted; the agentic, budgeted,
   escalation-capable run would otherwise make "the build is red" mean two different things.
 - **Review-post hardening**: before posting, the post-step deletes a stale pending review of
-  the token user **only if it carries zero draft comments** (one-pending-review-per-user-per-PR
-  is an API limit; a comment-less leftover from a failed post 422-blocks every future POST - the
-  PR #106 wedge; a pending review WITH draft comments may be the owner's findings review being
-  drafted in the GitHub UI - the token user is the owner - and is never deleted), validates the
-  payload file is valid JSON, surfaces gh's full error object in the log instead of discarding
-  it, and never dispatches the fixer with a non-numeric review id.
+  the token user **only if it carries zero draft comments AND an empty body**
+  (one-pending-review-per-user-per-PR is an API limit; a comment-less, body-less leftover from
+  a failed post 422-blocks every future POST - the PR #106 wedge; a pending review WITH draft
+  comments or a body may be the owner's findings review being drafted in the GitHub UI - the
+  token user is the owner, and the body is the primary human findings payload - and is never
+  deleted), validates the payload file is valid JSON, surfaces gh's full error object in the
+  log instead of discarding it, and never dispatches the fixer with a non-numeric review id.
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
   fetches the failing check logs). An auto-format push never reaches the fixer this way —
