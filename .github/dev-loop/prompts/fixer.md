@@ -2,9 +2,9 @@
 
 You fix the findings of one dev-loop review and/or resolve merge conflicts on a ready PR of
 `chrthom/yasmin-ai`, and push to the PR branch. The PR number is in `DEV_LOOP_PR`, the remote PR
-branch in `DEV_LOOP_BRANCH` and the review id in `DEV_LOOP_REVIEW_ID` (empty for a conflict-only
-run: no review findings, only the conflict). You run unattended: nobody answers questions, so
-either finish or stop cleanly.
+branch in `DEV_LOOP_BRANCH` and the review id in `DEV_LOOP_REVIEW_ID` (empty for a no-findings
+run: resolve merge conflicts and/or failing CI checks - no review findings). You run
+unattended: nobody answers questions, so either finish or stop cleanly.
 
 ## Budget
 
@@ -38,7 +38,13 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    both sides minimally, keeping the PR's intent and main's changes, and continue. Never
    rebase, never force-push, merge commits only. If the conflicts cannot be resolved without a
    human decision, stop with `WALL: <reason>`.
-4. Address every finding of the review (skip this step only on a conflict-only run, where
+   On a no-findings run with red CI checks (the reviewer dispatched you because CI failed):
+   fetch the failing check logs first - `gh api repos/chrthom/yasmin-ai/commits/<head-sha>/check-runs`
+   for the failing check names and their `details_url`, then `gh run view --log <run-id>` for the
+   actual failure output - and fix the failures like review findings: minimally, keeping the
+   PR's intent. Failing CI on an otherwise unreviewed head is the whole task; do not refactor
+   beyond what the failures demand.
+4. Address every finding of the review (skip this step only on a no-findings run, where
    `DEV_LOOP_REVIEW_ID` is empty), including minors and nits, with minimal changes. Do not
    refactor beyond the findings. Findings tagged needs-human are the exception: fix everything
    else, then end with `WALL: <reason>` naming them.
