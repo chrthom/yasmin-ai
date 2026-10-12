@@ -2,71 +2,99 @@
 
 Successor design to PR #80 (`.openclaude/` skill/agents/guard): GitHub Actions replaces the
 orchestrator (no cron tick, no `state.json`, no command-text guard); the agentic work
-(implement / review / fix / merge-conflicts) stays with a real coding-agent harness —
-Mistral models via OpenCode — executed headless on the workflow runner, with its full local toolset
-(edit files, `npm run build`, `npm test`, `npm run lint`, `npx prettier`).
+(implement / review / fix, including merge-conflict resolution) stays with a real coding-agent
+harness — Mistral models via OpenCode — executed headless on the workflow runner, with its
+full local toolset (edit files, `npm run build`, `npm test`, `npm run lint`, `npx prettier`).
 
 GitHub is the source of truth (issues, PRs, reviews, labels). The loop is fully event-driven:
-every dispatch follows a GitHub event or a direct chain from a preceding role's post-step.
+every dispatch follows a GitHub event. No role ever chains another workflow directly; the
+chain is the GitHub event the previous role's push fires.
 
 ## Architecture
 
 ```
-GitHub event (or previous post-step)
+GitHub event
         │
         ▼
-role workflow (reviewer / fixer / merger / implementer)
-  pre-step: gate + dedupe (head SHA, verdict, iteration cap)
+role workflow (reviewer / fixer / implementer)
+  pre-step: gate + dedupe (dev-loop label, draft, needs-human, head SHA, iteration cap)
   job:      checkout → Node 22 → npm ci → render prompt (budget injected) →
             timeout --signal=TERM --kill-after=60 <time-limit> opencode run --standalone
             --format json --auto --model mistral/zai-glm-5-3 "$(cat out/<role>.rendered.md)"
             (with a failure-streak / step / token watchdog on the stream)
   post-step: deterministic state machine from out/stream.ndjson + out/opencode.stderr
-             (ready/draft, labels, escalation, next dispatch)
+             (labels, escalation, failure classification)
 ```
 
 Agents never change PR state (draft/ready/labels) themselves: every state transition is a
-workflow post-step, auditable in the run log, enforceable in code.
+workflow post-step, auditable in the run log, enforceable in code. There is **no draft/ready
+state machine**: the loop does not flip PRs between draft and ready. Draft status is a human
+parking brake — draft PRs are simply never touched by the loop.
+
+## Opt-in: the `dev-loop` label
+
+The loop is opt-in, not opt-out. No workflow touches an issue or PR unless it carries the
+`dev-loop` label. The label is the first gate line in every workflow, evaluated before all
+other checks; if the label is absent, the run skips without side effects. Adding the label to
+an existing issue or PR starts the loop (`labeled` trigger); removing it stops the loop from
+picking the item up on future events.
 
 ## Event map (final, agreed)
 
 | Trigger | Fires | Guard / notes |
 | --- | --- | --- |
-| `issues: [opened, reopened]` | implementer | skip if `needs-human`, `skip-dev-loop`, or a `vibe/issue-<N>-*` branch exists |
-| `pull_request: [opened]` | reviewer | **only if PR is not draft** and not labeled `skip-dev-loop` (a PR created ready never fires `ready_for_review`); draft opens wait for ready_for_review; marker-dedupe on head SHA |
-| `pull_request: [ready_for_review]` | reviewer | primary review trigger; skip if `skip-dev-loop`; marker-dedupe on head SHA |
-| `pull_request: [synchronize]` | reviewer | **only if PR is not draft** and not labeled `skip-dev-loop` (push to a ready PR invalidates its CLEAN verdict); drafts stay push-silent |
+| `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if `needs-human` or a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue |
+| `pull_request: [ready_for_review, synchronize]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA |
 | `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN` and human reviews start nothing |
-| fixer post-step, outcome `finished` | reviewer | **direct workflow chain** (no GitHub event; recursion guard irrelevant) |
-| `workflow_run` (`ci.yml` completed) + `mergeable == CONFLICTING` | merger | covers both conflict origins: PR diverges, or `main` moved under it |
-| `issues/pull_request: [unlabeled]` on `needs-human` | resume | reviewer or fixer, per PR state; resets the iteration budget |
+| `workflow_run` (`ci.yml` completed) + `mergeable == CONFLICTING` | fixer (conflict-only run) | covers both conflict origins: PR diverges, or `main` moved under it; one fixer run per head SHA |
+| `issues/pull_request: [unlabeled]` on `needs-human` | resume | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label |
 | `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
 
 Non-events by design:
 
-- `pull_request: [converted_to_draft]` is **never a trigger** — it is ambiguous (reviewer
-  post-step and merger post-step both use it) and would double-dispatch.
+- `pull_request: [converted_to_draft]` is **never a trigger** — a draft PR is simply never
+  reviewed; no dispatch is needed to express that.
 - `pull_request: [synchronize]` on **draft** PRs is a non-event (no review of intermediate
-  draft states; re-review happens only at ready-for-review or via the fixer chain).
+  draft states; the loop resumes when a human flips the PR ready, which fires
+  `ready_for_review`).
+- No direct workflow chaining between roles: the fixer's push fires `synchronize`, which
+  re-triggers the reviewer. Nothing else chains.
 
-## Draft/ready state machine (all post-steps, no agent involvement)
+## Post-step state machine (all post-steps, no agent involvement)
 
 | Post-step | Condition | Action |
 | --- | --- | --- |
-| reviewer | `Verdict: CLEAN` | `gh pr ready` |
-| reviewer | `Verdict: CHANGES_NEEDED` | ensure draft (usually already draft → no event) |
+| reviewer | `Verdict: CHANGES_NEEDED` | dispatch the fixer with the posted review's id (direct chain is the single exception: no GitHub event carries the review id) |
 | reviewer | `Verdict: NEEDS_HUMAN` | label `needs-human` + marker escalation comment `@chrthom` |
 | reviewer | head SHA moved since review start | re-dispatch reviewer (stale review is not acted on) |
-| fixer | outcome `finished` | chain reviewer workflow directly |
+| fixer | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer |
 | fixer | outcome `WALL:`/budget stop | label `needs-human` + escalation comment |
-| merger | merge commit pushed | `gh pr ready --undo` (conflict resolution is a code change → re-review) |
-| merger | outcome `WALL:` | label `needs-human` + escalation comment |
-| implementer | outcome `finished` | open draft PR (`Closes #<N>`); PR stays draft |
+| implementer | outcome `finished` | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review |
 | implementer | outcome `NO_PR` | comment questions on the issue + label `needs-human` |
 
-The reviewer's `gh pr ready` fires `ready_for_review`, which re-triggers the reviewer
-workflow — harmless: the marker-dedupe (same head SHA, existing `CLEAN` review) makes it a
-no-op.
+The reviewer is never called twice for the same work: dispatches on the same PR serialize in
+the shared `dev-loop-pr-<N>` concurrency group, the head-SHA marker dedupe makes at most one
+review per commit, and a push landing mid-review is handled by the stale-head re-dispatch (the
+older verdict is never acted on). If the fixer and a conflict-only fixer run both push, those
+are distinct head SHAs — each legitimately gets its own review.
+
+## The fixer absorbs the merger
+
+There is no separate merger role. The fixer's scope grows by merge-conflict resolution:
+
+- The fixer prompt checks `mergeable` first; a `CONFLICTING` PR is no longer an abort
+  (`CONFLICTING` outcome removed) — the fixer merges `origin/main` into the PR branch with a
+  merge commit, resolving both sides minimally, then proceeds to the findings (conflicts first:
+  `npm run build`/`npm test` cannot run meaningfully on a conflicted tree).
+- The `workflow_run` (ci.yml completed + `CONFLICTING`) trigger dispatches the **same** fixer
+  workflow with a conflict-only task: no open `CHANGES_NEEDED` review, only the conflict.
+- Conflict-dispatch dedupe: one fixer run per head SHA — a long-conflicted PR is not re-run on
+  every CI tick; the next push (or a manual `workflow_dispatch`) moves the head and re-offers.
+- Prompt rules carried over from the old merger role verbatim: "never rebase, merge commits
+  only"; unresolvable conflicts end with `WALL: <reason>`.
+
+Outcome contract (fixer): `FIXED: <summary>` or `WALL: <reason>` — nothing else. The post-step
+verifies the claim against reality (head SHA moved) before relying on it.
 
 ## Loop bounding
 
@@ -77,48 +105,56 @@ no-op.
 - **Per-run budgets**: step cap / token cap on every role run, enforced by the stream
   watchdog (plus the job `timeout-minutes` and `timeout(1)` as the wall-clock caps); a budget
   stop escalates instead of chaining.
-- **Fixer chains only on `finished`**: `WALL:` or a limit-stop breaks the cycle.
+- **Fixer completes only on `FIXED`**: `WALL:` or a limit-stop breaks the cycle; a successful
+  fix re-enters the loop purely via its own `synchronize` event.
 - **One review per head SHA**: pre-step skips if a marker review with `commit_id == headRefOid`
   exists; a push landing mid-review re-dispatches after the stale review completes.
+- **One fixer run per head SHA** (conflict path): the `workflow_run` gate skips if the current
+  head SHA already had a fixer attempt.
 
 ## Guardrails (replacing `guard-bash.mjs`)
 
 - **Push safety**: branch protection on `main` (no direct pushes, no force-push, PRs only).
 - **Per-role tokens**: fine-grained PAT, this repo only, `contents:write` +
-  `pull-requests:write` for implementer/fixer/merger; the reviewer job posts its review from
-  the workflow step (not the agent), so its agent run can use a read-only environment.
+  `pull-requests:write` for implementer/fixer; the reviewer job posts its review from the
+  workflow step (not the agent), so its agent run can use a read-only environment.
 - **PAT rule (critical)**: all dev-loop posts (reviews, comments, pushes, label changes) use
   the PAT, **never** `GITHUB_TOKEN` — events created by `GITHUB_TOKEN` do not trigger further
   workflows (GitHub recursion guard); the PAT keeps the chain alive.
-- **Own-repo PRs only**: `if: github.event.pull_request.head.user.id == github.repository_owner.id`
-  on all `pull_request*` triggers; never `pull_request_target`. Fork PRs are skipped, as in PR #80.
-- **Draft-only PR creation**: only the reviewer post-step may run `gh pr ready` and only on
-  `CLEAN`; agents are prompt-forbidden from `gh pr ready`/`gh pr merge` entirely.
-- **Kept as prompt rules**: "never rebase, merge commits only" (merger), "fix findings
-  minimally" (fixer), "review adversarially, report every nit" (reviewer).
+- **Own-repo PRs only**: compare `pull_request.head.repo.id` against `repository.id` (same
+  repository-ID space; an owner ID never matches — see PR #93); never `pull_request_target`.
+  Fork PRs are skipped, as in PR #80. On the `workflow_run` trigger the event payload has no
+  PR object: resolve the PR from `head_branch`/`head_sha`, then apply the same repo-ID check.
+- **Three reviewer gates, in order**: `dev-loop` label present → not draft → no `needs-human`
+  label. A PR failing any gate is never reviewed. Draft is a human parking brake; the loop
+  never flips it either way.
+- **Opt-in scope**: no workflow touches an issue or PR without the `dev-loop` label (see above).
+- **Kept as prompt rules**: "never rebase, merge commits only" (fixer, incl. conflict
+  resolution), "fix findings minimally" (fixer), "review adversarially, report every nit"
+  (reviewer). Agents are prompt-forbidden from `gh pr ready`/`gh pr merge`/label changes
+  entirely — with no draft/ready state machine there is simply nothing for an agent to flip.
 
 ## CI (`ci.yml`)
 
 Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additions:
 
 - **Mergeability probe** (optional, informational): report `mergeable` state in the run
-  summary; not a required check, never fails the build. The merger dispatch reads PR state
-  directly anyway.
-- The merger runs as its **own workflow** (`workflow_run` trigger), not inside CI: CI stays
-  fast, deterministic and trusted; the agentic, budgeted, escalation-capable merger would
-  otherwise make "the build is red" mean two different things.
+  summary; not a required check, never fails the build. The fixer's conflict dispatch reads
+  PR state directly anyway.
+- Conflict resolution runs in the **fixer workflow** (`workflow_run` trigger), not inside CI:
+  CI stays fast, deterministic and trusted; the agentic, budgeted, escalation-capable run
+  would otherwise make "the build is red" mean two different things.
 
 ## New files
 
 ```
-.github/workflows/dev-loop-implement.yml   issue -> draft PR
-.github/workflows/dev-loop-review.yml      ready PR / fixer chain -> one marker review -> state post-step
-.github/workflows/dev-loop-fix.yml        CHANGES_NEEDED review -> fix commits -> chain reviewer
-.github/workflows/dev-loop-merge.yml      CI completed + CONFLICTING -> merge commit -> back to draft
-.github/dev-loop/prompts/implementer.md   role prompts (ported from PR #80's agent definitions,
+.github/workflows/dev-loop-implement.yml   issue -> ready PR (dev-loop labeled, Closes #<N>)
+.github/workflows/dev-loop-review.yml      ready PR -> one marker review -> state post-step
+.github/workflows/dev-loop-fix.yml         CHANGES_NEEDED review or CONFLICTING CI run
+                                           -> fix commits / merge-commit conflict resolution
+.github/dev-loop/prompts/implementer.md    role prompts (ported from PR #80's agent definitions,
 .github/dev-loop/prompts/reviewer.md       minus gh-guard boilerplate; final line is a parseable
-.github/dev-loop/prompts/fixer.md           outcome: PR_URL|NO_PR:, VERDICT|CONFLICTING,
-.github/dev-loop/prompts/merger.md         FIXED|CONFLICTING|WALL:, MERGED|NO_CONFLICT|WALL:)
+.github/dev-loop/prompts/fixer.md          outcome: PR_URL|NO_PR:, VERDICT:, FIXED:|WALL:)
 docs/dev-loop.md                           this plan / runbook
 ```
 
@@ -172,7 +208,7 @@ review-writing API access.
 - `MISTRAL_API_KEY` — Actions secret (masked in logs on public repo).
 - `DEV_LOOP_TOKEN` — fine-grained PAT, this repo only, `contents:write` + `pull-requests:write`
   (+ `issues:write` for the implementer's issue comments).
-- `needs-human` label as in PR #80.
+- `needs-human` label as in PR #80; `dev-loop` label as the opt-in gate.
 - Public repo: hosted runners free and unlimited. Optional later: self-hosted runner on the
   Synology (zero minutes cost, key stays on LAN).
 
@@ -183,11 +219,10 @@ Calibrate from the `out/stream.ndjson` artifacts after the first real runs; thes
 post-step classifies rc 99; time enforced by `timeout(1)`, rc 124 — not a hang):
 
 | Role | steps (watchdog) | tokens (watchdog, cost-weighted) | time limit (`timeout(1)`) | job `timeout-minutes` | Rationale |
-| --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- |
 | implementer | 800 | 6M | 5400 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint. First live run used 71 steps / 3.03M tokens / $4.63 on a modest issue; with opencode prompt caching observed at 93-99% hit rate, steps are cheap (~10% input cost), so the step cap is a generous runaway guard (~7x the vibe-era 120-turn budget) and the 90-min deadline is the real constraint |
-| reviewer | 400 | 4M | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate in Phase 2 from its first artifacts |
-| fixer | 400 | 4M | 3600 | 75 | scoped to one review's findings; usually well under |
-| merger | 300 | 2M | 2700 | 60 | conflict resolution only; aborts cleanly with `WALL:` on unresolvable conflicts |
+| reviewer | 400 | 4M | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate from its first artifacts |
+| fixer (incl. conflict resolution) | 400 | 4M | 3600 | 75 | scoped to one review's findings and/or one conflict; usually well under. Conflict resolution is bounded work; a conflict-heavy run that cannot finish stops with `WALL:` like anything else |
 
 The token cap is cost-weighted: input + output + cache.write + 0.1 × cache.read —
 cached tokens count at their 10% billing rate, so the cap means "N uncached-equivalent
@@ -199,8 +234,8 @@ looped: the cap is deliberately far above any honest run. Hard ceiling independe
 opencode: the GitHub job timeout (`timeout-minutes`) set 15 min above each time limit, so a
 wedged process cannot burn the 6-hour job limit. A time-limit hit is rc 124 with a complete
 event-stream transcript up to the kill. Expected real-world spend per happy-path PR
-(implement + 1–2 reviews + 1 fix + occasional merge): with caching, a fraction of the
-$5–15 uncached estimate; dry-run sessions measured ~$1.29 for 5.9M tokens.
+(implement + 1–2 reviews + 1 fix + occasional conflict resolution): with caching, a fraction
+of the $5–15 uncached estimate; dry-run sessions measured ~$1.29 for 5.9M tokens.
 
 **Budget awareness in the prompt**: each role prompt is rendered with its caps (the workflow
 pre-step injects `MAX_TURNS`, `TIME_LIMIT_MIN` (the job's wall-clock budget) into the prompt file via a template
@@ -235,22 +270,24 @@ auto-retry), 124 deadline (`timeout(1)`), 130 killed by signal, 99 watchdog kill
 | usage/config error (bad flag, missing API key) | exit 1 (`Error: ...` in stderr) | escalate; deterministic, a retry fails the same way |
 | tool-failure loop (agent retries failing commands) | watchdog kills opencode after N consecutive failed tool calls (`state.status == "failed"`, or non-zero shell exit in `state.metadata.metadata.exit`) | escalate: the agent could not use its tools; a full budget spent on failing calls is pure waste (this happened on the first live run) |
 | agent finished but outcome unparseable | exit 0, final `text` event doesn't match the contract | escalate with reason "unparseable outcome" + link to the transcript artifact; the transcript is preserved for diagnosis |
-| agent reported `WALL:` / `NO_PR:` | exit 0, parseable | the designed escalation: implementer comments its questions on the issue + labels it; fixer/merger escalate on the PR |
-| workflow step failed *outside* opencode (npm ci, install, push rejected) | step exit code | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice, add a failure-branch to the post-step that escalates instead of leaving it red silently |
+| agent reported `WALL:` / `NO_PR:` | exit 0, parseable | the designed escalation: implementer comments its questions on the issue + labels it; fixer escalates on the PR |
+| workflow step failed *outside* opencode (npm ci, install, push rejected) | step exit code | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice (run attempt > 1), escalate instead of leaving it red silently |
 
 Per-role specifics:
 
 - **implementer fails** → nothing exists yet on GitHub except the issue. Post-step comments on
   the issue ("dev-loop implementer failed: <reason>, run: <link>") and labels it `needs-human`.
   The issue is never lost; removing the label re-triggers the implementer with a fresh budget.
-- **reviewer fails** → the PR sits ready-for-review (or draft) with no review. Post-step comments
-  on the PR with the failure reason. Human can re-run the job or flip draft→ready to re-trigger.
-  A ready PR with zero findings stays unmergeable by review policy, so nothing unsafe happens.
+- **reviewer fails** → the PR sits ready-for-review with no review. Post-step comments
+  on the PR with the failure reason. Human can re-run the job or push a trivial change to
+  re-trigger `synchronize`. A ready PR with zero findings stays unmergeable by review policy,
+  so nothing unsafe happens.
 - **fixer fails** → the review's findings still stand; the PR simply doesn't progress. Post-step
   comments on the PR; the human can remove `needs-human` to re-trigger the fixer on the same review.
-- **merger fails** → the PR stays `CONFLICTING`; CI's mergeability probe keeps showing it and
-  every future `workflow_run` of `ci.yml` re-offers the merger dispatch (natural retry).
-  Escalation only after repeated failure (track via a `dev-loop-retries` label or comment count).
+- **fixer fails on the conflict path** → the PR stays `CONFLICTING`; CI's mergeability probe
+  keeps showing it and every future `workflow_run` of `ci.yml` re-offers the conflict dispatch
+  (natural retry, bounded by the one-run-per-head-SHA gate). Escalation only after repeated
+  failure (track via a `dev-loop-retries` label or comment count).
 
 Backstop: `workflow_dispatch` on each role workflow doubles as the manual retry button, and a
 `workflow_dispatch` "tick" re-derives state from GitHub and re-dispatches anything stuck —
@@ -258,28 +295,33 @@ which is also the recovery path if a webhook event was ever missed.
 
 ## Implementation phases
 
-1. **Branch `vibe/dev-loop-actions`** (this PR): plan document only (`docs/dev-loop.md`).
-2. **Phase 1 — implementer only**: `dev-loop-implement.yml` + `implementer.md` prompt. Validate
-   the whole design in isolation on 2–3 real open issues: event trigger → headless vibe run →
-   draft PR with `Closes #<N>` → CI green → transcript artifact with sane cost. Human does
-   the review part manually at this stage. Gate: no manual intervention needed beyond creating
-   the issue, and cost per run within ~2x of the cap prediction.
-3. **Phase 2**: `dev-loop-review.yml` + `dev-loop-fix.yml` + fixer chain + iteration cap.
-   Validate the full CHANGES_NEEDED → fixer → reviewer cycle end-to-end.
-4. **Phase 3**: `dev-loop-merge.yml` + `workflow_run` trigger. Soak test for a week.
-5. **Phase 4**: budget calibration from accumulated transcript artifacts, reviewer prompt
+1. ~~**Phase 1 — implementer only**~~ (done, PRs #82–#90): `dev-loop-implement.yml` +
+   `implementer.md` prompt, validated live (issue #60 → PR #91, CI green, sane cost).
+2. ~~**Phase 2 — reviewer + fixer**~~ (done, PRs #85, #86, #93): `dev-loop-review.yml` +
+   `dev-loop-fix.yml` + fixer chain + iteration cap; full CHANGES_NEEDED → fixer → reviewer
+   cycle validated live on PR #91.
+3. **Phase 3 — event-driven refactor + conflict resolution in the fixer**: remove the
+   draft/ready state machine (implementer opens ready PRs; reviewer/fixer never flip draft
+   state; drop all reviewer re-dispatch chains except the CHANGES_NEEDED→fixer dispatch),
+   extend the fixer to resolve merge conflicts (absorb the merger role; `workflow_run` ci.yml +
+   `CONFLICTING` entry on `dev-loop-fix.yml` with one-run-per-head-SHA dedupe), and switch
+   all gates to the opt-in `dev-loop` label. Soak test for a week.
+4. **Phase 4**: budget calibration from accumulated transcript artifacts, reviewer prompt
    iteration, retry/failure-path drills (simulate API outage, budget cap, unparseable outcome).
-6. **Cleanup**: close PR #80 as superseded.
+5. **Cleanup**: close PR #80 as superseded.
 
 ## Acceptance criteria
 
-- An open issue becomes a draft PR without human interaction; CI passes.
-- Review runs exactly once per head SHA; pushes to draft PRs never trigger it.
-- A push to a ready PR triggers re-review.
-- Only a `CLEAN` review verdict sets a PR ready; nothing else ever does.
-- `CHANGES_NEEDED` triggers the fixer exactly once; the fixer chains the reviewer only on
-  success; the cycle escalates at 8 iterations, in code.
-- A conflicted PR gets a merge commit resolving both sides, returns to draft, and is re-reviewed.
+- A `dev-loop`-labeled open issue becomes a ready PR without human interaction; CI passes.
+- No workflow touches an issue or PR without the `dev-loop` label.
+- Review runs exactly once per head SHA; pushes to draft PRs never trigger it; a `needs-human`
+  label parks the item; drafts are the human parking brake and the loop never flips them.
+- A push to a ready PR (fix commits or CI auto-format) triggers re-review via `synchronize` —
+  no role chains the reviewer directly.
+- `CHANGES_NEEDED` triggers the fixer exactly once; the fixer's push re-enters the loop via
+  its own event; the cycle escalates at 8 iterations, in code.
+- A conflicted PR gets a merge commit resolving both sides from the fixer workflow (findings
+  or `workflow_run` conflict-only path), and the push is re-reviewed.
 - `needs-human` parks an item; removing the label resumes it with a fresh budget.
 - Every role run is bounded by the step/token caps and the job timeout; the transcript
   artifact preserves what happened within those bounds.

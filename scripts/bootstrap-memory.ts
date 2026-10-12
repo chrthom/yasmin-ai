@@ -12,10 +12,9 @@ import { uploadDocument } from '../src/mistral/mistral_api';
 import { titleToPath } from '../src/nightly/mapping';
 import { getDatabasePool, closeDatabasePool } from '../src/database/connection';
 import { validateEnv } from '../src/config';
+import { personNameFromTitle, profileTitle } from '../src/strings';
 
 validateEnv({ requireDb: true });
-
-const PROFILE_TITLE_PATTERN = /^Profile of (.+)$/;
 
 interface SeedFile {
   path: string;
@@ -83,25 +82,26 @@ export async function bootstrapMemory(): Promise<void> {
 
   const personNames: string[] = [];
   for (const title of byTitle.keys()) {
-    const match = PROFILE_TITLE_PATTERN.exec(title);
-    if (match && match[1] !== 'Yasmin') {
-      personNames.push(match[1]);
+    const name = personNameFromTitle(title);
+    if (name !== null && name !== 'Yasmin') {
+      personNames.push(name);
     }
   }
 
   for (const name of personNames) {
-    const path = titleToPath('Profile of ' + name);
+    const title = profileTitle(name);
+    const path = titleToPath(title);
     if (!path) {
-      console.warn('WARN Could not map "Profile of ' + name + '" to a file path, skipping');
+      console.warn('WARN Could not map "' + title + '" to a file path, skipping');
       continue;
     }
 
-    const coreFacts = byTitle.get('Profile of ' + name) || '';
+    const coreFacts = byTitle.get(title) || '';
     const sessionContent = byTitle.get('Session with ' + name) || '';
     seeds.push({ path, content: buildPersonProfile(coreFacts, sessionContent) });
   }
 
-  const yasminProfile = byTitle.get('Profile of Yasmin');
+  const yasminProfile = byTitle.get(profileTitle('Yasmin'));
   if (yasminProfile !== undefined) {
     // Seeded as-is (verbatim), even though it is currently written in third person -- the nightly
     // pipeline's own compaction step already produces a correctly first-person EAGER cache entry
