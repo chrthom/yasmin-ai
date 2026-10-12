@@ -242,7 +242,8 @@ const ConversationListResponseSchema = z.array(ConversationMetaResponseSchema);
  * _page_size_ would be silently dropped and their memory missed.
  *
  * @param sinceIso ISO timestamp; only conversations updated at or after it are returned.
- * @returns All conversations (any agent) updated since the watermark, deduplicated by id.
+ * @returns All conversations (any agent) updated since the watermark; pagination stops once a
+ *   page adds no new ids.
  */
 export async function listConversations(sinceIso: string): Promise<ConversationMeta[]> {
   const CONVERSATION_PAGE_SIZE = 100;

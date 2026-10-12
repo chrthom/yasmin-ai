@@ -26,7 +26,7 @@ interface Turn {
 // hint) in front of what the user actually wrote; only the latter is dialogue.
 export { cleanStoredText };
 
-/** Truncates text to max characters, marking the cut with a trailing ellipsis. */
+/** Truncates text to at most max characters, plus a trailing ellipsis marking the cut. */
 const truncate = (text: string, max: number): string => (text.length > max ? text.slice(0, max) + '…' : text);
 
 /**
