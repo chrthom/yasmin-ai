@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; empty = conflict-only run if the PR is conflicting, otherwise the latest CHANGES_NEEDED marker review
+        description: Review id whose findings to fix; empty = no-findings run (resolve merge conflicts and/or failing CI checks)
         required: false
         default: ''
         type: string
@@ -240,8 +240,11 @@ jobs:
             head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
             ci_red="false"
             ci_json="$(gh api "repos/${GH_REPO}/commits/${head_tip}/check-runs" 2>/dev/null || true)"
+            # Exclude the dev-loop's own check runs (job names kept in sync
+            # with the three dev-loop workflows): a failed Reviewer run on
+            # the same SHA is not a CI failure to fix.
             ci_failed="$(printf '%s' "$ci_json" \
-              | jq -r '[.check_runs[]? | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
+              | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
             [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
             if [ "$mergeable" != "CONFLICTING" ] && [ "$ci_red" != "true" ]; then
               echo "PR #$PR_NUMBER mergeable is '$mergeable' and CI is not red; nothing conflict- or CI-failure-related to do. Skipping."
