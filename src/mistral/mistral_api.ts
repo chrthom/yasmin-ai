@@ -11,6 +11,8 @@ export class MistralApiError extends Error {
   public readonly status?: number;
 
   /**
+   * Builds the error, preserving the failed response's HTTP status for retry/respawn branching.
+   *
    * @param message The error message.
    * @param status The HTTP status of the failed response, when the call got that far.
    */

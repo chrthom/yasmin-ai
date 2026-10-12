@@ -10,6 +10,8 @@ export class SynologyClient {
   private token: string;
 
   /**
+   * Stores the incoming webhook URL and the endpoint's authentication token.
+   *
    * @param baseUrl Synology Chat incoming webhook URL (config.synology.chatIncomingUrl).
    * @param token The endpoint's authentication token (the bot token by convention).
    */

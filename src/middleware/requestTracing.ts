@@ -57,6 +57,8 @@ export class RequestLogger {
   private req: Request;
 
   /**
+   * Stores the request whose id is attached to every log line.
+   *
    * @param req The request whose id and metadata are attached to every log line.
    */
   constructor(req: Request) {

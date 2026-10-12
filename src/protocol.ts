@@ -78,7 +78,6 @@ export const shortAnswerHint = (): string =>
   `Your answer must be shorter than ${config.chat.shortAnswerMaxChars} characters.`;
 
 /**
-/**
  * Removes everything the harness (not the user) injected into a stored user message: handoff
  * blocks, context entries, the title manifest, the "You are talking to" line, and the
  * short-answer hint built by shortAnswerHint() -- the hint regex is built from the same

@@ -64,6 +64,8 @@ import {
 /** Thrown when the nightly lock could not be acquired -- an expected outcome, not a failure to alert on */
 export class LockHeldError extends Error {
   /**
+   * Builds the error with the reason the nightly lock could not be acquired.
+   *
    * @param message Why the lock could not be acquired (e.g. another active run).
    */
   constructor(message: string) {

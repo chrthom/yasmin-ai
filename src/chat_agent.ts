@@ -106,6 +106,8 @@ export class ChatAgent {
   private chatRequestTimeoutMs = config.mistral.requestTimeoutMs;
 
   /**
+   * Stores the Mistral API key and the live conversation agent's id.
+   *
    * @param apiKey The Mistral API key.
    * @param agentId The Mistral Studio agent id of the live conversation agent.
    */
