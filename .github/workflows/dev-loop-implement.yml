@@ -2,7 +2,10 @@ name: Dev Loop Implement
 
 on:
   issues:
-    types: [opened, reopened, unlabeled]
+    # No unlabeled trigger: needs-human is ignored on issues, so removing it is
+    # not a resume event for the implementer - the manual backstop
+    # (workflow_dispatch) covers a retry after a needs-human escalation.
+    types: [opened, reopened, labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -27,7 +30,12 @@ concurrency:
 
 jobs:
   implement:
-    name: Implementer (issue -> draft PR)
+    name: Implementer
+    # Job-level event filter (docs/dev-loop.md): a labeled event for any
+    # label other than dev-loop can never start the implementer - skip before
+    # a runner is allocated. The gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name != 'dev-loop')
     runs-on: ubuntu-latest
     # 15 min above --time-limit (5400 s = 90 min), per docs/dev-loop.md budgets table
     timeout-minutes: 105
@@ -51,7 +59,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           EVENT_ACTION: ${{ github.event.action }}
-          UNLABELED_NAME: ${{ github.event.label.name }}
+          LABELED_NAME: ${{ github.event.label.name }}
         run: |
           set -eu
           if [ -z "$ISSUE_NUMBER" ]; then
@@ -59,19 +67,27 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "$EVENT_ACTION" = "unlabeled" ] && [ "$UNLABELED_NAME" != "needs-human" ]; then
-            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
+          # Opt-in gate, first line, before all other checks: no dev-loop label,
+          # no loop. `labeled: dev-loop` starts the loop on an existing issue.
+          if [ "$EVENT_ACTION" = "labeled" ] && [ "$LABELED_NAME" != "dev-loop" ]; then
+            echo "Labeled '$LABELED_NAME', not dev-loop; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
-          if gh issue view "$ISSUE_NUMBER" --json labels \
-            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
-            echo "Issue #$ISSUE_NUMBER is labeled needs-human; skipping."
+          gh label create dev-loop --color 46A1AA \
+            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
+          if ! gh issue view "$ISSUE_NUMBER" --json labels \
+            | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # needs-human on an issue is informational only: parking is done by
+          # removing the dev-loop label (the escalation post-step does exactly
+          # that), and the resume path is re-adding dev-loop. The gate therefore
+          # does not skip on needs-human.
           if [ -n "$(git ls-remote origin "refs/heads/vibe/issue-$ISSUE_NUMBER-*")" ]; then
             echo "Branch vibe/issue-$ISSUE_NUMBER-* already exists; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -128,6 +144,11 @@ jobs:
           # source (stored auth would otherwise silently mask a rotated secret).
           OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
           OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # Websearch provider (docs/dev-loop.md): opencode v2 routes websearch and
+          # webfetch through a search provider; without a key every call errors (which
+          # also flips the run's exit code - see the rc=1 contract fallback). Pinned in
+          # the config below because headless --auto cannot answer the provider prompt.
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           # The managed service binds a loopback port; never route it via a
           # proxy. Env keys are case-insensitive, so this covers both the
           # NO_PROXY and no_proxy spellings that tools check.
@@ -135,6 +156,14 @@ jobs:
         run: |
           export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
+          # Pin the websearch provider; skip when no key is configured so the tool
+          # is simply unavailable instead of erroring on a missing provider.
+          if [ -n "$TAVILY_API_KEY" ]; then
+            printf '{"websearch": {"provider": "tavily"}}\n' > "$OPENCODE_CONFIG_DIR/opencode.jsonc"
+            echo "opencode.jsonc: websearch provider pinned to tavily"
+          else
+            echo "TAVILY_API_KEY not set; websearch/webfetch stay disabled"
+          fi
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
           # opencode when the run degenerates:
@@ -251,7 +280,10 @@ jobs:
         run: |
           set -u
           escalate() {
-            gh issue edit "$ISSUE_NUMBER" --add-label needs-human >/dev/null
+            # Park the issue: remove dev-loop (the opt-in gate then skips future
+            # events) and add needs-human as the informational marker. Resume =
+            # re-adding dev-loop (labeled: dev-loop re-triggers the implementer).
+            gh issue edit "$ISSUE_NUMBER" --remove-label dev-loop --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @chrthom dev-loop implementer escalation: $1
@@ -270,7 +302,7 @@ jobs:
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
             fi
-            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or remove the needs-human label"
+            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Implement -> Run workflow) or re-add the dev-loop label"
             exit 0
           fi
 
@@ -278,7 +310,9 @@ jobs:
           # (opencode reports cost/tokens on every step_finish event). tokens
           # uses the same cost-weighted sum as the watchdog cap, so the
           # reported number matches what the cap enforced.
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          # Round to cents: every consumer prints $cost verbatim, and the raw
+          # sum has float artifacts (e.g. $0.16212848000000002).
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           tokens="$(jq -s '[.[].part.tokens // empty
             | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
@@ -294,6 +328,25 @@ jobs:
             # deadline hit (timeout(1)): never auto-retry, escalate.
             escalate "implementer stopped on the ${TIME_LIMIT_MIN} min deadline (rc=124, cost: \$$cost); see the opencode output artifact"
             exit 0
+          fi
+
+          if [ "$rc" = "1" ]; then
+            # opencode exits 1 for config/infra failures AND for sessions that
+            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
+            # loop: a failed websearch/webfetch (no provider key configured)
+            # marks the session errored even when the agent completed its work
+            # with a valid contract line. The outcome line is the ground truth:
+            # treat the session as completed when it parses, and escalate only
+            # when it does not.
+            contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
+              | awk 'NF { line = $0 } END { if (line) print line }' \
+              | grep -E '^(PR_URL:|NO_PR:|WALL:)' || true)"
+            if [ -z "$contract_line" ]; then
+              escalate "opencode failed (exit 1, no contract line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+              exit 0
+            fi
+            echo "opencode exited 1 but the final message carries a contract line; treating the session as completed (tool errors were recovered)."
+            rc=0
           fi
 
           if [ "$rc" = "0" ]; then
@@ -314,20 +367,25 @@ jobs:
                 exit 0
                 ;;
               *)
-                escalate "unparseable outcome (exit 0, final message does not match the contract); transcript artifact preserved for diagnosis"
+                # A clean exit (rc=0) with no contract line is usually a
+                # truncated run (agent stopped mid-implementation, opencode
+                # gave up silently) - transient, unlike a deterministic parse
+                # failure. Retry once via workflow_dispatch; the counter in
+                # the retry input prevents a loop. The gate's branch-exists
+                # check (vibe/issue-<N>-*) makes a retry after a half-finished
+                # run safe: it skips if the implementer got far enough to push.
+                if [ "$RETRY_COUNT" -lt 1 ] \
+                  && gh workflow run dev-loop-implement.yml --ref main -f issue_number="$ISSUE_NUMBER" -f retry=1; then
+                  echo "Unparseable implementer outcome (cost: \$$cost, tokens: $tokens); re-dispatching the implementer once (retry=1). Transcript artifact preserved for diagnosis."
+                  exit 0
+                fi
+                escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"
                 exit 0
                 ;;
             esac
           fi
 
-          if [ "$rc" = "1" ]; then
-            # opencode exits 1 for both config errors (e.g. invalid credentials,
-            # deterministic - a retry fails identically) and infrastructure
-            # failures (API unreachable). They are not reliably separable by
-            # exit code, so never auto-retry; manual retry stays available via
-            # the workflow_dispatch retry input.
-            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+          if [ "$rc" != "0" ]; then
+            escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
             exit 0
           fi
-
-          escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"

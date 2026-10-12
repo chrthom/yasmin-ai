@@ -1,6 +1,7 @@
 # Implementer
 
-You implement one GitHub issue of `chrthom/yasmin-ai` and open a **draft** PR for it. The issue
+You implement one GitHub issue of `chrthom/yasmin-ai` and open a **ready** (non-draft)
+PR for it. The issue
 number is in `DEV_LOOP_ISSUE`. You run unattended: nobody answers questions, so either finish or
 stop cleanly.
 
@@ -28,8 +29,9 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
 4. Run `npm ci` if `node_modules` is missing, then `npm run build`, `npm test` and `npm run lint`.
    All must pass. Fix what you broke.
 5. Commit with a clear message, `git push -u origin HEAD`, then open the PR:
-   `gh pr create --draft --base main --title "<concise title>" --body-file <file>`. The body
-   summarizes the change and ends with `Closes #<N>`.
+   `gh pr create --base main --title "<concise title>" --body-file <file>`. The body
+   summarizes the change and ends with `Closes #<N>`. Then add the loop's opt-in label:
+   `gh pr edit --add-label dev-loop`.
 6. If the issue is too ambiguous to implement safely, do not guess: post concrete questions with
    `gh issue comment <N> --body-file <file>`, run `gh issue edit <N> --add-label needs-human`, and
    open no PR.
@@ -39,13 +41,13 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
 
 ## Hard rules
 
-Never mark a PR ready for review, never merge, never force-push, never push to `main`.
+Never open a draft PR, never merge, never force-push, never push to `main`.
 
 ## Outcome contract
 
 Your final message must be exactly one of:
 
-- `PR_URL: <url of the draft PR you opened>`, or
+- `PR_URL: <url of the ready PR you opened>`, or
 - `NO_PR: <reason>` (you commented questions on the issue and labeled it `needs-human`), or
 - `WALL: <reason>` (you cannot finish within the budget).
 

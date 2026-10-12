@@ -2,12 +2,21 @@ name: Dev Loop Review
 
 on:
   pull_request:
-    types: [ready_for_review, synchronize, unlabeled]
+    # opened/labeled: the implementer opens a ready PR and adds the dev-loop
+    # label right after (a race the label gate alone would drop) - the draft
+    # gate skips draft opens, the head-SHA dedupe bounds double dispatch.
+    # labeled: dev-loop also starts the loop on an existing ready PR.
+    types: [opened, ready_for_review, synchronize, labeled, unlabeled]
   workflow_dispatch:
     inputs:
       pr_number:
         description: PR number to review (manual backstop / fixer chain)
         required: true
+        type: string
+      retry:
+        description: Internal retry counter (do not edit)
+        required: false
+        default: '0'
         type: string
 
 permissions:
@@ -22,7 +31,14 @@ concurrency:
 
 jobs:
   review:
-    name: Reviewer (PR -> marker review -> state post-step)
+    name: Reviewer
+    # Job-level event filter (docs/dev-loop.md): a labeled event for any label
+    # other than dev-loop, or an unlabeled event for any label other than
+    # needs-human, can never start the reviewer - skip before a runner is
+    # allocated. The gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'dev-loop') &&
+      !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human')
     runs-on: ubuntu-latest
     # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
     timeout-minutes: 75
@@ -68,12 +84,26 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "$EVENT_ACTION" = "labeled" ] && [ "$UNLABELED_NAME" != "dev-loop" ]; then
+            echo "Labeled '$UNLABELED_NAME', not dev-loop; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
+          gh label create dev-loop --color 46A1AA \
+            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
           pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
-          if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ] \
-            && [ "$EVENT_ACTION" = "synchronize" ]; then
-            echo "PR #$PR_NUMBER is draft; pushes to drafts never trigger a review. Skipping."
+          # Three gates, in order (docs/dev-loop.md): dev-loop label -> not draft
+          # -> no needs-human. Draft is a human parking brake; the loop never
+          # flips it and never touches a draft PR on any event.
+          if ! printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(printf '%s' "$pr_json" | jq -r '.isDraft')" = "true" ]; then
+            echo "PR #$PR_NUMBER is draft; the loop never touches drafts on any event. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -102,6 +132,74 @@ jobs:
             echo "A marker review for head SHA $head_sha already exists; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          # CI gate (docs/dev-loop.md): review only a CI-green, format-stable
+          # head. The reviewer would otherwise burn a full review cycle on a
+          # red head whose findings the fixer produces anyway, or race the
+          # auto-formatter's push. Poll the head's check runs (bounded, fail
+          # open to the pre-gate behavior on timeout):
+          #   - green + tip unchanged -> proceed to the review
+          #   - red + tip unchanged   -> dispatch the fixer (CI-failure mode,
+          #                               empty review id) and skip
+          #   - tip moved             -> skip: the push (e.g. chore: auto-format
+          #                               from ci.yml) fires synchronize, which
+          #                               starts a fresh reviewer on the new head
+          # The poll must exclude the dev-loop's own check runs (job names
+          # Reviewer/Fixer/Implementer, kept in sync with the `name:` fields of
+          # the three dev-loop workflows): the Reviewer's own check run is
+          # in_progress while this gate polls and can never complete first -
+          # counting it deadlocks the gate until the timeout.
+          ci_wait_start=$(date +%s)
+          ci_state=""
+          while [ $(( $(date +%s) - ci_wait_start )) -lt 1200 ]; do
+            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            if [ "$tip_now" != "$head_sha" ]; then
+              ci_state="moved"
+              break
+            fi
+            ci_json="$(gh api "repos/${GH_REPO}/commits/${head_sha}/check-runs" 2>/dev/null || true)"
+            ci_summary="$(printf '%s' "$ci_json" \
+              | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer")] | {total: length, done: [.[] | select(.status == "completed")] | length, failed: [.[] | select(.status == "completed" and .conclusion == "failure")] | length} | @json' 2>/dev/null || true)"
+            ci_total="$(printf '%s' "$ci_summary" | jq -r '.total // 0' 2>/dev/null || echo 0)"
+            ci_done="$(printf '%s' "$ci_summary" | jq -r '.done // 0' 2>/dev/null || echo 0)"
+            ci_failed="$(printf '%s' "$ci_summary" | jq -r '.failed // 0' 2>/dev/null || echo 0)"
+            if [ "$ci_total" -gt 0 ] && [ "$ci_done" -ge "$ci_total" ]; then
+              if [ "$ci_failed" -gt 0 ]; then
+                ci_state="red"
+              else
+                ci_state="green"
+              fi
+              break
+            fi
+            sleep 30
+          done
+          if [ "${ci_state:-}" = "moved" ]; then
+            echo "Head moved ($head_sha -> $tip_now) while waiting for CI (auto-format or another push); skipping. The new head's synchronize event re-offers the review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${ci_state:-}" = "red" ]; then
+            # Re-check the tip right before dispatching: a format push racing
+            # the poll would otherwise send the fixer after a stale red state.
+            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            if [ "$tip_now" != "$head_sha" ]; then
+              echo "Head moved ($head_sha -> $tip_now) after red CI; skipping. The new head's synchronize event re-offers the review."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "CI is red on head $head_sha with the tip unchanged; dispatching the fixer (CI-failure mode, no review findings)."
+            if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="" -f retry=0; then
+              echo "Fixer dispatched for the CI failure; its push will re-enter the loop via synchronize."
+            else
+              echo "::warning::Failed to dispatch the fixer for the red CI; proceeding with the review instead."
+            fi
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${ci_state:-}" = "" ]; then
+            echo "CI wait timed out or no relevant check runs on head $head_sha (last poll summary: ${ci_summary:-none}); proceeding with the review (fail open)."
+          else
+            echo "CI is green on head $head_sha with the tip unchanged; proceeding with the review."
           fi
           # Iteration cap: count marker reviews in the current escalation epoch
           # (since the last dev-loop-escalation comment). At MAX_ITERATIONS the
@@ -182,6 +280,11 @@ jobs:
           # source (stored auth would otherwise silently mask a rotated secret).
           OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
           OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # Websearch provider (docs/dev-loop.md): opencode v2 routes websearch and
+          # webfetch through a search provider; without a key every call errors (which
+          # also flips the run's exit code - see the rc=1 contract fallback). Pinned in
+          # the config below because headless --auto cannot answer the provider prompt.
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           # The managed service binds a loopback port; never route it via a
           # proxy. Env keys are case-insensitive, so this covers both the
           # NO_PROXY and no_proxy spellings that tools check.
@@ -189,6 +292,14 @@ jobs:
         run: |
           export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
+          # Pin the websearch provider; skip when no key is configured so the tool
+          # is simply unavailable instead of erroring on a missing provider.
+          if [ -n "$TAVILY_API_KEY" ]; then
+            printf '{"websearch": {"provider": "tavily"}}\n' > "$OPENCODE_CONFIG_DIR/opencode.jsonc"
+            echo "opencode.jsonc: websearch provider pinned to tavily"
+          else
+            echo "TAVILY_API_KEY not set; websearch/webfetch stay disabled"
+          fi
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
           # opencode when the run degenerates:
@@ -295,6 +406,7 @@ jobs:
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -327,7 +439,9 @@ jobs:
           # (opencode reports cost/tokens on every step_finish event). tokens
           # uses the same cost-weighted sum as the watchdog cap, so the
           # reported number matches what the cap enforced.
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          # Round to cents: every consumer prints $cost verbatim, and the raw
+          # sum has float artifacts (e.g. $0.16212848000000002).
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "99" ]; then
@@ -344,11 +458,21 @@ jobs:
           fi
 
           if [ "$rc" = "1" ]; then
-            # opencode exits 1 for both config errors (deterministic - a retry
-            # fails identically) and infrastructure failures (API unreachable);
-            # not reliably separable by rc, so never auto-retry.
-            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
-            exit 0
+            # opencode exits 1 for config/infra failures AND for sessions that
+            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
+            # loop: a failed websearch/webfetch (no provider key configured)
+            # marks the session errored even when the agent completed its work
+            # with a valid VERDICT line. The verdict is the ground truth: fall
+            # through to normal handling when the contract line parses, and
+            # escalate only when it does not.
+            contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
+              | grep -E '^(VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)|WALL:)' | tail -1 || true)"
+            if [ -z "$contract_line" ]; then
+              escalate "opencode failed (exit 1, no VERDICT line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+              exit 0
+            fi
+            echo "opencode exited 1 but the final message carries $contract_line; treating the session as completed (tool errors were recovered)."
+            rc=0
           fi
 
           if [ "$rc" != "0" ]; then
@@ -364,16 +488,6 @@ jobs:
           outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
 
           case "$outcome_line" in
-            CONFLICTING)
-              # Contract per reviewer.md step 1: a conflicted PR gets no review;
-              # the merger role handles it (same handling as the fixer).
-              echo "PR is conflicting; the merger role handles it. No review posted."
-              cat > /tmp/dev-loop-review.md <<EOF
-          The PR is conflicting; the dev-loop merger role handles it. No review was posted.
-          EOF
-              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-review.md >/dev/null
-              exit 0
-              ;;
             WALL:*)
               escalate "reviewer stopped early with ${outcome_line} (cost: \$$cost)"
               exit 0
@@ -385,7 +499,18 @@ jobs:
           case "${verdict_line:-}" in
             VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
             *)
-              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract); transcript artifact preserved for diagnosis"
+              # A clean exit (rc=0) with no VERDICT line is usually a truncated
+              # run (agent stopped mid-investigation, opencode gave up silently)
+              # - transient, unlike a deterministic parse failure. Retry once
+              # via workflow_dispatch; the retry counter in the input prevents
+              # a loop. The retry run re-reviews the same head; no marker review
+              # was posted, so the reviewer gate's dedupe cannot block it.
+              if [ "$RETRY_COUNT" -lt 1 ] \
+                && gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER" -f retry=1; then
+                echo "Unparseable outcome with no VERDICT line (cost: \$$cost); re-dispatching the reviewer once (retry=1). Transcript artifact preserved for diagnosis."
+                exit 0
+              fi
+              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract; retry exhausted); transcript artifact preserved for diagnosis"
               exit 0
               ;;
           esac
@@ -472,13 +597,11 @@ jobs:
 
           case "$verdict" in
             CLEAN)
-              echo "Verdict CLEAN: marking PR ready."
-              gh pr ready "$PR_NUMBER" 2>/dev/null || echo "PR is already ready (re-review); nothing to do."
+              echo "Verdict CLEAN: the PR stands ready for a human merge decision; no state change."
               exit 0
               ;;
             CHANGES_NEEDED)
-              echo "Verdict CHANGES_NEEDED: ensuring draft and dispatching the fixer with the exact review id ($review_post_id)."
-              gh pr ready --undo "$PR_NUMBER" 2>/dev/null || true
+              echo "Verdict CHANGES_NEEDED: dispatching the fixer with the exact review id ($review_post_id)."
               # Pass the posted review's id, not "latest": a second
               # CHANGES_NEEDED review landing before the fixer's gate must
               # not make the fixer act on the wrong review.

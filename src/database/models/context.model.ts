@@ -1,4 +1,5 @@
 import { executeQuery } from '../connection';
+import { PROFILE_TITLE_PREFIX } from '../../strings';
 
 export interface ContextEntry {
   title: string;
@@ -166,6 +167,9 @@ export async function isKnownPerson(name: string): Promise<boolean> {
   if (sought.length === 0) {
     return false;
   }
+  // Titles in context_entries are matched case-insensitively, so the sought title is built from
+  // the shared prefix lower-cased rather than via profileTitle (which preserves the name's casing).
+  const soughtTitle = `${PROFILE_TITLE_PREFIX.toLowerCase()}${sought}`;
   const titles = await getAllTitlesFromDb();
-  return titles.some(title => title.toLowerCase() === `profile of ${sought}`);
+  return titles.some(title => title.toLowerCase() === soughtTitle);
 }

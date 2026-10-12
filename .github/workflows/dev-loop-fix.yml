@@ -4,7 +4,15 @@ on:
   pull_request_review:
     types: [submitted]
   pull_request:
-    types: [unlabeled]
+    # synchronize: conflict origin 1 - the PR's own push can make it CONFLICTING.
+    # unlabeled: the needs-human resume path.
+    types: [synchronize, unlabeled]
+  # Conflict origin 2 (docs/dev-loop.md): a push to main can make open ready
+  # PRs CONFLICTING. One scan per merge to main instead of one run per CI
+  # completion on every branch; the scan itself costs only gh api calls, the
+  # agent runs only for PRs that are actually conflicting.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -12,9 +20,14 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; empty = latest marker review
+        description: Review id whose findings to fix; empty = no-findings run (resolve merge conflicts and/or failing CI checks)
         required: false
         default: ''
+        type: string
+      retry:
+        description: Internal retry counter (do not edit)
+        required: false
+        default: '0'
         type: string
 
 permissions:
@@ -24,12 +37,23 @@ permissions:
   actions: write
 
 concurrency:
-  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}
   cancel-in-progress: false
 
 jobs:
   fix:
-    name: Fixer (review findings -> fix commits -> chain reviewer)
+    name: Fixer
+    # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
+    # label other than needs-human, or a synchronize on a draft or fork PR,
+    # can never start the fixer - skip before a runner is allocated. The
+    # gate below remains as defense in depth.
+    if: >-
+      !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
+      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.draft) &&
+      !(github.event_name == 'pull_request' && github.event.action == 'synchronize' && github.event.pull_request.head.repo.id != github.event.repository.id)
+    # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
+    # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
+    # re-dispatch in the reviewer (docs/dev-loop.md).
     runs-on: ubuntu-latest
     # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
     timeout-minutes: 75
@@ -51,6 +75,8 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          # synchronize/unlabeled carry the PR in the payload; push does not
+          # (the push-path scan below resolves candidate PRs itself).
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
@@ -83,6 +109,69 @@ jobs:
           fi
           gh label create needs-human --color B60205 \
             --description "dev-loop: human decision required" 2>/dev/null || true
+          gh label create dev-loop --color 46A1AA \
+            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
+          # Conflict origin 2: a push to main can leave open ready dev-loop PRs
+          # CONFLICTING. One scan per merge to main (docs/dev-loop.md): find all
+          # conflicting candidates, dispatch each (conflict-only, no review
+          # findings), and let the one-run-per-head-SHA dedupe bound the runs.
+          if [ "$EVENT_NAME" = "push" ]; then
+            candidates="$(gh pr list --state open --label dev-loop \
+              --json number,headRefOid,headRepository,isDraft,mergeable \
+              | jq -r '[.[] | select(.isDraft == false)
+                        | select(.headRepository.id == $repo_id)
+                        | select(.mergeable == "CONFLICTING")] 
+                       | .[].number' --arg repo_id "$REPO_ID")"
+            if [ -z "$candidates" ]; then
+              echo "No conflicting open dev-loop PRs after the push to main; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Dispatch one conflict-only fixer run per candidate PR via
+            # workflow_dispatch; the dispatched run resolves the PR from the
+            # input, re-checks CONFLICTING live, and enforces the head-SHA
+            # dedupe. The scan run itself never runs the agent.
+            for pr in $candidates; do
+              gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$pr" -f review_id="" -f retry=0
+              echo "Dispatched conflict-only fixer run for PR #$pr."
+            done
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Conflict origin 1: the PR's own synchronize can make it
+          # CONFLICTING. Only a genuinely conflicting PR proceeds; the fixer
+          # prompt handles a missing review (conflict-only run).
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "synchronize" ]; then
+            pr_json="$(gh pr view "$PR_NUMBER" --json labels,isDraft,mergeable,headRefOid)"
+            if ! printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+              echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if printf '%s' "$pr_json" | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
+              echo "PR #$PR_NUMBER is labeled needs-human; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            mergeable=""
+            for _ in 1 2 3 4 5; do
+              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
+              [ "$mergeable" != "UNKNOWN" ] && break
+              sleep 10
+            done
+            if [ "$mergeable" != "CONFLICTING" ]; then
+              echo "PR #$PR_NUMBER mergeable is '$mergeable', not CONFLICTING; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            branch="$(gh pr view "$PR_NUMBER" --json headRefName | jq -r '.headRefName')"
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "review_id=" >> "$GITHUB_OUTPUT"
+            echo "branch=$branch" >> "$GITHUB_OUTPUT"
+            echo "head_sha_before=$(printf '%s' "$pr_json" | jq -r '.headRefOid')" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
           # starts the fixer. CLEAN and human reviews start nothing. The
           # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.
@@ -101,6 +190,12 @@ jobs:
               exit 0
             fi
           fi
+          if ! gh pr view "$PR_NUMBER" --json labels \
+            | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "PR #$PR_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if gh pr view "$PR_NUMBER" --json labels \
             | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
             echo "PR #$PR_NUMBER is labeled needs-human; skipping."
@@ -115,19 +210,60 @@ jobs:
           elif [ -n "$REVIEW_ID_INPUT" ]; then
             review_id="$REVIEW_ID_INPUT"
           else
+            # Act on the newest marker review, and only if it is
+            # CHANGES_NEEDED. Picking the latest CHANGES_NEEDED review
+            # regardless of newer reviews made the resume path act on a
+            # stale review superseded by e.g. a NEEDS_HUMAN review at the
+            # current head: the fixer then verified already-resolved
+            # findings, pushed nothing, and the post-step misread the
+            # unchanged head as "made no change". A newer non-CHANGES_NEEDED
+            # verdict stands on its own (the reviewer workflow's unlabeled
+            # resume path re-reviews with a fresh budget); a newer
+            # CHANGES_NEEDED review is the one to act on.
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.body | contains("Verdict: CHANGES_NEEDED"))] | last | .id // empty')"
+              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
           if [ -z "$review_id" ]; then
-            echo "No marker review found on PR #$PR_NUMBER; nothing to fix. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            # Dispatch with an empty review id: no-findings run (the
+            # push-to-main scan, the synchronize conflict path and the
+            # reviewer's red-CI dispatch resolve to this). Re-check live
+            # that there is actually work to do - the dispatch may queue
+            # behind another fixer run that already resolved the conflict or
+            # the CI failure. Proceed without findings; the fixer prompt
+            # handles a missing review (conflict and/or CI-failure task).
+            mergeable=""
+            for _ in 1 2 3 4 5; do
+              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
+              [ "$mergeable" != "UNKNOWN" ] && break
+              sleep 10
+            done
+            head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            ci_red="false"
+            ci_json="$(gh api "repos/${GH_REPO}/commits/${head_tip}/check-runs" 2>/dev/null || true)"
+            # Exclude the dev-loop's own check runs (job names kept in sync
+            # with the three dev-loop workflows): a failed Reviewer run on
+            # the same SHA is not a CI failure to fix.
+            ci_failed="$(printf '%s' "$ci_json" \
+              | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
+            [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
+            if [ "$mergeable" != "CONFLICTING" ] && [ "$ci_red" != "true" ]; then
+              echo "PR #$PR_NUMBER mergeable is '$mergeable' and CI is not red; nothing conflict- or CI-failure-related to do. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$mergeable" = "CONFLICTING" ]; then
+              echo "PR #$PR_NUMBER is CONFLICTING; treating this as a conflict-only run (plus CI failures if any)."
+            else
+              echo "PR #$PR_NUMBER has red CI checks on head $head_tip; treating this as a CI-failure run (plus conflicts if any)."
+            fi
           fi
-          review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
-          if ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
-            echo "Review $review_id is not a CHANGES_NEEDED review; nothing to fix. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ -n "$review_id" ]; then
+            review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
+            if ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
+              echo "Review $review_id is not a CHANGES_NEEDED review; nothing to fix. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           # One fixer per review, implicitly: the reviewer chains the fixer only
           # while the head SHA still equals the reviewed commit_id, so if the head
@@ -140,8 +276,11 @@ jobs:
           # no fix ran - the findings still stand and the fixer proceeds against
           # the formatted head.
           head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
-          reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
-          if [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
+          reviewed_sha=""
+          if [ -n "$review_id" ]; then
+            reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
+          fi
+          if [ -n "$reviewed_sha" ] && [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
             git fetch origin "$reviewed_sha" "$head_sha_before" --quiet
             # Fail closed: if the range cannot be resolved (shallow checkout,
             # pruned history), the intervening commits are unknown - skip
@@ -217,6 +356,11 @@ jobs:
           # source (stored auth would otherwise silently mask a rotated secret).
           OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
           OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # Websearch provider (docs/dev-loop.md): opencode v2 routes websearch and
+          # webfetch through a search provider; without a key every call errors (which
+          # also flips the run's exit code - see the rc=1 contract fallback). Pinned in
+          # the config below because headless --auto cannot answer the provider prompt.
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           # The managed service binds a loopback port; never route it via a
           # proxy. Env keys are case-insensitive, so this covers both the
           # NO_PROXY and no_proxy spellings that tools check.
@@ -224,6 +368,14 @@ jobs:
         run: |
           export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
+          # Pin the websearch provider; skip when no key is configured so the tool
+          # is simply unavailable instead of erroring on a missing provider.
+          if [ -n "$TAVILY_API_KEY" ]; then
+            printf '{"websearch": {"provider": "tavily"}}\n' > "$OPENCODE_CONFIG_DIR/opencode.jsonc"
+            echo "opencode.jsonc: websearch provider pinned to tavily"
+          else
+            echo "TAVILY_API_KEY not set; websearch/webfetch stay disabled"
+          fi
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
           # opencode when the run degenerates:
@@ -332,6 +484,7 @@ jobs:
           BRANCH: ${{ steps.gate.outputs.branch }}
           HEAD_SHA_BEFORE: ${{ steps.gate.outputs.head_sha_before }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -363,7 +516,9 @@ jobs:
 
           # Cost = sum of the per-step cost fields in the event stream
           # (opencode reports cost/tokens on every step_finish event).
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0' out/stream.ndjson 2>/dev/null || echo 0)"
+          # Round to cents: every consumer prints $cost verbatim, and the raw
+          # sum has float artifacts (e.g. $0.16212848000000002).
+          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "99" ]; then
@@ -380,11 +535,22 @@ jobs:
           fi
 
           if [ "$rc" = "1" ]; then
-            # opencode exits 1 for both config errors (deterministic - a retry
-            # fails identically) and infrastructure failures (API unreachable);
-            # not reliably separable by rc, so never auto-retry.
-            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
-            exit 0
+            # opencode exits 1 for config/infra failures AND for sessions that
+            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
+            # loop: a failed websearch/webfetch (no provider key configured)
+            # marks the session errored even when the agent completed its work
+            # with a valid outcome line. The outcome is the ground truth: fall
+            # through to normal handling when it parses, and escalate only
+            # when it does not.
+            contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
+              | awk 'NF { line = $0 } END { if (line) print line }' \
+              | grep -E '^(FIXED:|WALL:)' || true)"
+            if [ -z "$contract_line" ]; then
+              escalate "opencode failed (exit 1, no outcome line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+              exit 0
+            fi
+            echo "opencode exited 1 but the final message carries $contract_line; treating the session as completed (tool errors were recovered)."
+            rc=0
           fi
 
           if [ "$rc" != "0" ]; then
@@ -397,14 +563,6 @@ jobs:
           outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
 
           case "$outcome_line" in
-            CONFLICTING)
-              echo "PR is conflicting; the merger role handles it. No fix ran."
-              cat > /tmp/dev-loop-fix.md <<EOF
-          The PR is conflicting; the dev-loop merger role handles it. The findings of review $REVIEW_ID stand.
-          EOF
-              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-fix.md >/dev/null
-              exit 0
-              ;;
             WALL:*)
               escalate "fixer stopped early with ${outcome_line} (cost: \$$cost)"
               exit 0
@@ -413,17 +571,39 @@ jobs:
               echo "Fixer finished: $outcome_line (cost: \$$cost)"
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               if [ "$head_sha_now" = "$HEAD_SHA_BEFORE" ]; then
-                escalate "fixer reported FIXED but the head SHA is unchanged ($head_sha_now) - the fixer made no change; see the opencode output artifact"
+                # FIXED with an unchanged head has two meanings: the fixer
+                # verified the findings are already resolved on this head (a
+                # legitimate no-op), or it failed to push. Escalating on the
+                # legitimate case parks resolved PRs for no reason; chain the
+                # reviewer instead. If a marker review for this head already
+                # exists, the reviewer's gate dedupes it; otherwise the human
+                # gets the real current verdict instead of a misleading
+                # "made no change" escalation.
+                echo "Fixer reported FIXED with an unchanged head ($head_sha_now); chaining the reviewer to re-review this head."
+                if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+                  escalate "failed to chain the reviewer after a no-op FIXED (unchanged head $head_sha_now); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
+                fi
                 exit 0
               fi
-              echo "Chaining the reviewer for the new head $head_sha_now."
-              if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
-                escalate "failed to chain the reviewer after a successful fix (new head $head_sha_now); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
-              fi
+              # No reviewer chain: the push itself fires synchronize, which
+              # re-triggers the reviewer (docs/dev-loop.md event map).
+              echo "Push landed ($HEAD_SHA_BEFORE -> $head_sha_now); synchronize will re-review the new head."
               exit 0
               ;;
             *)
-              escalate "unparseable outcome (exit 0, final message does not match the contract); transcript artifact preserved for diagnosis"
+              # A clean exit (rc=0) with no contract line is usually a truncated
+              # run (agent stopped mid-fix, opencode gave up silently) -
+              # transient, unlike a deterministic parse failure. Retry once via
+              # workflow_dispatch, passing the same review id so the gate does
+              # not have to re-resolve it; the counter in the input prevents a
+              # loop. No fix was pushed, so the head is unchanged and the retry
+              # runs on the same state.
+              if [ "$RETRY_COUNT" -lt 1 ] \
+                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1; then
+                echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1). Transcript artifact preserved for diagnosis."
+                exit 0
+              fi
+              escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"
               exit 0
               ;;
           esac
