@@ -409,6 +409,8 @@ describe('ChatAgent', () => {
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.agent_id).toBe('test-agent-id');
       expect(body.name).toBe('testuser');
+      // The fresh conversation stays in the user's prompt-cache lane (same key as before compaction)
+      expect(body.prompt_cache_key).toBe('yasmin-conversation:testuser');
       // Handoff block from the old conversation is prepended; stale loaded titles are reset
       expect(mockBuildHandoff).toHaveBeenCalledWith('conv-old');
       expect(body.inputs[0].content).toContain('<previous_conversation>\nHANDOFF');
@@ -440,6 +442,7 @@ describe('ChatAgent', () => {
       expect(mockBuildHandoff).toHaveBeenCalledTimes(1);
       const body = JSON.parse(mockFetch.mock.calls[1][1].body);
       expect(body.agent_id).toBe('test-agent-id');
+      expect(body.prompt_cache_key).toBe('yasmin-conversation:testuser');
       expect(body.inputs[0].content).toContain('HANDOFF');
     });
 
@@ -521,6 +524,9 @@ describe('ChatAgent', () => {
 
       // Should call the base URL without conversation ID
       expect(mockFetch).toHaveBeenCalledWith('https://test.url', expect.anything());
+      // Initial send of a new conversation carries the username-keyed prompt-cache lane
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.prompt_cache_key).toBe('yasmin-conversation:testuser');
     });
 
     it('should use existing conversation when available', async () => {
@@ -548,6 +554,9 @@ describe('ChatAgent', () => {
 
       // Should call the URL with conversation ID
       expect(mockFetch).toHaveBeenCalledWith('https://test.url/conv-123', expect.anything());
+      // Mid-session continuations stay in the same prompt-cache lane as the initial send
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.prompt_cache_key).toBe('yasmin-conversation:testuser');
     });
 
     it('should use short answer prompt when requested', async () => {
@@ -697,10 +706,12 @@ describe('ChatAgent', () => {
       const firstCallArgs = mockFetch.mock.calls[0];
       const firstBody = JSON.parse(firstCallArgs[1].body);
       expect(firstBody.tools).toBeUndefined();
+      expect(firstBody.prompt_cache_key).toBe('yasmin-conversation:christopher');
 
       const secondCallArgs = mockFetch.mock.calls[1];
       expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
       const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.prompt_cache_key).toBe('yasmin-conversation:christopher');
       expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-xyz');
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
@@ -752,6 +763,7 @@ describe('ChatAgent', () => {
       const secondCallArgs = mockFetch.mock.calls[1];
       expect(secondCallArgs[0]).toBe('https://test.url/conv-123');
       const secondBody = JSON.parse(secondCallArgs[1].body);
+      expect(secondBody.prompt_cache_key).toBe('yasmin-conversation:christopher');
       expect(secondBody.inputs[0].type).toBe('function.result');
       expect(secondBody.inputs[0].tool_call_id).toBe('call-flat-xyz');
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
@@ -898,6 +910,10 @@ describe('ChatAgent', () => {
       // The respawn request went to a fresh conversation, not the deleted one
       expect(mockFetch.mock.calls[0][0]).toContain('conv-123');
       expect(mockFetch.mock.calls[1][0]).not.toContain('conv-123');
+      // The respawned conversation reuses the user's prompt-cache lane (username-keyed, so the
+      // agent-instructions prefix stays cacheable across respawns)
+      const respawnBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+      expect(respawnBody.prompt_cache_key).toBe('yasmin-conversation:christopher');
       // The new conversation id is cached so the next turn resumes it
       expect((chatAgent as any).conversationCache.get('christopher').conversationId).toBe('conv-fresh');
     });

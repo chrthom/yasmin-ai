@@ -56,6 +56,21 @@ function authorizationHeader(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+/**
+ * Cache-lane key for Mistral's prompt caching. Sent on every request of a user's live conversation
+ * (initial send, mid-session continuations, and the tool-result loop), so the identical growing
+ * prefix -- agent instructions plus history -- hits the cache instead of being re-billed at full
+ * input price every turn. Keyed by username, not conversation id: the username is already sent to
+ * the same API as the conversation `name` (Mistral advises no secrets in the key, and this exposes
+ * nothing new), and after a compaction respawn it keeps the agent-instructions prefix in the same
+ * cache lane, where a conversation-id key would fragment affinity on every respawn. The nightly
+ * job and the summarizer's one-shot calls deliberately send no key: cold at 03:00, per-phase
+ * prompts, nothing warm to reuse.
+ */
+function promptCacheKey(username: string): string {
+  return `yasmin-conversation:${username}`;
+}
+
 interface MistralConversationMeta {
   name: string;
   id: string;
@@ -455,6 +470,7 @@ export class ChatAgent {
       const body: any = {
         agent_id: conversationId ? undefined : this.agentId,
         name: conversationId ? undefined : username,
+        prompt_cache_key: promptCacheKey(username),
         inputs: [
           {
             role: 'user',
@@ -587,6 +603,7 @@ export class ChatAgent {
             }
 
             const toolBody = {
+              prompt_cache_key: promptCacheKey(username),
               inputs: toolInputs
             };
 

@@ -347,7 +347,7 @@ A single daily cron barely needs job-vs-job locking, but it's cheap: a row in a 
 
 - If reflection reuses the conversation agent's prompt, the `[REFLECTION_TRIGGER]` mode-switch must be added to `mistral_config/conversation/system_prompt.txt` — a prompt currently tuned hard for short, plain-text, first-person, youth-language chat. **Validate the mode switch actually works** before building on it; mode confusion is a real risk.
 - A **dedicated `yasmin-nightly` agent** with its own prompt owns Phases 2–3 (library wiring optional — see §1.2). Decide one owner per phase; v2 mixed "same conversation" (Phase 2) with "new conversation" (Phase 3) without saying which agent ran which. Note Phase 2 must reach a conversation's messages — either summarize _inside_ that conversation, or pull them via `GET /v1/conversations/{id}/messages` and feed the nightly agent.
-- Drop the "reuse prompt cache" justification for Phase 2 — caches are minutes-lived; at 03:00 there is nothing warm to reuse.
+- Drop the "reuse prompt cache" justification for Phase 2 — caches are minutes-lived; at 03:00 there is nothing warm to reuse. (The _live_ conversation agent does send Mistral a `prompt_cache_key` — see `src/chat_agent.ts` — because its per-turn reprocessing reuses a warm, identical prefix; the nightly job's per-phase prompts have nothing analogous to reuse, so it sends no key.)
 
 ---
 
