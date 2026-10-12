@@ -342,6 +342,11 @@ jobs:
           # source (stored auth would otherwise silently mask a rotated secret).
           OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
           OPENCODE_DISABLE_AUTOUPDATE: 'true'
+          # Websearch provider (docs/dev-loop.md): opencode v2 routes websearch and
+          # webfetch through a search provider; without a key every call errors (which
+          # also flips the run's exit code - see the rc=1 contract fallback). Pinned in
+          # the config below because headless --auto cannot answer the provider prompt.
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           # The managed service binds a loopback port; never route it via a
           # proxy. Env keys are case-insensitive, so this covers both the
           # NO_PROXY and no_proxy spellings that tools check.
@@ -349,6 +354,14 @@ jobs:
         run: |
           export PATH="$HOME/.opencode/bin:$PATH"
           mkdir -p "$OPENCODE_CONFIG_DIR"
+          # Pin the websearch provider; skip when no key is configured so the tool
+          # is simply unavailable instead of erroring on a missing provider.
+          if [ -n "$TAVILY_API_KEY" ]; then
+            printf '{"websearch": {"provider": "tavily"}}\n' > "$OPENCODE_CONFIG_DIR/opencode.jsonc"
+            echo "opencode.jsonc: websearch provider pinned to tavily"
+          else
+            echo "TAVILY_API_KEY not set; websearch/webfetch stay disabled"
+          fi
 
           # Watchdog: consume the JSON event stream, tee it to a file, and kill
           # opencode when the run degenerates:
@@ -508,11 +521,22 @@ jobs:
           fi
 
           if [ "$rc" = "1" ]; then
-            # opencode exits 1 for both config errors (deterministic - a retry
-            # fails identically) and infrastructure failures (API unreachable);
-            # not reliably separable by rc, so never auto-retry.
-            escalate "opencode failed (exit 1, cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
-            exit 0
+            # opencode exits 1 for config/infra failures AND for sessions that
+            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
+            # loop: a failed websearch/webfetch (no provider key configured)
+            # marks the session errored even when the agent completed its work
+            # with a valid outcome line. The outcome is the ground truth: fall
+            # through to normal handling when it parses, and escalate only
+            # when it does not.
+            contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
+              | awk 'NF { line = $0 } END { if (line) print line }' \
+              | grep -E '^(FIXED:|WALL:)' || true)"
+            if [ -z "$contract_line" ]; then
+              escalate "opencode failed (exit 1, no outcome line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
+              exit 0
+            fi
+            echo "opencode exited 1 but the final message carries $contract_line; treating the session as completed (tool errors were recovered)."
+            rc=0
           fi
 
           if [ "$rc" != "0" ]; then
