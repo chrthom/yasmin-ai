@@ -271,9 +271,16 @@ GitHub trace. No silent stuck states. Every failure path ends in exactly one of:
 
 The opencode exit code and the event stream (`out/stream.ndjson` + `out/opencode.stderr`)
 are the discriminators. Opencode v2.0.26 exit codes (measured): 0 finished, 1 config or
-infrastructure failure (not reliably separable by rc — classify from stderr; never
-auto-retry), 124 deadline (`timeout(1)`), 130 killed by signal, 99 watchdog kill
-(convention of this workflow, not opencode's):
+infrastructure failure **or a session that recorded (recovered) tool errors** — v2.0.26
+exits 1 whenever any tool call errored, even when the agent recovered and completed its
+work with a valid contract line (observed on the #98/#99 loop: failed `websearch`/`webfetch`
+calls, no search-provider key configured, flip an otherwise successful run to rc 1; the
+role jobs now pass `TAVILY_API_KEY` and pin `"websearch": {"provider": "tavily"}` in the
+job-local `opencode.jsonc` when the secret is set, so websearch/webfetch work headless). The
+post-steps therefore treat rc 1 as finished **iff** the final message parses the role's
+outcome contract (`PR_URL:`/`NO_PR:`/`WALL:`, `VERDICT:`, `FIXED:`/`WALL:`), and escalate
+only when it does not. Remaining exit codes: 124 deadline (`timeout(1)`), 130 killed by
+signal, 99 watchdog kill (convention of this workflow, not opencode's):
 
 | What failed | Detection | Handling (post-step, in code) |
 | --- | --- | --- |
