@@ -16,6 +16,11 @@ on:
         required: false
         default: ''
         type: string
+      retry:
+        description: Internal retry counter (do not edit)
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: write
@@ -342,6 +347,7 @@ jobs:
           BRANCH: ${{ steps.gate.outputs.branch }}
           HEAD_SHA_BEFORE: ${{ steps.gate.outputs.head_sha_before }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -446,7 +452,19 @@ jobs:
               exit 0
               ;;
             *)
-              escalate "unparseable outcome (exit 0, final message does not match the contract); transcript artifact preserved for diagnosis"
+              # A clean exit (rc=0) with no contract line is usually a truncated
+              # run (agent stopped mid-fix, opencode gave up silently) -
+              # transient, unlike a deterministic parse failure. Retry once via
+              # workflow_dispatch, passing the same review id so the gate does
+              # not have to re-resolve it; the counter in the input prevents a
+              # loop. No fix was pushed, so the head is unchanged and the retry
+              # runs on the same state.
+              if [ "$RETRY_COUNT" -lt 1 ] \
+                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1; then
+                echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1). Transcript artifact preserved for diagnosis."
+                exit 0
+              fi
+              escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"
               exit 0
               ;;
           esac

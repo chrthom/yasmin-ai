@@ -316,7 +316,19 @@ jobs:
                 exit 0
                 ;;
               *)
-                escalate "unparseable outcome (exit 0, final message does not match the contract); transcript artifact preserved for diagnosis"
+                # A clean exit (rc=0) with no contract line is usually a
+                # truncated run (agent stopped mid-implementation, opencode
+                # gave up silently) - transient, unlike a deterministic parse
+                # failure. Retry once via workflow_dispatch; the counter in
+                # the retry input prevents a loop. The gate's branch-exists
+                # check (vibe/issue-<N>-*) makes a retry after a half-finished
+                # run safe: it skips if the implementer got far enough to push.
+                if [ "$RETRY_COUNT" -lt 1 ] \
+                  && gh workflow run dev-loop-implement.yml --ref main -f issue_number="$ISSUE_NUMBER" -f retry=1; then
+                  echo "Unparseable implementer outcome (cost: \$$cost, tokens: $tokens); re-dispatching the implementer once (retry=1). Transcript artifact preserved for diagnosis."
+                  exit 0
+                fi
+                escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"
                 exit 0
                 ;;
             esac

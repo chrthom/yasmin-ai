@@ -9,6 +9,11 @@ on:
         description: PR number to review (manual backstop / fixer chain)
         required: true
         type: string
+      retry:
+        description: Internal retry counter (do not edit)
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: write
@@ -295,6 +300,7 @@ jobs:
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -387,7 +393,18 @@ jobs:
           case "${verdict_line:-}" in
             VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
             *)
-              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract); transcript artifact preserved for diagnosis"
+              # A clean exit (rc=0) with no VERDICT line is usually a truncated
+              # run (agent stopped mid-investigation, opencode gave up silently)
+              # - transient, unlike a deterministic parse failure. Retry once
+              # via workflow_dispatch; the retry counter in the input prevents
+              # a loop. The retry run re-reviews the same head; no marker review
+              # was posted, so the reviewer gate's dedupe cannot block it.
+              if [ "$RETRY_COUNT" -lt 1 ] \
+                && gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER" -f retry=1; then
+                echo "Unparseable outcome with no VERDICT line (cost: \$$cost); re-dispatching the reviewer once (retry=1). Transcript artifact preserved for diagnosis."
+                exit 0
+              fi
+              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract; retry exhausted); transcript artifact preserved for diagnosis"
               exit 0
               ;;
           esac
