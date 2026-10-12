@@ -706,7 +706,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // journals, undelivered ones were just consolidated as evidence). Deliberately a plain
     // DELETE, no TRUNCATE (DROP privileges / implicit commit). Only the failure of the
     // consolidation phases themselves keeps the notes for another day; a merely 'partial' run
-    // (e.g. a failed upload) may still empty the outbox.
+    // (e.g. a failed upload) may still empty the outbox. Quiet-night exception: the empty-batch
+    // skip above never reaches this phase, so delivered rows can linger across consecutive
+    // quiet nights until the next non-empty run clears them.
     if (notesConsolidated && notesSnapshotMaxId > 0) {
       try {
         await clearIntradayNotes(notesSnapshotMaxId);

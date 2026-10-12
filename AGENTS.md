@@ -180,7 +180,10 @@ At a high level, each run:
    deletes). A non-empty outbox keeps the consolidation path running even with zero conversations, so undelivered
    notes are never stranded by the skip. The skip also fires when the outbox state is unknown because reading it
    failed (`getUnconsolidatedNotes` threw): the skip performs no outbox writes, so any pending notes stay in the
-   outbox untouched and are picked up by the next run.
+   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (phase 6.5), so
+   already-delivered notes can linger across consecutive quiet nights; they are inert (delivery and consolidation
+   only ever look at rows with `delivered_at IS NULL`) and are cleared by the next non-skipped run's bounded
+   delete.
 2. **Journals** each conversation into a per-conversation markdown summary.
 3. **Integrates** today's journals into proposed updates to a small set of verbose long-term memory files
    (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`, `topics/<topic>.md`, `general/topic-index.md`), using a dedicated nightly Mistral
