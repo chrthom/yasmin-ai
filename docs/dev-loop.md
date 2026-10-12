@@ -109,6 +109,13 @@ There is no separate merger role. The fixer's scope grows by merge-conflict reso
   conflict-only run per conflicting PR (a mergeability of `UNKNOWN` right after the push
   is re-listed boundedly; PRs still `UNKNOWN` are dispatched anyway — the dispatched run
   re-checks `CONFLICTING` live and skips non-conflicting PRs).
+- `review_id` dispatches resolve the fixer workflow at `--ref main`, so sentinel sender
+  (reviewer red-CI dispatch, fixer no-findings retry, push scan) and receiving gate must be
+  the same protocol generation. Until they merge together, a dispatch can still resolve
+  `main`'s previous gate, which treats `none` as a literal review id and fails with an
+  HTTP 404 (observed on PR #116's own pre-merge window). The window closes when both
+  workflow files merge atomically; the gate also degrades any non-numeric review id to a
+  no-findings run, so an unrecognized sentinel skips green instead of red.
 - Conflict-dispatch dedupe: one fixer run per head SHA — the dispatched conflict-only run
   re-checks `CONFLICTING` live and skips if the head has already moved (another fixer
   resolved it); the next push (or a manual `workflow_dispatch`) moves the head and re-offers.
@@ -179,8 +186,8 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   error object in the log instead of discarding it, and never dispatches the
   fixer with a non-numeric review id.
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
-  (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
-  fetches the failing check logs). An auto-format push never reaches the fixer this way —
+  (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
+  prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
   the formatter's own push moves the tip, so the waiting reviewer skips and the new head's
   `synchronize` starts a fresh cycle; the formatted head's CI is green by construction.
 

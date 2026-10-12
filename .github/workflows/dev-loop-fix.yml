@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; none = no-findings run (conflict scan and red-CI dispatch; resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
+        description: Review id whose findings to fix; none = no-findings run (push scan, red-CI dispatch and the no-findings retry; resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
         required: false
         default: ''
         type: string
@@ -241,6 +241,19 @@ jobs:
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
               | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
+          # Defense in depth: a non-numeric review id must never reach the
+          # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
+          # 404 that fails this gate (PR #106 once dispatched a 422 error body
+          # as the review id). Degrade any unknown non-numeric input to the
+          # no-findings sentinel: the re-check below skips green when there is
+          # no conflict or CI failure to work on, so a version-skewed
+          # sender's unrecognized sentinel cannot crash the gate.
+          case "$review_id" in
+            *[!0-9]*)
+              echo "::warning::Review id '$review_id' is not numeric; treating this as a no-findings run (resolve merge conflicts and/or failing CI checks)."
+              review_id=""
+              ;;
+          esac
           if [ -z "$review_id" ]; then
             # No findings to fix: the no-findings sentinel resolved to an
             # empty review id above (the push-to-main scan, the reviewer's
