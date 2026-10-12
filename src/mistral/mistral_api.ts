@@ -6,9 +6,16 @@ import { extractContentText } from './content';
 // Errors + retry
 // ---------------------------------------------------------------------------
 
+/** Error carrying the HTTP status of a failed Mistral API call, so retry/respawn logic can branch on it. */
 export class MistralApiError extends Error {
   public readonly status?: number;
 
+  /**
+   * Builds the error, preserving the failed response's HTTP status for retry/respawn branching.
+   *
+   * @param message The error message.
+   * @param status The HTTP status of the failed response, when the call got that far.
+   */
   constructor(message: string, status?: number) {
     super(message);
     this.name = 'MistralApiError';
@@ -16,6 +23,7 @@ export class MistralApiError extends Error {
   }
 }
 
+/** Tuning for withRetry's exponential backoff; safeRetry restricts retries to provably uncommitted typed errors. */
 export interface RetryOptions {
   retries?: number;
   baseMs?: number;
@@ -29,6 +37,7 @@ export interface RetryOptions {
   safeRetry?: boolean;
 }
 
+/** Resolves after the given number of milliseconds. */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -50,6 +59,12 @@ export function conversationsUrl(): string {
  * fetch with a hard timeout (AbortController). On timeout the request is aborted and a plain Error
  * is thrown -- a network-style failure that withRetry treats as retryable, unlike a typed 4xx.
  * `timeoutMs` lets callers override the default REQUEST_TIMEOUT_MS ceiling.
+ *
+ * @param url The URL to fetch.
+ * @param init Standard fetch init (method, headers, body).
+ * @param timeoutMs Hard timeout in milliseconds for this single call.
+ * @returns The fetch response.
+ * @throws Error when the request is aborted by the timeout; rethrows any other fetch error.
  */
 export async function fetchWithTimeout(
   url: string,
@@ -71,7 +86,12 @@ export async function fetchWithTimeout(
 }
 
 /**
- * Runs fn with exponential-backoff retry on network errors and 429/5xx MistralApiErrors; other 4xx fail fast
+ * Runs fn with exponential-backoff retry on network errors and 429/5xx MistralApiErrors; other 4xx fail fast.
+ *
+ * @param fn The operation to (re)attempt.
+ * @param opts Retry tuning; safeRetry restricts retries to typed, provably uncommitted HTTP errors.
+ * @returns The value fn resolves with.
+ * @throws The last error when it is not retryable or the retry budget is exhausted.
  */
 export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): Promise<T> {
   const retries = opts?.retries ?? config.nightly.maxRetries;
@@ -115,6 +135,14 @@ export async function withRetry<T>(fn: () => Promise<T>, opts?: RetryOptions): P
 
 /**
  * Performs a GET/POST JSON request against the Mistral API and validates the response with schema
+ *
+ * @param method The HTTP method to use.
+ * @param path The API path (relative to config.mistral.apiRoot).
+ * @param schema Zod schema the response body must satisfy.
+ * @param body Optional JSON request body.
+ * @param opts Retry options.
+ * @returns The schema-validated response.
+ * @throws MistralApiError on a non-OK status; rethrows schema/network errors after retries.
  */
 async function requestJson<T>(
   method: 'GET' | 'POST',
@@ -152,6 +180,10 @@ async function requestJson<T>(
 
 /**
  * Performs an idempotent DELETE against the Mistral API; treats 204 and 404 as success
+ *
+ * @param path The API path (relative to config.mistral.apiRoot).
+ * @param opts Retry options.
+ * @throws MistralApiError on any status other than 204/404/2xx.
  */
 async function requestDelete(path: string, opts?: RetryOptions): Promise<void> {
   await withRetry(async () => {
@@ -180,6 +212,7 @@ async function requestDelete(path: string, opts?: RetryOptions): Promise<void> {
 // Conversations
 // ---------------------------------------------------------------------------
 
+/** Metadata of one Mistral conversation, as returned by the list endpoint. */
 export interface ConversationMeta {
   id: string;
   name?: string | null;
@@ -207,6 +240,10 @@ const ConversationListResponseSchema = z.array(ConversationMetaResponseSchema);
  * fewer items than `page_size`. Because there is no ordering guarantee, we must fetch every page
  * before applying the client-side updated_at filter -- otherwise conversations beyond the first
  * _page_size_ would be silently dropped and their memory missed.
+ *
+ * @param sinceIso ISO timestamp; only conversations updated at or after it are returned.
+ * @returns All conversations (any agent) updated since the watermark; pagination stops once a
+ *   page adds no new ids.
  */
 export async function listConversations(sinceIso: string): Promise<ConversationMeta[]> {
   const CONVERSATION_PAGE_SIZE = 100;
@@ -253,6 +290,7 @@ export async function listConversations(sinceIso: string): Promise<ConversationM
   return all.filter(c => Date.parse(c.updatedAt) >= sinceMs);
 }
 
+/** One raw message row of a conversation's history, of any type (dialogue, tool call, result, ...). */
 export interface ConversationMessage {
   id?: string;
   type: string;
@@ -279,6 +317,9 @@ const ConversationMessageListResponseSchema = z.union([
 
 /**
  * Fetches the full message history for a conversation
+ *
+ * @param conversationId The conversation to read.
+ * @returns The conversation's raw messages, oldest first.
  */
 export async function getConversationMessages(conversationId: string): Promise<ConversationMessage[]> {
   const data = await requestJson(
@@ -308,6 +349,7 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 // Agent calls + tool loop
 // ---------------------------------------------------------------------------
 
+/** One input entry for an agent call: a user/assistant message or a tool result. */
 export interface AgentInput {
   type?: string;
   role?: string;
@@ -316,12 +358,14 @@ export interface AgentInput {
   result?: string;
 }
 
+/** A tool call an agent requested in its reply, with already-normalized arguments. */
 export interface AgentToolCall {
   id: string;
   name: string;
   arguments: string | Record<string, unknown>;
 }
 
+/** Parsed result of one agent call: reply text, requested tool calls, and the conversation id. */
 export interface AgentCallResult {
   conversationId: string;
   outputText: string;
@@ -365,12 +409,17 @@ const AgentCallResponseSchema = z.object({
   outputs: z.array(AgentOutputResponseSchema)
 });
 
-// Joins the text parts of a single message.output's content (string, or array of {type, text} parts)
+/** Joins the text parts of a single message.output's content (string, or array of {type, text} parts). */
 function extractOutputText(content: z.infer<typeof OutputContentResponseSchema> | undefined): string {
   return extractContentText(content);
 }
 /**
  * Sends inputs to the agent (starting or continuing a conversation) and parses text + tool calls from the reply
+ *
+ * @param params The agent id, optional conversation id/name, the inputs to send, and store=false
+ *   to ask Mistral not to persist a new conversation (one-shot calls; ignored when continuing one).
+ * @returns The reply's text, requested tool calls, and the conversation id.
+ * @throws MistralApiError on non-retryable HTTP failures after retries.
  */
 export async function askAgent(params: {
   agentId: string;
@@ -423,6 +472,7 @@ export async function askAgent(params: {
   };
 }
 
+/** Outcome of a full ask -> execute tools -> send results loop. */
 export interface ToolLoopResult {
   conversationId: string;
   finalText: string;
@@ -431,6 +481,9 @@ export interface ToolLoopResult {
 
 /**
  * Generic ask -> execute tool calls -> send results loop, reusable by the pipeline's integrate phase
+ *
+ * @param params The agent id, the initial inputs, the iteration cap, and the tool executor.
+ * @returns The final agent text, the conversation id, and the iterations actually run.
  */
 export async function runAgentToolLoop(params: {
   agentId: string;
@@ -485,6 +538,7 @@ export async function runAgentToolLoop(params: {
 // Library documents
 // ---------------------------------------------------------------------------
 
+/** A document in the configured Mistral memory library (id + library path). */
 export interface LibraryDocument {
   id: string;
   path: string;
@@ -504,6 +558,7 @@ const LibraryDocumentsPageResponseSchema = z.object({
   has_more: z.boolean().optional()
 });
 
+/** Maps a raw library-document response row to the LibraryDocument shape. */
 function mapLibraryDocument(d: z.infer<typeof LibraryDocumentResponseSchema>): LibraryDocument {
   return {
     id: d.id,
@@ -513,13 +568,11 @@ function mapLibraryDocument(d: z.infer<typeof LibraryDocumentResponseSchema>): L
   };
 }
 
-// NOTE: pagination field names for this endpoint (page / page_size / has_more) are a best-effort
-// guess -- they could NOT be confirmed live against a production API key for this task. Reconfirm
-// against a live key before this deployment's library ever approaches 1000 documents (see
-// docs/nightly_memory_processing_implementation.md section 12.3). At single-family scale this
-// loop will almost always run exactly once.
 /**
- * Lists all documents in the configured memory library, paging defensively past 1000 entries
+ * Lists all documents in the configured memory library, paging defensively past 1000 entries.
+ * NOTE: the pagination field names (page / page_size / has_more) are a best-effort guess that
+ * could not be confirmed live -- reconfirm before the library ever approaches 1000 documents
+ * (docs/nightly_memory_processing_implementation.md section 12.3).
  */
 export async function listDocuments(): Promise<LibraryDocument[]> {
   const pageSize = 1000;
@@ -584,6 +637,11 @@ export async function listDocuments(): Promise<LibraryDocument[]> {
 
 /**
  * Uploads a new document to the memory library as multipart/form-data
+ *
+ * @param path The library path (and file name) to upload under.
+ * @param content The document content (Markdown).
+ * @returns The created library document.
+ * @throws MistralApiError when the upload fails (e.g. HTTP 400 for empty content).
  */
 export async function uploadDocument(path: string, content: string): Promise<LibraryDocument> {
   return withRetry(async () => {
@@ -627,6 +685,11 @@ export async function deleteDocument(documentId: string): Promise<void> {
  * first and only then deletes the superseded one. Uploading first means a mid-operation failure can at
  * worst leave a stale duplicate under the same path (logged, harmless) instead of a window where the
  * document is missing entirely from the library.
+ *
+ * @param path The library path to replace.
+ * @param content The new document content.
+ * @param oldDocumentId The superseded document to delete (optional).
+ * @returns The newly uploaded document.
  */
 export async function replaceDocument(
   path: string,

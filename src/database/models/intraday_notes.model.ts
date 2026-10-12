@@ -16,6 +16,7 @@ function escapeLike(pattern: string): string {
   return pattern.replace(/[%_\\]/g, m => '\\' + m);
 }
 
+/** One row of the cross-person note outbox, as stored in intraday_notes. */
 export interface IntradayNote {
   id: number;
   fromUsername: string;
@@ -24,6 +25,7 @@ export interface IntradayNote {
   createdAt: Date;
 }
 
+/** Raw snake_case intraday_notes DB row, mapped by mapRow. */
 interface IntradayNoteRow {
   id: number;
   from_username: string;
@@ -32,6 +34,7 @@ interface IntradayNoteRow {
   created_at: Date;
 }
 
+/** A pending note that is deliverable to a recipient right now (id, sender, content). */
 export interface IntradayNoteForDelivery {
   id: number;
   fromUsername: string;
@@ -53,6 +56,12 @@ function mapRow(row: IntradayNoteRow): IntradayNote {
 
 /**
  * Inserts a new pending note (the live agent's share_note tool)
+ *
+ * @param fromUsername The note's sender.
+ * @param toUsername The single recipient's name, or null for "everyone".
+ * @param content The note text.
+ * @returns The inserted row's id.
+ * @throws The underlying error when the insert fails.
  */
 export async function insertIntradayNote(
   fromUsername: string,
@@ -71,6 +80,10 @@ export async function insertIntradayNote(
  * to them, and never their own. "Everyone"-notes (to_username NULL) are included while the
  * user is not yet listed in delivered_to; a copy addressed to them is included while
  * delivered_at is still NULL.
+ *
+ * @param username The recipient's username.
+ * @returns The deliverable notes, oldest first.
+ * @throws The underlying error when the query fails.
  */
 export async function getUndeliveredNotesForUser(username: string): Promise<IntradayNoteForDelivery[]> {
   const canonical = canonicalUsername(username);
@@ -97,6 +110,11 @@ export async function getUndeliveredNotesForUser(username: string): Promise<Intr
  * delivered_to. The claim is conditional on the note still being undelivered (delivered_at
  * IS NULL / recipient not yet listed), so a concurrent double delivery loses the race and
  * returns false instead of double-delivering.
+ *
+ * @param noteId The note being delivered.
+ * @param username The recipient claiming the delivery.
+ * @returns true when this call won the claim, false when another delivery already claimed it.
+ * @throws The underlying error when either update fails.
  */
 export async function claimNoteDelivery(noteId: number, username: string): Promise<boolean> {
   const canonical = canonicalUsername(username);
@@ -121,6 +139,9 @@ export async function claimNoteDelivery(noteId: number, username: string): Promi
  * Returns the highest intraday_notes id currently in the table (0 when empty). The nightly
  * consolidation snapshot is bounded by this id: notes staged after it are not yet part of the
  * snapshot and must survive the phase-6.5 reset.
+ *
+ * @returns The current MAX(id), or 0 when the table is empty.
+ * @throws The underlying error when the query fails.
  */
 export async function getIntradayNotesMaxId(): Promise<number> {
   const [rows]: any = await executeQuery('SELECT COALESCE(MAX(id), 0) AS max_id FROM intraday_notes');
@@ -135,6 +156,10 @@ export async function getIntradayNotesMaxId(): Promise<number> {
  * An "everyone"-note never sets delivered_at (recipients are claimed one by one in
  * delivered_to, and partial delivery stays pending for the remaining family members), so it
  * is consolidated until the nightly reset empties it.
+ *
+ * @param maxId The snapshot bound -- only notes with id <= maxId are returned.
+ * @returns The still-pending notes up to the snapshot bound.
+ * @throws The underlying error when the query fails.
  */
 export async function getUnconsolidatedNotes(maxId: number): Promise<IntradayNote[]> {
   const [rows]: any = await executeQuery(
@@ -148,6 +173,10 @@ export async function getUnconsolidatedNotes(maxId: number): Promise<IntradayNot
  * Rolls back a delivery claim after the conversation request it was claimed for failed
  * (e.g. HTTP 5xx or a network error): the note becomes deliverable again with the user's
  * next input instead of being lost. Best-effort and idempotent.
+ *
+ * @param noteId The note whose delivery should be rolled back.
+ * @param username The recipient whose claim is released.
+ * @throws The underlying error when the rollback update fails.
  */
 export async function releaseNoteDelivery(noteId: number, username: string): Promise<void> {
   // JSON_SEARCH treats its argument as a search pattern (with % and _ wildcards), not as a
@@ -176,6 +205,9 @@ export async function releaseNoteDelivery(noteId: number, username: string): Pro
  * delete: a note inserted after the consolidation snapshot was taken (e.g. while the review
  * loop was still running) is NOT deleted -- it is still undelivered and unconsolidated, so
  * it stays for the next nightly run.
+ *
+ * @param maxId Only notes with id <= maxId are deleted (the snapshot bound).
+ * @throws The underlying error when the delete fails.
  */
 export async function clearIntradayNotes(maxId: number): Promise<void> {
   await executeQuery('DELETE FROM intraday_notes WHERE id <= ?', [maxId]);

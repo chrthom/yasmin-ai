@@ -63,12 +63,18 @@ import {
 
 /** Thrown when the nightly lock could not be acquired -- an expected outcome, not a failure to alert on */
 export class LockHeldError extends Error {
+  /**
+   * Builds the error with the reason the nightly lock could not be acquired.
+   *
+   * @param message Why the lock could not be acquired (e.g. another active run).
+   */
   constructor(message: string) {
     super(message);
     this.name = 'LockHeldError';
   }
 }
 
+/** Summary of one completed (or partially completed) nightly run, as persisted in nightly_job_log. */
 export interface PipelineResult {
   jobId: number;
   status: NightlyJobStatus;
@@ -80,6 +86,8 @@ export interface PipelineResult {
 /**
  * Computes the ISO watermark to pass to listConversations, falling back to 24h ago when the stored
  * watermark is missing or (guarding against corruption/clock skew) more than 1 hour in the future
+ *
+ * @returns The ISO timestamp of the durable watermark, or the 24h-ago fallback.
  */
 export async function computeSinceIso(): Promise<string> {
   const watermark = await getWatermark();
@@ -95,6 +103,10 @@ export async function computeSinceIso(): Promise<string> {
 
 /**
  * Dispatches a nightly-tool call by name, JSON-stringifying whatever the underlying tool returns
+ *
+ * @param name The tool name the agent called.
+ * @param args The parsed tool arguments.
+ * @returns The tool's result as a JSON string (or an error object for unknown tools).
  */
 async function executeIntegrateTool(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
@@ -116,6 +128,10 @@ async function executeIntegrateTool(name: string, args: Record<string, unknown>)
 /**
  * Runs the full nightly memory-consolidation pipeline: collect, journal, integrate, review/archive,
  * upload, regenerate the eager cache, and clean up -- see docs/nightly_memory_processing_implementation.md
+ *
+ * @returns The run's summary (job id, status, counters).
+ * @throws LockHeldError when another run holds the nightly processing lock.
+ * @throws The underlying error when a phase fails non-recoverably (the job row is marked 'failed' first).
  */
 export async function runNightlyPipeline(): Promise<PipelineResult> {
   const owner = hostname() + ':' + process.pid;
@@ -134,31 +150,24 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let conversations: { id: string; name: string }[];
     const skippedIds: string[] = [];
     // The watermark for the NEXT run must reflect when THIS run's Phase-1 snapshot was taken, not
-    // whenever the whole job eventually finishes minutes later -- otherwise any conversation updated
-    // in that gap is invisible to this run (already snapshotted) AND permanently invisible to every
-    // future run (its updated_at will never again clear a later watermark). See computeSinceIso/
-    // getWatermark for the read side of this contract.
+    // when the job finishes minutes later -- otherwise conversations updated in that gap are
+    // permanently invisible to every future run (see computeSinceIso/getWatermark).
     let collectedAt: Date;
 
-    // Only treat the orphan as a genuine resume if Phase 1 had already durably recorded its
-    // conversation batch (processedConversationIds is non-empty). If the process crashed between
-    // createJobLog() and that write, there is nothing safe to resume -- fall through to the same
-    // fresh-collection path as a brand-new job (still reusing the orphan's row/id, so we don't leave
-    // it dangling), rather than silently treating an empty id list as "nothing to process".
+    // Only a genuine resume if Phase 1 durably recorded its conversation batch: if the process
+    // crashed between createJobLog() and that write, fall through to the fresh-collection path
+    // (still reusing the orphan's row/id) rather than treating an empty id list as "nothing to process".
     if (orphan && orphan.processedConversationIds.length > 0) {
       jobId = orphan.id;
       resetNightlyToolsState();
-      // The resumed batch is a fixed replay of the original run's conversations, so the watermark we
-      // persist on completion must reflect when that original batch was snapshotted -- NOT "now". We
-      // don't persist the exact collection instant, so startedAt is the closest available proxy (the
-      // gap is seconds). Writing a watermark of "now" here would drop any conversation that changed
-      // between the original snapshot and this resume.
+      // The resumed batch replays the original run's conversations, so the watermark must reflect
+      // when that batch was snapshotted -- startedAt is the closest proxy for the exact collection
+      // instant. A watermark of "now" would drop conversations changed since the original snapshot.
       collectedAt = orphan.startedAt;
 
       // Recover usernames for the reused id list by re-listing with the same watermark-derived
-      // sinceIso and filtering down to just the ids we already know about -- the id list itself is
-      // NOT re-derived from this call, it comes straight from the orphaned row for byte-identical
-      // reprocessing of the same batch.
+      // sinceIso; the id list itself comes straight from the orphaned row (NOT re-derived) for
+      // byte-identical reprocessing of the same batch.
       const sinceIso = await computeSinceIso();
       const listed = await listConversations(sinceIso);
       const listedById = new Map(listed.map(c => [c.id, c]));
@@ -257,10 +266,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // memory. A failed read must not fail the run -- consolidation continues on journals alone.
     let undeliveredNotes: IntradayNote[] = [];
     // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
-    // never a note the live agent staged after the snapshot while the review loop was running.
-    // The watermark is MAX(id) over ALL notes (delivered ones included), not over the
-    // undelivered subset: with only delivered notes the undelivered max would be 0 and the
-    // bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
+    // never one staged after the snapshot. MAX(id) covers ALL notes (delivered included) --
+    // over only the undelivered subset the bounded DELETE would remove nothing.
     let notesSnapshotMaxId = 0;
     let notesConsolidated = true;
     try {
@@ -307,10 +314,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     let filesCreatedFromReview = 0;
     let anyReviewFailed = false;
 
-    // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every OTHER
-    // topic (title, Aliases line, content) so it can reject a semantic duplicate before it ever
-    // reaches the archive. Seeded from the archive and then EXTENDED as this run approves topic
-    // files -- otherwise two new topics staged in one night would both pass the barrier.
+    // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every
+    // OTHER topic so it can reject a semantic duplicate before it reaches the archive. Seeded
+    // from the archive and extended as this run approves topic files (same-night duplicates).
     let topicsLoadFailed = false;
     let existingTopics: ExistingTopic[];
     try {
@@ -319,12 +325,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
         .map(row => ({ path: row.filePath, content: row.content }));
     } catch (error) {
-      // Without barrier data this run cannot judge topic duplicates. Rather than run the full
-      // review loop on topics/ proposals and drop them afterwards, skip them BEFORE reviewing:
-      // the proposal is DROPPED (Phase 7 deletes the conversations and the next run rebuilds its
-      // journals only from ITS fresh conversations, so nothing re-stages this material), and
-      // marking the run 'partial' keeps the watermark so the next invocation retries with a
-      // working load.
+      // Without barrier data this run cannot judge topic duplicates: skip topics/ proposals
+      // BEFORE reviewing (they are DROPPED -- nothing re-stages this material next run) and mark
+      // the run 'partial', which keeps the watermark so the next invocation retries with a working load.
       console.error(
         'ERROR Failed to load existing topics; skipping topics/ proposals for this run: ' + error
       );
@@ -334,9 +337,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
 
     // The topic index is reviewed LAST: it is advisory (only the agent reads it as a discovery
-    // hint), so its lines are archived as staged without validation against the archive set.
-    // A rare stale line after a rejected duplicate is cosmetic and is fixed by the next run's
-    // index rewrite.
+    // hint), so its lines are archived as staged without validation against the archive set. A
+    // rare stale line after a rejected duplicate is cosmetic and fixed by the next run.
     const TOPIC_INDEX_PATH = 'general/topic-index.md';
     const orderedUpdates = [
       ...stagedUpdates.filter(update => update.path !== TOPIC_INDEX_PATH),
@@ -374,12 +376,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           barrierForUpdate
         );
 
-        // When the reviewer rejects a proposal, feed its feedback back to the agent so it can produce a
-        // corrected full replacement, then re-review. This turns a persistent "rejected forever" case
-        // into one that converges within a bounded number of revisions. All revisions for this file reuse
-        // the SAME conversation (revisionConversationId), so the full proposal->feedback history stays in
-        // the agent's context window instead of each call starting from scratch. The reviewer above stays
-        // stateless (a fresh call every time) -- only the reviser accumulates state.
+        // On rejection, feed the reviewer's feedback back to the agent for a corrected full
+        // replacement, then re-review (bounded convergence). All revisions reuse the SAME
+        // conversation so the proposal->feedback history stays in scope; the reviewer stays stateless.
         let revisions = 0;
         let revisionConversationId: string | undefined;
         while (!verdict.approved && revisions < config.nightly.maxRevisions) {
@@ -425,20 +424,15 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             existingTopics.push({ path: update.path, content: proposal });
           }
         } else {
-          // A reviewer rejection -- even after the revision cap -- is a normal, handled outcome: the
-          // proposal is simply not written. It must not degrade a healthy run to 'partial' (which would
-          // block the watermark and reprocess the same conversations forever). Log it so it stays
-          // observable; the run still completes and advances the watermark.
+          // A reviewer rejection is a normal, handled outcome: the proposal is simply not written
+          // and the run must NOT degrade to 'partial' (which would block the watermark and
+          // reprocess the same conversations forever). This WARN keeps it observable.
           console.warn(
             'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
           );
-          // Rejected duplicates are DROPPED BY DESIGN: the reviewer is instructed to name the
-          // existing topic to merge into, but this pipeline cannot rewrite that other file here
-          // (reviseProposal only ever revises the same path). Because a rejection deliberately
-          // does not degrade the run, the watermark still advances and the day's journal evidence
-          // is NOT reprocessed -- so the proposal's material is gone from the topic layer and this
-          // WARN is the only trace. It exists so the loss stays auditable and a human can merge
-          // manually if the material mattered.
+          // Rejected topic duplicates are DROPPED BY DESIGN (reviseProposal only revises the
+          // same path, so the material cannot be merged into the existing topic here): the
+          // watermark still advances, so this WARN is the only auditable trace of the loss.
           if (update.path.toLowerCase().startsWith('topics/')) {
             console.warn(
               'WARN Topic proposal ' +
@@ -473,9 +467,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     try {
       unsynced = await listUnsynced();
     } catch (error) {
-      // An unguarded transient read failure here would bubble to the outer catch and turn the whole
-      // run into a non-resumable 'failed'. Demote it to a phase failure instead: skip the upload, mark
-      // the run 'partial', and let the next invocation pick up the still-unsynced rows.
+      // A transient read failure here would bubble to the outer catch and turn the whole run
+      // into a non-resumable 'failed'. Demote it to a phase failure: skip the upload, mark
+      // 'partial', and let the next invocation pick up the still-unsynced rows.
       console.error('ERROR Phase 5 failed to list unsynced rows; skipping upload: ' + error);
       anyUploadFailed = true;
       unsynced = [];
@@ -517,11 +511,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
     const currentByPath = new Map(currentVersionsForReconcile.map(v => [v.filePath, v]));
 
-    // Group library docs by path so we can also catch same-path duplicates, which the sole
-    // invalid-path orphan check below never sees: a failed replaceDocument delete (the delete
-    // error is caught and logged, not rethrown) leaves a superseded copy of a still-valid path
-    // behind, forever. For each duplicated path we keep only the doc the archive currently
-    // references (its mistral_doc_id) and delete the rest.
+    // Group library docs by path to also catch same-path duplicates (a failed replaceDocument
+    // delete leaves a superseded copy of a still-valid path behind forever): for each duplicated
+    // path keep only the doc the archive references (its mistral_doc_id) and delete the rest.
     const docsByPath = new Map<string, LibraryDocument[]>();
     for (const doc of mistralDocs) {
       const list = docsByPath.get(doc.path) ?? [];
@@ -543,9 +535,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         continue;
       }
 
-      // Multiple copies of the same path. Keep the one the archive references; drop the rest.
-      // If the archive has no reference here (mistral_doc_id null or no longer matching any
-      // copy), we cannot tell which copy is live, so leave them all rather than guess.
+      // Multiple copies of the same path: keep the one the archive references and drop the rest.
+      // Without a matching reference we cannot tell which copy is live, so leave them all
+      // rather than guess.
       const current = currentByPath.get(path);
       const keeper = current ? docs.find(d => d.id === current.mistralDocId) : undefined;
       if (!keeper) {
@@ -626,9 +618,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         let compacted = await runCompact(kind, personName, stripped);
 
         if (compacted.trim().length === 0) {
-          // An empty source file (e.g. an empty family file) simply has nothing to compact -- log it
-          // and move on rather than degrading a healthy run to 'partial'. A genuinely empty memory
-          // file is not an eager-cache failure.
+          // An empty source file simply has nothing to compact -- log and move on rather than
+          // degrading a healthy run to 'partial'. A genuinely empty memory file is not a
+          // failure.
           console.log(
             'INFO Phase 6 compaction produced empty output for "' +
               row.filePath +
@@ -652,12 +644,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 6.5 -- Pending-notes reset (outbox)
     // -----------------------------------------------------------------------
-    // The outbox holds at most one day: after integrate (3) and review/archive (4) succeeded,
-    // every note -- delivered or not -- has served its purpose (delivered notes live on in the
-    // journals, undelivered ones were just consolidated as evidence). Deliberately a plain
-    // DELETE, no TRUNCATE (DROP privileges / implicit commit). Only the failure of the
-    // consolidation phases themselves keeps the notes for another day; a merely 'partial' run
-    // (e.g. a failed upload) may still empty the outbox.
+    // The outbox holds at most one day: once integrate + review/archive succeeded, every note
+    // has served its purpose. Deliberately a plain DELETE (no TRUNCATE: DROP privileges /
+    // implicit commit); a merely 'partial' run may still empty the outbox.
     if (notesConsolidated && notesSnapshotMaxId > 0) {
       try {
         await clearIntradayNotes(notesSnapshotMaxId);
@@ -731,14 +720,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       await setWatermark(collectedAt);
     } else if (skippedIds.length > 0) {
       // Poison-pill valve: a conversation that fails journaling every night freezes the watermark
-      // forever (see above), so each run re-collects a growing batch while the blocked conversation
-      // never clears. When the watermark has been stalled beyond the configured threshold -- and only
-      // when journal data is actually at stake (skippedIds non-empty; other 'partial' causes like
-      // upload/eager/delete failures are self-healing and re-picked-up independently of the
-      // watermark) -- abandon the stalled window: advance the watermark to now - threshold, bounding
-      // the data loss to the threshold window instead of blocking indefinitely. This is deliberately
-      // loud (ERROR log + errorMessage on the job row) so the abandoned conversation ids stay
-      // auditable, because their content is permanently lost to memory consolidation.
+      // forever. When the stall exceeds the threshold (and only with journal data at stake --
+      // other 'partial' causes are self-healing), advance to now - threshold, loudly (auditable).
       const stalledWatermark = await getWatermark();
       if (stalledWatermark && Date.now() - stalledWatermark.getTime() > config.nightly.watermarkStalenessMs) {
         const cutoff = new Date(Date.now() - config.nightly.watermarkStalenessMs);

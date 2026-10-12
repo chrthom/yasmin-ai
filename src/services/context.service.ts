@@ -7,6 +7,7 @@ import {
 import { contextEntryBlock, xmlBlock } from '../protocol';
 import { profileTitle } from '../strings';
 
+/** The result of one context-retrieval turn: the XML to inject and what it added. */
 export interface ContextRetrievalResult {
   formattedContext: string;
   newlyLoadedTitles: string[];
@@ -22,6 +23,7 @@ export class ContextService {
    * @param username The sender username
    * @param loadedTitles Set of titles that have already been loaded/sent in this conversation
    * @returns ContextRetrievalResult containing formatted XML context and any newly loaded titles
+   * @throws The underlying error when the context_entries queries fail.
    */
   public async getRelevantContext(
     prompt: string,
