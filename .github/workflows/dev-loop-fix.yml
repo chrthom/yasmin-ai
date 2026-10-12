@@ -118,7 +118,7 @@ jobs:
             prs_json="[]"
             for _ in 1 2 3 4 5; do
               prs_json="$(gh pr list --state open --label dev-loop -L 200 \
-                --json number,headRepository,isDraft,mergeable)"
+                --json number,headRepository,isDraft,mergeable,labels)"
               if ! printf '%s' "$prs_json" | jq -e \
                 'any(.[]; .isDraft == false and .headRepository.id == $repo_id and .mergeable == "UNKNOWN")' \
                 --arg repo_id "$REPO_NODE_ID" >/dev/null; then
@@ -130,10 +130,14 @@ jobs:
             # compare against repository.node_id - the numeric REST id in
             # repository.id never matches. The fork gate below compares two
             # numeric ids from the event payload; each check stays in its
-            # own ID space.
+            # own ID space. needs-human PRs are parked by a human decision:
+            # a dispatched run would only gate-skip on them, so filter them
+            # out of the candidates instead of spending a runner allocation
+            # on every push to main until they are unparked.
             candidates="$(printf '%s' "$prs_json" \
               | jq -r '[.[] | select(.isDraft == false)
                         | select(.headRepository.id == $repo_id)
+                        | select(all(.labels[]?; .name != "needs-human"))
                         | select(.mergeable == "CONFLICTING" or .mergeable == "UNKNOWN")]
                        | .[].number' --arg repo_id "$REPO_NODE_ID")"
             if [ -z "$candidates" ]; then
@@ -148,11 +152,18 @@ jobs:
             # pull an outstanding CHANGES_NEEDED review's findings in). The
             # dispatched run resolves the PR from the input, re-checks
             # CONFLICTING live, and enforces the head-SHA dedupe. The scan
-            # run itself never runs the agent.
+            # run itself never runs the agent. A transient dispatch failure
+            # (network blip, secondary rate limit) must not abort the loop
+            # under set -eu and leave the remaining candidates undispatched:
+            # warn and continue per PR - the next push to main re-offers a
+            # missed one.
             for pr in $candidates; do
-              gh workflow run dev-loop-fix.yml --ref main \
-                -f pr_number="$pr" -f review_id=none -f retry=0
-              echo "Dispatched conflict-only fixer run for PR #$pr."
+              if gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$pr" -f review_id=none -f retry=0; then
+                echo "Dispatched conflict-only fixer run for PR #$pr."
+              else
+                echo "::warning::Failed to dispatch a conflict-only fixer run for PR #$pr; continuing with the remaining candidates."
+              fi
             done
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
