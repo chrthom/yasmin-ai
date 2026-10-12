@@ -95,34 +95,17 @@ jobs:
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
         run: |
           set -eu
-          if [ -z "$PR_NUMBER" ]; then
-            echo "No PR number in event; nothing to do."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "unlabeled" ] \
-            && [ "$UNLABELED_NAME" != "needs-human" ]; then
-            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Fork PRs: never touch them (pull_request_review events carry the PR too).
-          # Compare repository IDs: head.repo.id and repository.id share the
-          # repository ID space; the owner is a user/org ID and never matches.
-          if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$REPO_ID" ]; then
-            echo "PR #$PR_NUMBER is from a fork; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          gh label create needs-human --color B60205 \
-            --description "dev-loop: human decision required" 2>/dev/null || true
-          gh label create dev-loop --color 46A1AA \
-            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
           # Conflict origin 2: a push to main can leave open ready dev-loop PRs
           # CONFLICTING. One scan per merge to main (docs/dev-loop.md): find all
           # conflicting candidates, dispatch each (conflict-only, no review
           # findings), and let the one-run-per-head-SHA dedupe bound the runs.
+          # This must run BEFORE the empty-PR_NUMBER guard below: a push event
+          # carries no PR, so the guard would otherwise exit the scan run before
+          # it ever enumerated candidates (observed on PR #113: the push run
+          # printed "No PR number in event; nothing to do." and succeeded).
           if [ "$EVENT_NAME" = "push" ]; then
+            gh label create dev-loop --color 46A1AA \
+              --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
             candidates="$(gh pr list --state open --label dev-loop \
               --json number,headRefOid,headRepository,isDraft,mergeable \
               | jq -r '[.[] | select(.isDraft == false)
@@ -146,6 +129,29 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number in event; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "unlabeled" ] \
+            && [ "$UNLABELED_NAME" != "needs-human" ]; then
+            echo "Unlabeled '$UNLABELED_NAME', not needs-human; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fork PRs: never touch them (pull_request_review events carry the PR too).
+          # Compare repository IDs: head.repo.id and repository.id share the
+          # repository ID space; the owner is a user/org ID and never matches.
+          if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$REPO_ID" ]; then
+            echo "PR #$PR_NUMBER is from a fork; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh label create needs-human --color B60205 \
+            --description "dev-loop: human decision required" 2>/dev/null || true
+          gh label create dev-loop --color 46A1AA \
+            --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
           # starts the fixer. CLEAN and human reviews start nothing. The
           # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.
