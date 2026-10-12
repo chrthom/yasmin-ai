@@ -25,6 +25,7 @@ export interface IntradayNote {
   createdAt: Date;
 }
 
+/** Raw snake_case intraday_notes DB row, mapped by mapRow. */
 interface IntradayNoteRow {
   id: number;
   from_username: string;

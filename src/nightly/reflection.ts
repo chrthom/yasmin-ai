@@ -306,6 +306,7 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
     .join('\n\n');
 }
 
+/** One archived topic file, as the duplicate-barrier evidence for reviewing topics/ proposals. */
 export interface ExistingTopic {
   path: string;
   content: string;

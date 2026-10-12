@@ -23,6 +23,7 @@ export class MistralApiError extends Error {
   }
 }
 
+/** Tuning for withRetry's exponential backoff; safeRetry restricts retries to provably uncommitted typed errors. */
 export interface RetryOptions {
   retries?: number;
   baseMs?: number;
