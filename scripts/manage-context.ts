@@ -11,6 +11,10 @@ import { validateEnv } from '../src/config';
 
 validateEnv({ requireDb: true });
 
+/**
+ * CLI entry point: dispatches the subcommand (list/create/update/delete) and keeps the DB pool
+ * open across it, closing it in finally so the process can always exit.
+ */
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -74,6 +78,7 @@ Options for update:
   }
 }
 
+/** Prints all context entries (title + content) as a simple table. */
 async function list() {
   const entries = await listContextEntries();
   console.log('Context Entries:');
@@ -84,11 +89,13 @@ async function list() {
   }
 }
 
+/** Creates a new context entry and prints a confirmation. */
 async function create(title: string, content: string) {
   await insertContextEntry(title, content);
   console.log(`Created context entry with title "${title}"`);
 }
 
+/** Updates a context entry's title and/or content from the --title/--content flags; exits non-zero on failure. */
 async function update(title: string, args: string[]) {
   let newTitle: string | undefined;
   let newContent: string | undefined;
@@ -112,6 +119,7 @@ async function update(title: string, args: string[]) {
   }
 }
 
+/** Deletes a context entry by title; exits non-zero on failure. */
 async function deleteEntry(title: string) {
   const success = await deleteContextEntry(title);
   if (success) {

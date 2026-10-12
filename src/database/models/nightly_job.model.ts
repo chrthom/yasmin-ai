@@ -1,7 +1,9 @@
 import { executeQuery } from '../connection';
 
+/** Lifecycle status of a nightly job-log row. */
 export type NightlyJobStatus = 'running' | 'completed' | 'partial' | 'failed';
 
+/** One nightly_job_log row: the run's resumable state, phase progress, and counters. */
 export interface NightlyJobLog {
   id: number;
   startedAt: Date;
@@ -16,6 +18,7 @@ export interface NightlyJobLog {
   filesCreated: number;
 }
 
+/** Partial update for one nightly_job_log row; only the provided fields are written. */
 export interface NightlyJobLogPatch {
   status?: NightlyJobStatus;
   lastCompletedPhase?: string;
@@ -37,7 +40,9 @@ export interface NightlyJobLogPatch {
 
 /**
  * Creates a new nightly_job_log row with status 'running'
- * @returns The insertId of the new row
+ *
+ * @returns The insertId of the new row.
+ * @throws The underlying error when the insert fails.
  */
 export async function createJobLog(): Promise<number> {
   try {
@@ -51,6 +56,10 @@ export async function createJobLog(): Promise<number> {
 
 /**
  * Updates a nightly_job_log row with only the provided fields
+ *
+ * @param id The job row's id.
+ * @param patch The fields to write.
+ * @throws The underlying error when the update fails.
  */
 export async function updateJobLog(id: number, patch: NightlyJobLogPatch): Promise<void> {
   try {
@@ -123,6 +132,9 @@ export async function updateJobLog(id: number, patch: NightlyJobLogPatch): Promi
  * Read from the dedicated nightly_watermark singleton -- NOT from nightly_job_log -- so a pruning of
  * old completed rows (pruneOldJobLogs) can never erase the watermark and trigger a silent full
  * reprocess of the previous 24h. The watermark only advances on a fully completed run.
+ *
+ * @returns The snapshot time of the most recently fully-completed job, or null if none.
+ * @throws The underlying error when the query fails.
  */
 export async function getWatermark(): Promise<Date | null> {
   try {
@@ -139,6 +151,9 @@ export async function getWatermark(): Promise<Date | null> {
 /**
  * Records the Phase-1 listing snapshot time of a fully-completed run as the durable watermark.
  * Idempotent upsert on the singleton row.
+ *
+ * @param snapshotAt The instant the completed run's conversation batch was snapshotted.
+ * @throws The underlying error when the upsert fails.
  */
 export async function setWatermark(snapshotAt: Date): Promise<void> {
   try {
@@ -155,7 +170,10 @@ export async function setWatermark(snapshotAt: Date): Promise<void> {
 
 /**
  * Deletes completed nightly_job_log rows older than the given number of days
- * @returns The number of rows deleted
+ *
+ * @param olderThanDays Age threshold in days for completed rows.
+ * @returns The number of rows deleted.
+ * @throws The underlying error when the delete fails.
  */
 export async function pruneOldJobLogs(olderThanDays: number): Promise<number> {
   try {
@@ -208,6 +226,9 @@ function parseIdArrayColumn(value: any): string[] {
 
 /**
  * Returns the single most recent 'running' job row (an orphan from a crashed process), or null if none exists
+ *
+ * @returns The orphaned running job, or null.
+ * @throws The underlying error when the query fails.
  */
 export async function findRunningJob(): Promise<NightlyJobLog | null> {
   try {
@@ -226,6 +247,12 @@ export async function findRunningJob(): Promise<NightlyJobLog | null> {
 
 /**
  * Attempts to acquire the named processing lock, stealing it if the existing lock is stale
+ *
+ * @param lockName The named lock ('nightly').
+ * @param owner Hostname:pid string identifying the acquiring process.
+ * @param staleMs Age after which an existing lock may be stolen.
+ * @returns true when the lock was acquired (fresh or stolen), false when it is held by someone else.
+ * @throws The underlying error when any query fails outside the expected duplicate-entry path.
  */
 export async function acquireLock(lockName: string, owner: string, staleMs: number): Promise<boolean> {
   try {
@@ -263,6 +290,10 @@ export async function acquireLock(lockName: string, owner: string, staleMs: numb
 
 /**
  * Releases the named processing lock
+ *
+ * @param lockName The named lock ('nightly').
+ * @param owner The owner that acquired the lock (only the current owner may release it).
+ * @throws The underlying error when the delete fails.
  */
 export async function releaseLock(lockName: string, owner: string): Promise<void> {
   try {

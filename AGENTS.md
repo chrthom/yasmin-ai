@@ -272,3 +272,16 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - Unix line endings
 - TypeScript strict mode
 - Prefer arrow functions
+
+### Comment convention
+
+- **Unit comments**: every function, class, and arrow-function constant gets a TSDoc block
+  (`/** ... */`) directly above it, interfaces and types too when they carry a behavior contract.
+  One concise sentence about what the unit does, elaboration only if needed, plus `@param`,
+  `@returns` and `@throws` as applicable. Trivial private helpers still get a one-line block.
+- **Inline comments**: brief, single-purpose `//` hints explaining _why_ something non-obvious is
+  done. No multi-paragraph essays: anything longer than ~3 lines belongs in the unit comment (or the
+  referenced design doc) instead.
+- Enforcement: `jsdoc/require-jsdoc` (eslint-plugin-jsdoc) fails `npm run lint` on any undocumented
+  function/class in `src/` and `scripts/`. Test files in `src/__tests__/` are exempt; comment test
+  scaffolding only where behavior is genuinely non-obvious.
