@@ -189,11 +189,12 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
   name — `opencode-implementer-output-issue-<N>-<run_id>-<run_attempt>` for the implementer,
   `opencode-(reviewer|fixer)-output-pr-<M>-…` for the PR roles — the only artifact metadata
   that can be filtered without a download (run metadata carries neither the issue nor the
-  dispatch inputs). The report resolves the issue's PRs from the issue timeline's
-  cross-references (the implementer PR's `Closes #<N>` body reference) plus the
-  `vibe/issue-<N>-*` branch convention, then matches artifact names. Runs whose artifacts
-  predate the naming scheme are not attributable; the report then finds nothing and posts no
-  comment, so the first reported issue is the first one fully served after the scheme.
+  dispatch inputs). The report resolves the issue's PRs two ways — cross-referenced PRs whose
+  live body still carries a closing keyword reference (`Closes|Fixes|Resolves #<N>`; a
+  cross-reference event fires for any mention, so the mention alone must not attribute costs)
+  plus the `vibe/issue-<N>-*` branch convention — then matches artifact names. Runs whose
+  artifacts predate the naming scheme are not attributable; the report then finds nothing and
+  posts no comment, so the first reported issue is the first one fully served after the scheme.
 - **Aggregation**: per run, cost is the sum of `part.cost` and tokens the cost-weighted sum
   (input + output + cache.write + 0.1 × cache.read, the cap semantics) over the
   `step_finish` events in the run's `stream.ndjson` artifact — the same jq the role
@@ -216,6 +217,7 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
 .github/workflows/dev-loop-review.yml      ready PR -> one marker review -> state post-step
 .github/workflows/dev-loop-fix.yml         CHANGES_NEEDED review or CONFLICTING CI run
                                            -> fix commits / merge-commit conflict resolution
+.github/workflows/dev-loop-cost-report.yml closed-as-completed dev-loop issue -> cost report comment
 .github/dev-loop/prompts/implementer.md    role prompts (ported from PR #80's agent definitions,
 .github/dev-loop/prompts/reviewer.md       minus gh-guard boilerplate; final line is a parseable
 .github/dev-loop/prompts/fixer.md          outcome: PR_URL|NO_PR:, VERDICT:, FIXED:|WALL:)
