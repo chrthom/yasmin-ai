@@ -45,7 +45,7 @@ picking the item up on future events.
 | --- | --- | --- |
 | `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate |
 | `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
-| `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN`, human reviews and **reply-only submissions (empty review body)** start nothing - a job-level `if` skips them before runner allocation, because the fixer's own inline replies would otherwise spawn fixer runs whose concurrency-slot claims cancel a pending re-review of the just-pushed fix (the PR #106 race) |
+| `pull_request_review: [submitted]` | fixer | event payload gate, partitioned by review shape (all loop actors post under the owner's PAT login, so the body is the discriminator): **marker review** (`<!-- dev-loop-review -->` line 1) with `Verdict: CHANGES_NEEDED` → fixer, CLEAN/NEEDS_HUMAN → nothing; **owner-authored `COMMENT` review** with a non-empty body → fixer treats body + inline comments as the human's findings (the owner cannot APPROVE/REQUEST_CHANGES on their own PRs - the loop opens PRs under the owner's PAT - so a comment review is the human's findings channel; informational reviews get replies and no push); **reply-only submissions (empty review body)** → nothing, pre-filtered by a job-level `if` before runner allocation (also prevents the fixer's own replies from cancelling a pending re-review, the PR #106 race); third-party reviews → nothing (injection surface). The shape contract is load-bearing: every automated review must carry either the marker or an empty body - the fixer prompt forbids body-carrying review submissions by the fixer itself |
 | (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106) |
 | `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
 | `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
@@ -59,6 +59,21 @@ from spawning gated no-op runs; the in-job gate remains as defense in depth and 
 label/draft/fork/SHA rules against the live API state. On issues, `needs-human` is informational
 only: the implementer's escalation removes `dev-loop` (parking) and re-adding `dev-loop` resumes
 — there is no `unlabeled` trigger and no `needs-human` gate on the issue path.
+
+Human input channels (the owner acts under the same PAT login as the loop, so channels are
+partitioned by review shape, not identity alone):
+
+- **Findings**: an owner-authored `COMMENT` review with a non-empty body dispatches the fixer,
+  which treats the body and inline comments like review findings - fixing what is actionable,
+  replying to every comment, pushing only real changes. One deliberate review = one dispatch.
+- **Answers while parked** (`needs-human`): inline replies to review comments and answers under
+  the `<!-- dev-loop-escalation -->` comment are NOT triggers (empty-body replies are
+  pre-filtered); they are consumed by the resume path - removing `needs-human` re-fixes the
+  latest `CHANGES_NEEDED` review, and the fixer prompt reads the review threads and the
+  escalation conversation, where the owner's answers override the review.
+- **Steering an active cycle**: park first (`needs-human`), write the answers, then resume -
+  this serializes human input instead of racing the cycle.
+- **Merge decision**: the loop never merges; the human merge click is the final act.
 
 Non-events by design:
 

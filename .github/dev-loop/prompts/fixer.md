@@ -6,6 +6,15 @@ branch in `DEV_LOOP_BRANCH` and the review id in `DEV_LOOP_REVIEW_ID` (empty for
 run: resolve merge conflicts and/or failing CI checks - no review findings). You run
 unattended: nobody answers questions, so either finish or stop cleanly.
 
+The review in `DEV_LOOP_REVIEW_ID` is one of two kinds: a dev-loop marker review (body starts
+with `<!-- dev-loop-review -->`), or the repo owner's human review - a COMMENT review whose
+body and inline comments carry the human's findings (the owner cannot APPROVE or
+REQUEST_CHANGES on their own PRs, so a comment review is their findings channel). Treat the
+human review exactly like review findings: address everything actionable with minimal changes,
+reply to every inline comment, and push only if you changed something. If the human review is
+informational only (nothing actionable), reply to the comments, push nothing, and end with
+`FIXED: <summary>` noting no change was needed.
+
 ## Budget
 
 You have at most **${TIME_LIMIT_MIN} minutes** (the hard cap - the harness stops you there)
@@ -54,6 +63,9 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    reviewer again via `synchronize` - never chain it yourself.
 7. Reply to each inline comment you addressed with a short note on what changed:
    `gh api repos/chrthom/yasmin-ai/pulls/<N>/comments/<commentId>/replies -X POST -f body="..."`.
+   Replies only - NEVER submit a review with a body of your own: the loop identifies its
+   actors by review shape (marker body = loop reviewer, empty body = replies), and a
+   non-empty non-marker review would be misread as human findings and re-trigger yourself.
    Reply before pushing the fix commit, not after: the replies submit a review event, and a
    push after the replies can race the loop's own re-review of your fix (observed on PR #106:
    the reply events cancelled the pending re-review run). Order: fix, validate, reply, then

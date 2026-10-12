@@ -90,6 +90,7 @@ jobs:
           UNLABELED_NAME: ${{ github.event.label.name }}
           EVENT_REVIEW_ID: ${{ github.event.review.id }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          REVIEW_AUTHOR: ${{ github.event.review.user.login }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
@@ -146,20 +147,42 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
-          # starts the fixer. CLEAN and human reviews start nothing. The
-          # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.
-          # KEEP IN SYNC with dev-loop-review.yml: these greps match the exact
-          # marker-review body its post-step composes - the marker alone on
-          # line 1 and a bare `Verdict: <V>` line.
+          # Event-payload gate: a marker review with verdict CHANGES_NEEDED
+          # starts the fixer, and so does a human review by the repo owner.
+          # Author identity partition (all loop actors post under the same PAT
+          # login, so the body shape is the discriminator):
+          #   - loop reviewer  -> marker line 1 on the body (this branch)
+          #   - fixer          -> inline replies only, EMPTY review body (pre-
+          #                       filtered by the job-level if; if one ever
+          #                       reaches here it falls through to the skip)
+          #   - human owner    -> non-empty body WITHOUT the marker (this branch)
+          # Any other author or shape starts nothing. Inline replies by the
+          # owner are empty-body submissions and are NOT a trigger: their
+          # content is consumed on the needs-human resume path instead.
+          # KEEP IN SYNC with dev-loop-review.yml: the marker greps match the
+          # exact marker-review body its post-step composes - the marker alone
+          # on line 1 and a bare `Verdict: <V>` line. KEEP IN SYNC with the
+          # fixer prompt: automated reviews must carry either the marker or an
+          # empty body - a non-empty non-marker automated review would be
+          # misread as human findings and self-trigger the fixer.
+          human_review=false
           if [ "$EVENT_NAME" = "pull_request_review" ]; then
-            if ! printf '%s' "$REVIEW_BODY" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
-              echo "Review is not a dev-loop marker review; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if ! printf '%s' "$REVIEW_BODY" | grep -q '^Verdict: CHANGES_NEEDED$'; then
-              echo "Marker review verdict is not CHANGES_NEEDED; skipping."
+            if printf '%s' "$REVIEW_BODY" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
+              if ! printf '%s' "$REVIEW_BODY" | grep -q '^Verdict: CHANGES_NEEDED$'; then
+                echo "Marker review verdict is not CHANGES_NEEDED; skipping."
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            elif [ "$REVIEW_AUTHOR" = "chrthom" ] && [ -n "$(printf '%s' "$REVIEW_BODY" | tr -d '[:space:]')" ]; then
+              # The repo owner cannot APPROVE/REQUEST_CHANGES on their own PRs
+              # (the loop opens PRs under the owner's PAT), so their review
+              # channel is a COMMENT review. Treat its body and inline
+              # comments as findings; the fixer decides what is actionable,
+              # replies to every comment, and pushes only real changes.
+              human_review=true
+              echo "Human review by $REVIEW_AUTHOR (non-marker, non-empty); treating it as findings input."
+            else
+              echo "Review is not a dev-loop marker review and not an owner-authored findings review; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -231,7 +254,7 @@ jobs:
               echo "PR #$PR_NUMBER has red CI checks on head $head_tip; treating this as a CI-failure run (plus conflicts if any)."
             fi
           fi
-          if [ -n "$review_id" ]; then
+          if [ -n "$review_id" ] && [ "$EVENT_NAME" != "pull_request_review" -o "$human_review" != "true" ]; then
             review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
             if ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
               echo "Review $review_id is not a CHANGES_NEEDED review; nothing to fix. Skipping."
