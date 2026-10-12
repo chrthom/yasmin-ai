@@ -208,6 +208,17 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Draft is a human parking brake: the loop never touches a draft PR
+          # on any event (docs/dev-loop.md). pull_request_review fires on
+          # drafts and the owner can comment-review their own draft PR, so
+          # the human-findings channel makes drafts reachable on this gate's
+          # event path - check the live API state, mirroring the reviewer
+          # gate's draft skip.
+          if [ "$(gh pr view "$PR_NUMBER" --json isDraft | jq -r '.isDraft')" = "true" ]; then
+            echo "PR #$PR_NUMBER is draft; the loop never touches drafts on any event. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if gh pr view "$PR_NUMBER" --json labels \
             | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
             echo "PR #$PR_NUMBER is labeled needs-human; skipping."
@@ -294,7 +305,10 @@ jobs:
           # One fixer per review, implicitly: the reviewer chains the fixer only
           # while the head SHA still equals the reviewed commit_id, so if the head
           # has already moved past the reviewed SHA, a fix (or a human push) has
-          # landed since - this review is already being acted on. Skip. On the
+          # landed since - this review is already being acted on. Skip. A human
+          # findings review is the exception: the moving commit fixed a DIFFERENT
+          # review and never saw its findings, so it is chained to the reviewer
+          # below instead of dropped. On the
           # unlabeled resume path the human decides a re-fix is needed, so the
           # check does not apply. Exception: if every commit between the reviewed
           # SHA and the current head is a CI auto-format commit (message
@@ -319,8 +333,32 @@ jobs:
             non_format="$(git log --format='%s' "$reviewed_sha..$head_sha_before" | grep -vc '^chore: auto-format$' || true)"
             if [ "${non_format:-1}" = "0" ]; then
               echo "Head moved only by CI auto-format commits ($reviewed_sha -> $head_sha_before); no fix ran yet, proceeding with the findings."
-            else
+            elif printf '%s' "$review_body" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
               echo "Head SHA ($head_sha_before) already moved past the reviewed SHA ($reviewed_sha) by a non-auto-format commit; a fix for review $review_id already ran. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              # A human findings review skipped here would be silently
+              # dropped: the moving commit fixed another review (a fixer run
+              # already in flight when the owner submitted) and never saw
+              # these findings - no reply, no signal, and the owner cannot
+              # tell consumption from a drop. Chain the reviewer instead: its
+              # fresh review of the moved head re-enters the loop and its
+              # head-SHA dedupe bounds it (mirrors the stale-verdict
+              # re-dispatch in dev-loop-review.yml). Escalate if the chain
+              # fails, so the owner knows the findings went unconsumed.
+              echo "Head SHA ($head_sha_before) moved past the human findings review $review_id ($reviewed_sha) while a fix for another review ran; the findings were not consumed by it. Chaining the reviewer on the moved head."
+              if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+                gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null || true
+                cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @chrthom dev-loop fixer escalation: human findings review $review_id was skipped - the head moved ($reviewed_sha -> $head_sha_before) while a fix for another review ran, so its findings were not consumed - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
+
+          PR: #${PR_NUMBER}
+          Review: ${review_id}
+          EOF
+                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null || true
+              fi
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
