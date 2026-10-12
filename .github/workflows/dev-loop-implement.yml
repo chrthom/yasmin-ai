@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   implement:
-    name: Implementer (issue -> draft PR)
+    name: Implementer
     # Job-level event filter (docs/dev-loop.md): a labeled event for any
     # label other than dev-loop can never start the implementer - skip before
     # a runner is allocated. The gate below remains as defense in depth.
