@@ -565,14 +565,28 @@ jobs:
           fi
           # One pending review per user per PR: a stale pending review from a
           # previously failed post blocks every new POST with 422 (observed on
-          # PR #106). Delete any pending review of the token user before
-          # posting - pending reviews carry no findings, so nothing is lost.
+          # PR #106). Delete a pending review of the token user before
+          # posting - but ONLY one with zero draft comments: the token user
+          # is the repo owner, whose pending review may be a human findings
+          # review being drafted in the GitHub UI, and deleting it would
+          # silently destroy the owner's draft findings. A loop leftover
+          # never carries comments; one that does is left alone (it 422-blocks
+          # the POST - the warning below makes that visible instead).
           pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
             | jq -r '[.[] | select(.state == "PENDING")] | first | .id // empty')"
           if [ -n "$pending_review_id" ]; then
-            echo "Deleting stale pending review $pending_review_id before posting (it would 422-block the POST)."
-            gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
-              || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
+            # Fail closed: an unknown comment count means "maybe a draft" - the
+            # POST can still 422, which escalates visibly, but a human draft is
+            # never destroyed on a query failure.
+            pending_comments="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id/comments" \
+              --jq 'length' 2>/dev/null || echo unknown)"
+            if [ "$pending_comments" = "0" ]; then
+              echo "Deleting comment-less stale pending review $pending_review_id before posting (it would 422-block the POST)."
+              gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
+                || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
+            else
+              echo "::warning::Pending review $pending_review_id has ${pending_comments} draft comment(s) (likely the owner's review draft in the GitHub UI); NOT deleting it. If it is a loop leftover, delete it manually - it 422-blocks the review POST."
+            fi
           fi
           cat > /tmp/dev-loop-review.json <<EOF
           {

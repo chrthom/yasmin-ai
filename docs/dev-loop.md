@@ -45,7 +45,7 @@ picking the item up on future events.
 | --- | --- | --- |
 | `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate |
 | `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
-| `pull_request_review: [submitted]` | fixer | event payload gate, partitioned by review shape (all loop actors post under the owner's PAT login, so the body is the discriminator): **marker review** (`<!-- dev-loop-review -->` line 1) with `Verdict: CHANGES_NEEDED` → fixer, CLEAN/NEEDS_HUMAN → nothing; **owner-authored `COMMENT` review** with a non-empty body → fixer treats body + inline comments as the human's findings (the owner cannot APPROVE/REQUEST_CHANGES on their own PRs - the loop opens PRs under the owner's PAT - so a comment review is the human's findings channel; informational reviews get replies and no push); **reply-only submissions (empty review body)** → nothing, pre-filtered by a job-level `if` before runner allocation (also prevents the fixer's own replies from cancelling a pending re-review, the PR #106 race); third-party reviews → nothing (injection surface). The shape contract is load-bearing: every automated review must carry either the marker or an empty body - the fixer prompt forbids body-carrying review submissions by the fixer itself |
+| `pull_request_review: [submitted]` | fixer | event payload gate, partitioned by review author AND shape (reviews are world-postable on a public repo, so the author is checked on both branches; the expected login is derived from `github.repository_owner`, not hardcoded - the repo owner is the human by definition): **owner-authored marker review** (`<!-- dev-loop-review -->` line 1) with `Verdict: CHANGES_NEEDED` → fixer, CLEAN/NEEDS_HUMAN → nothing; **owner-authored `COMMENT` review** (state checked) with a non-empty body → fixer treats body + inline comments as the human's findings (the owner cannot APPROVE/REQUEST_CHANGES on their own PRs - the loop opens PRs under the owner's PAT - so a comment review is the human's findings channel; informational reviews get replies and no push; owner APPROVE/CHANGES_REQUESTED bodies, possible on human-authored PRs opted into the loop, dispatch nothing); **reply-only submissions (empty review body)** → nothing, pre-filtered by a job-level `if` before runner allocation (also prevents the fixer's own replies from cancelling a pending re-review, the PR #106 race); third-party reviews → nothing (injection surface: a forged marker shape by a non-owner starts nothing). The shape contract is load-bearing: every automated review must carry either the marker or an empty body - the fixer prompt forbids body-carrying review submissions by the fixer itself |
 | (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106) |
 | `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
 | `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
@@ -66,10 +66,18 @@ partitioned by review shape, not identity alone):
 - **Findings**: an owner-authored `COMMENT` review with a non-empty body dispatches the fixer,
   which treats the body and inline comments like review findings - fixing what is actionable,
   replying to every comment, pushing only real changes. One deliberate review = one dispatch.
+  The review id stays consumable on every path: the fixer's verdict re-check is shape-based
+  (only marker reviews are held to `Verdict: CHANGES_NEEDED`), so the post-step's built-in
+  auto-retry and a manual `workflow_dispatch` re-dispatch of a human findings review work.
 - **Answers while parked** (`needs-human`): inline replies to review comments and answers under
   the `<!-- dev-loop-escalation -->` comment are NOT triggers (empty-body replies are
   pre-filtered); they are consumed by the resume path - removing `needs-human` re-fixes the
-  latest `CHANGES_NEEDED` review, and the fixer prompt reads the review threads and the
+  latest findings review: the newest owner-authored `CHANGES_NEEDED` marker review, or the
+  owner's human findings review when it is newer (a fixer run that escalated on a human
+  review - WALL, watchdog, deadline or a pre-agent failure - resumes into that same review
+  instead of dead-ending on a stale marker review or a silent no-op). The fixer prompt reads
+  the review-comment threads (`pulls/<N>/comments`, which includes `in_reply_to_id` threaded
+  replies that neither the review-scoped endpoints nor `gh pr view --comments` show) and the
   escalation conversation, where the owner's answers override the review.
 - **Steering an active cycle**: park first (`needs-human`), write the answers, then resume -
   this serializes human input instead of racing the cycle.
@@ -177,12 +185,13 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 - Conflict resolution runs in the **fixer workflow** (`synchronize` / `push: main` triggers),
   not inside CI: CI stays fast, deterministic and trusted; the agentic, budgeted,
   escalation-capable run would otherwise make "the build is red" mean two different things.
-- **Review-post hardening**: before posting, the post-step deletes any stale
-  pending review of the token user (one-pending-review-per-user-per-PR is an
-  API limit; a leftover from a failed post 422-blocks every future POST - the
-  PR #106 wedge), validates the payload file is valid JSON, surfaces gh's full
-  error object in the log instead of discarding it, and never dispatches the
-  fixer with a non-numeric review id.
+- **Review-post hardening**: before posting, the post-step deletes a stale pending review of
+  the token user **only if it carries zero draft comments** (one-pending-review-per-user-per-PR
+  is an API limit; a comment-less leftover from a failed post 422-blocks every future POST - the
+  PR #106 wedge; a pending review WITH draft comments may be the owner's findings review being
+  drafted in the GitHub UI - the token user is the owner - and is never deleted), validates the
+  payload file is valid JSON, surfaces gh's full error object in the log instead of discarding
+  it, and never dispatches the fixer with a non-numeric review id.
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
   fetches the failing check logs). An auto-format push never reaches the fixer this way —
