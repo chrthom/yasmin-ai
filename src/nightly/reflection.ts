@@ -60,7 +60,7 @@ export function isDialogueMessage(message: ConversationMessage): boolean {
 /**
  * Renders a conversation's messages into a plain "label: text" transcript, one line per message.
  * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized
- * reply (e.g. a giant tool result) can never blow up the downstream journal prompt.
+ * message (e.g. an oversized user paste) can never blow up the downstream journal prompt.
  *
  * @param messages The conversation's raw message history.
  * @returns The capped transcript, with the handoff block stripped from user messages.

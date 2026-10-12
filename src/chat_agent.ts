@@ -53,6 +53,8 @@ class RespawnRequestedException extends Error {
   public readonly failedConversationId: string | undefined;
 
   /**
+   * Stores the stale conversation id (undefined after a failed initial send) for the respawn path.
+   *
    * @param failedConversationId The conversation that turned out to be stale (undefined on a
    *   failed initial send, which has no id yet).
    */
