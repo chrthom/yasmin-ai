@@ -83,8 +83,8 @@ jobs:
             exit 0
           fi
           if gh issue view "$ISSUE_NUMBER" --json labels \
-            | jq -e 'any(.labels[]; .name == "needs-human" or .name == "skip-dev-loop")' >/dev/null; then
-            echo "Issue #$ISSUE_NUMBER is labeled needs-human or skip-dev-loop; skipping."
+            | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER is labeled needs-human; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
