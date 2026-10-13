@@ -348,7 +348,9 @@ jobs:
             # instead of dead-ending on a stale marker review or a silent
             # no-op. The author filter excludes third-party reviews
             # (injection surface); the non-empty-body filter excludes the
-            # fixer's own reply reviews. Marker and verdict classification
+            # fixer's own reply reviews and mirrors the event gate's
+            # trimmed emptiness (a whitespace-only body is empty on both
+            # paths). Marker and verdict classification
             # mirror the event gate's exact shape (the marker alone on
             # line 1, Verdict as a full line), so dispatch and resume cannot
             # diverge on a body whose first line carries trailing text
@@ -364,7 +366,7 @@ jobs:
             # the pre-slurp soft degradation to an empty review id - the
             # no-findings path below.
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") != "")] | sort_by(.submitted_at) | last | select(. != null) | (.body | split("\n")) as $lines | select((($lines[0]) == "<!-- dev-loop-review -->" and ($lines | any(. == "Verdict: CHANGES_NEEDED"))) or (($lines[0]) != "<!-- dev-loop-review -->" and .state == "COMMENTED")) | .id // empty')"
+              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") | test("\\S"))] | sort_by(.submitted_at) | last | select(. != null) | (.body | split("\n")) as $lines | select((($lines[0]) == "<!-- dev-loop-review -->" and ($lines | any(. == "Verdict: CHANGES_NEEDED"))) or (($lines[0]) != "<!-- dev-loop-review -->" and .state == "COMMENTED")) | .id // empty')"
           fi
           # Defense in depth: a non-numeric review id must never reach the
           # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
@@ -516,8 +518,10 @@ jobs:
               # reviews the moved head first, and the fresh reviewer does not
               # read the human review's body), so a PR comment also marks the
               # review stale for the owner - never a review POST, which is
-              # the human findings channel. Escalate if the chain fails, so
-              # the owner knows no fixer run consumed the findings.
+              # the human findings channel; a failed comment post emits a
+              # workflow warning so the drop stays visible. Escalate if the
+              # chain fails, so the owner knows no fixer run consumed the
+              # findings.
               echo "Head SHA ($head_sha_before) moved past the human findings review $review_id ($reviewed_sha) before it was consumed (another review's fix or a manual push may have moved it). Chaining the reviewer on the moved head."
               if gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
                 cat > /tmp/dev-loop-notice.md <<EOF
@@ -526,7 +530,8 @@ jobs:
           PR: #${PR_NUMBER}
           Review: ${review_id}
           EOF
-                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-notice.md >/dev/null || true
+                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-notice.md >/dev/null \
+                  || echo "::warning::Could not post the stale-review notice for review $review_id"
               else
                 # Unguarded on purpose (no || true), matching the post-step's
                 # escalate(): if both gh calls fail here the gate step must go
@@ -859,16 +864,20 @@ jobs:
               # also moves the head, and head observation alone would
               # misattribute it - moved_by_fix=1 only when this attempt's
               # own stream shows a successful git push: a completed, exit-0
-              # tool call whose command starts a real push (anchored to a
-              # leading "git push", --dry-run and its -n shorthand excluded
-              # - a dry-run or an echoed "git push" is never push evidence,
-              # and a chained push the anchor misses only degrades to the
-              # unattributed branch below, fail-visible). A head movement
-              # without push evidence stays unattributed and goes to the
-              # retry's notice+chain branch instead of a silent skip. A
-              # no-findings run retries with the same review_id=none
-              # sentinel: an empty input would fall into the gate's resume
-              # resolution and pull an outstanding CHANGES_NEEDED review in.
+              # tool call whose command contains a real push (chain-aware
+              # anchor: "git push" at the command start or right after a
+              # command separator - ;, &, |, a subshell ( - because the
+              # fixer's own step 6 chains the commit/pull/push sequence and
+              # a leading-only anchor would find no evidence in any real
+              # run; a quote before "git push" (an echoed command) matches
+              # no separator, and --dry-run and its -n shorthand are
+              # excluded - a dry-run or an echoed "git push" is never push
+              # evidence). A head movement without push evidence stays
+              # unattributed and goes to the retry's notice+chain branch
+              # instead of a silent skip. A no-findings run retries with
+              # the same review_id=none sentinel: an empty input would
+              # fall into the gate's resume resolution and pull an
+              # outstanding CHANGES_NEEDED review in.
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               moved_by_fix=0
               if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
@@ -876,7 +885,7 @@ jobs:
                 # evidence, so the movement stays unattributed (the retry's
                 # notice+chain branch), never a plain skip.
                 if jq -e 'select(.type == "tool_use")
-                           | select((.part.state.input.command? // "") | (startswith("git push") and ((contains("--dry-run") or test("(^| )-n( |$)")) | not)))
+                           | select((.part.state.input.command? // "") | (test("(^|[;&|(] *)git push") and ((contains("--dry-run") or test("(^| )-n( |$)")) | not)))
                            | select(.part.state.status == "completed")
                            | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
                   out/stream.ndjson >/dev/null 2>&1; then
