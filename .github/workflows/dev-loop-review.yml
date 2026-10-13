@@ -640,42 +640,77 @@ jobs:
               | jq -r --arg posted "${review_post_id:-0}" \
                 '[.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | .id | select((. | tostring) != $posted)] | join(" ")')"
             if [ -n "$marker_review_ids" ]; then
-              threads_json="$(gh api graphql -f query='
-                query($owner: String!, $name: String!, $number: Int!) {
-                  repository(owner: $owner, name: $name) {
-                    pullRequest(number: $number) {
-                      reviewThreads(first: 100) {
-                        nodes {
-                          id
-                          isResolved
-                          comments(first: 100) {
-                            nodes {
-                              author { login }
-                              path
-                              line
-                              originalLine
-                              pullRequestReview { databaseId }
+              # Paged fetch: GitHub returns reviewThreads oldest-first and
+              # resolved threads stay in the connection, so a single unpaged
+              # window fills with old threads while the newest unresolved ones
+              # fall outside it. A page that fails to fetch or parse logs a
+              # warning and ends the fetch; auto-resolve then proceeds with
+              # the threads collected so far (best-effort, never an escalation).
+              threads_nodes="[]"
+              after_cursor=""
+              while :; do
+                page_args=(-F owner="${REPOSITORY%%/*}" -F name="${REPOSITORY##*/}" -F number="$PR_NUMBER")
+                if [ -n "$after_cursor" ]; then
+                  page_args+=(-f after="$after_cursor")
+                fi
+                page_json="$(gh api graphql -f query='
+                  query($owner: String!, $name: String!, $number: Int!, $after: String) {
+                    repository(owner: $owner, name: $name) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $after) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            id
+                            isResolved
+                            comments(first: 100) {
+                              totalCount
+                              nodes {
+                                author { login }
+                                path
+                                line
+                                originalLine
+                                pullRequestReview { databaseId }
+                              }
                             }
                           }
                         }
                       }
                     }
-                  }
-                }' \
-                -F owner="${REPOSITORY%%/*}" -F name="${REPOSITORY##*/}" -F number="$PR_NUMBER" \
-                2>/dev/null || true)"
-              printf '%s' "$threads_json" \
+                  }' "${page_args[@]}" 2>/dev/null || true)"
+                page_info="$(printf '%s' "$page_json" \
+                  | jq -ce '.data.repository.pullRequest.reviewThreads
+                      | select(.nodes)
+                      | {nodes: .nodes, hasNextPage: .pageInfo.hasNextPage, endCursor: .pageInfo.endCursor}' 2>/dev/null || true)"
+                if [ -z "$page_info" ]; then
+                  echo "::warning::Review-thread listing failed or came back unparseable; auto-resolve continues with the threads fetched so far."
+                  break
+                fi
+                threads_nodes="$(printf '%s' "$threads_nodes" \
+                  | jq -c --argjson page "$page_info" '. + $page.nodes' 2>/dev/null || echo "$threads_nodes")"
+                if [ "$(printf '%s' "$page_info" | jq -r '.hasNextPage' 2>/dev/null)" != "true" ]; then
+                  break
+                fi
+                after_cursor="$(printf '%s' "$page_info" | jq -r '.endCursor' 2>/dev/null)"
+              done
+              printf '%s' "$threads_nodes" \
                 | jq -r --arg bot "$bot_login" --arg marker "$marker_review_ids" \
                     --argjson live "$(printf '%s' "$findings_json" | jq 'if type == "array" then . else [] end')" '
                   ($marker | split(" ") | map(tonumber)) as $marker_ids
-                                    | .data.repository.pullRequest.reviewThreads.nodes[]
+                  | .[]
+                  # A thread with more than 100 comments cannot be verified as
+                  # bot-only from the truncated comment list - leave it open.
+                  | select((.comments.totalCount // 100) <= 100)
                   | select(.isResolved == false)
                   | select([.comments.nodes[].author.login] | all(. == $bot))
                   | . as $t
                   | select(($marker_ids | index($t.comments.nodes[0].pullRequestReview.databaseId)) != null)
                   | $t.comments.nodes[0] as $c
                   | ($c.line // $c.originalLine // 0) as $cl
-                  | select(([$live[] | select(.path == $c.path and (((.line - $cl) | if . < 0 then (0 - .) else . end) <= 5))] | length) == 0)
+                  # .line comes straight from the findings JSON of the review
+                  # agent: body-only findings carry null (or string/boolean)
+                  # lines, and raw arithmetic on those aborts the whole jq
+                  # run - coerce to a number first.
+                  | select(([$live[] | select(.path == $c.path and ((((.line | tonumber? // 0) - $cl) | if . < 0 then (0 - .) else . end) <= 5))] | length) == 0)
                   | .id' \
                 | while read -r thread_id; do
                     [ -n "$thread_id" ] || continue
