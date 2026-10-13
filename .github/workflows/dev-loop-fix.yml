@@ -348,7 +348,11 @@ jobs:
             # instead of dead-ending on a stale marker review or a silent
             # no-op. The author filter excludes third-party reviews
             # (injection surface); the non-empty-body filter excludes the
-            # fixer's own reply reviews.
+            # fixer's own reply reviews. Marker and verdict classification
+            # mirror the event gate's exact shape (the marker alone on
+            # line 1, Verdict as a full line), so dispatch and resume cannot
+            # diverge on a body whose first line carries trailing text
+            # after the marker.
             # --paginate streams one JSON array per page, so the selection
             # must run over the concatenated list: jq -s 'add' merges the
             # pages first, keeping sort_by/last on the true newest review
@@ -360,7 +364,7 @@ jobs:
             # the pre-slurp soft degradation to an empty review id - the
             # no-findings path below.
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") != "")] | sort_by(.submitted_at) | last | select(. != null) | select((.body | startswith("<!-- dev-loop-review -->") and contains("Verdict: CHANGES_NEEDED")) or ((.body | startswith("<!-- dev-loop-review -->") | not) and .state == "COMMENTED")) | .id // empty')"
+              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") != "")] | sort_by(.submitted_at) | last | select(. != null) | (.body | split("\n")) as $lines | select((($lines[0]) == "<!-- dev-loop-review -->" and ($lines | any(. == "Verdict: CHANGES_NEEDED"))) or (($lines[0]) != "<!-- dev-loop-review -->" and .state == "COMMENTED")) | .id // empty')"
           fi
           # Defense in depth: a non-numeric review id must never reach the
           # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
@@ -850,8 +854,12 @@ jobs:
               # push by the owner landing while this attempt pushed nothing
               # also moves the head, and head observation alone would
               # misattribute it - moved_by_fix=1 only when this attempt's
-              # own stream shows a successful git push (a completed, exit-0
-              # tool call whose command pushed). A head movement without
+              # own stream shows a successful git push: a completed, exit-0
+              # tool call whose command starts a real push (anchored to a
+              # leading "git push", --dry-run excluded - a dry-run or an
+              # echoed "git push" is never push evidence, and a chained push
+              # the anchor misses only degrades to the unattributed branch
+              # below, fail-visible). A head movement without
               # push evidence stays unattributed and goes to the retry's
               # notice+chain branch instead of a silent skip. A no-findings
               # run retries with the same review_id=none sentinel: an empty
@@ -864,7 +872,7 @@ jobs:
                 # evidence, so the movement stays unattributed (the retry's
                 # notice+chain branch), never a plain skip.
                 if jq -e 'select(.type == "tool_use")
-                           | select((.part.state.input.command? // "") | contains("git push"))
+                           | select((.part.state.input.command? // "") | (startswith("git push") and (contains("--dry-run") | not)))
                            | select(.part.state.status == "completed")
                            | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
                   out/stream.ndjson >/dev/null 2>&1; then
