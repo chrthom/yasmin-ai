@@ -444,7 +444,11 @@ jobs:
           # landed since - this review is already being acted on. Skip. A human
           # findings review is the exception: the moving commit fixed a DIFFERENT
           # review and never saw its findings, so it is chained to the reviewer
-          # below instead of dropped. A workflow_dispatch retry re-submits
+          # below instead of dropped; only the human-findings shape the event
+          # gate and resume jq both enforce (non-marker AND state COMMENTED AND
+          # non-empty body) takes that exception, re-checked by the shape branch
+          # below - any other non-marker shape plain-skips like a marker review.
+          # A workflow_dispatch retry re-submits
           # the SAME review id after the first attempt already consumed it, so
           # the movement is expected ONLY when it is that attempt's own pushed
           # fix: the auto-retry dispatch carries the post-step's
@@ -463,8 +467,13 @@ jobs:
           # the formatted head.
           head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
           reviewed_sha=""
+          review_state=""
           if [ -n "$review_id" ]; then
             reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
+            # The review's state for the stale-branch shape classification
+            # below (the REST API returns uppercase values, matching the
+            # resume jq's exact .state == "COMMENTED" on the same data).
+            review_state="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .state)"
           fi
           if [ -n "$reviewed_sha" ] && [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
             git fetch origin "$reviewed_sha" "$head_sha_before" --quiet
@@ -481,6 +490,23 @@ jobs:
               echo "Head moved only by CI auto-format commits ($reviewed_sha -> $head_sha_before); no fix ran yet, proceeding with the findings."
             elif printf '%s' "$review_body" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
               echo "Head SHA ($head_sha_before) already moved past the reviewed SHA ($reviewed_sha) by a non-auto-format commit; a fix for review $review_id already ran. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            elif [ "$review_state" != "COMMENTED" ] || [ -z "$(printf '%s' "$review_body" | tr -d '[:space:]')" ]; then
+              # Shape re-check mirroring the event gate and the resume jq: a
+              # human findings review is non-marker AND state COMMENTED AND
+              # non-empty body, and only that shape reaches these branches
+              # through either. A manual workflow_dispatch can carry any
+              # other review id past both - an owner reply review (empty
+              # body; the fixer's own inline replies create exactly those)
+              # or an APPROVED/CHANGES_REQUESTED body review - and without
+              # this check such a review passes the shape-exempt verdict
+              # re-check above and is misread as human findings here: a
+              # misleading stale/consumed PR notice plus a redundant
+              # reviewer chain. Non-consummable shapes carry no findings
+              # the loop could consume, so the marker-style plain skip
+              # strands nothing.
+              echo "Head SHA ($head_sha_before) moved past review $review_id, which is not a marker and not a consumable human findings review (state ${review_state:-unknown}, empty or non-COMMENTED body); no findings to strand. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null && [ "${MOVED_BY_FIX_INPUT:-0}" = "1" ]; then

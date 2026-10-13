@@ -82,7 +82,11 @@ partitioned by review shape, not identity alone):
   persist) and chains the reviewer on the moved head - a dedupe-bounded backstop (the fix
   push's own `synchronize` event usually re-reviews the moved head first, and the fresh
   review re-surfaces the findings only if it independently finds them; escalation if the
-  chain fails).
+  chain fails). Only the human-findings shape gets that treatment, re-checked at the stale
+  branches themselves (mirroring the event gate and the resume jq): a manually dispatched
+  review id of any other shape - an empty-body reply review, or an `APPROVED` /
+  `CHANGES_REQUESTED` body review - plain-skips like a marker review, posting no notice
+  and chaining nothing, because such shapes carry no findings the loop could consume.
   The review id stays consumable on every path: the fixer's verdict re-check is shape-based
   (only marker reviews are held to `Verdict: CHANGES_NEEDED`), so the post-step's built-in
   auto-retry and a manual `workflow_dispatch` re-dispatch of a human findings review work.
