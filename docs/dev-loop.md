@@ -291,11 +291,22 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   unread is not). The thread listing is paged
   (GitHub returns threads oldest-first, resolved ones included), and a thread with
   more than 100 comments is left open - its all-bot eligibility cannot be verified
-  from the truncated comment list. Best-effort: a failed resolve, thread listing, or
-  token-user lookup is a `::warning::`, never an escalation. A `CLEAN` verdict resolves
-  every eligible thread unless one of its nit findings still sits within ±5 lines of
-  an old anchor (nits do not block the verdict itself, but a live nit keeps a matching
-  old thread open).
+  from the truncated comment list. Best-effort: a failed resolve, thread listing,
+  run-start lookup, or token-user lookup is a `::warning::`, never an escalation.
+  A `CLEAN` verdict resolves every eligible thread unless one of its nit findings
+  still sits within ±5 lines of an old anchor (nits do not block the verdict
+  itself, but a live nit keeps a matching old thread open).
+- **Post-step script is a checked-in file**: the reviewer's post-step state machine lives
+  in `.github/dev-loop/scripts/post-review.sh`, invoked as
+  `run: bash .github/dev-loop/scripts/post-review.sh` - the workflow's `env:` block is its
+  only bridge for GitHub expression contexts (`OPENCODE_RC` carries
+  `steps.opencode.outputs.rc`; everything else arrives as a plain env var). Reason: GitHub
+  caps a `run:` block scalar at **21,000 chars**, and the inline version of the script sat
+  within ~3.3k of that cap - crossing it makes GitHub reject the whole workflow file, a
+  silent full-loop stall, because the loop's escalation machinery lives in that very
+  workflow (observed live: a merge commit that pushed the inline version over the cap left
+  the head without any Reviewer check-run until the next push). Future growth targets the
+  script file, never the YAML scalar.
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
   prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
@@ -312,6 +323,10 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 .github/dev-loop/prompts/implementer.md    role prompts (ported from PR #80's agent definitions,
 .github/dev-loop/prompts/reviewer.md       minus gh-guard boilerplate; final line is a parseable
 .github/dev-loop/prompts/fixer.md          outcome: PR_URL|NO_PR:, VERDICT:, FIXED:|WALL:)
+.github/dev-loop/scripts/post-review.sh   reviewer post-step state machine (checked-in file, not
+                                           an inline run: scalar - GitHub caps run: at 21,000 chars
+                                           and the inline version sat within ~3.3k of it; the env:
+                                           block bridges expression contexts)
 docs/dev-loop.md                           this plan / runbook
 ```
 
