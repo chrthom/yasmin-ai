@@ -212,7 +212,8 @@ permissions:
   contents: write
   pull-requests: write
 concurrency:
-  group: dev-loop-pr-${{ inputs.pr }}   # or issue-<N>
+  group: dev-loop-pr-${{ inputs.pr }}   # or issue-<N>; fixer exception: unlabeled-resume
+                                        # runs use the -resume sub-group (see event map)
   cancel-in-progress: false
 steps:
   - uses: actions/checkout@v4
