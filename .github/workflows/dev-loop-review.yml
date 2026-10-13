@@ -516,9 +516,15 @@ jobs:
           esac
           verdict="${verdict_line#VERDICT: }"
           echo "Reviewer verdict: $verdict (cost: \$$cost)"
-
-          current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
-          if [ "$current_sha" != "$REVIEWED_SHA" ]; then
+          # Fail open on a transient gh/API error here: under set -e an
+          # unguarded failure would kill the whole post-step before the
+          # review is posted, the fixer dispatched, or a human escalated
+          # (observed on PR #119: the freshness poll exited 5 mid-run and
+          # the state machine died silently). An empty current_sha skips
+          # the stale-head re-dispatch and posts on the reviewed SHA -
+          # the same head the agent actually reviewed.
+          current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+          if [ -n "$current_sha" ] && [ "$current_sha" != "$REVIEWED_SHA" ]; then
             echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
             if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
               escalate "failed to re-dispatch the reviewer after a stale head SHA ($REVIEWED_SHA -> $current_sha); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
