@@ -409,7 +409,7 @@ jobs:
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RUN_STARTED_AT: ${{ github.run_started_at }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -u
           escalate() {
@@ -662,20 +662,35 @@ jobs:
           # diff anchors round over round (observed on PRs #115/#117: eight
           # rounds of open threads each). Two classes of threads are never
           # resolved: threads of THIS review (posted above, id $review_post_id
-          # - the current round, not a prior one) and threads whose root
-          # comment was created after this run started - the reviewer cannot
-          # have taken custody of a finding it never saw, and on a final CLEAN
-          # round no later round exists to re-raise it. REST has no
+          # - the current round, not a prior one) and threads whose root or
+          # latest comment was created after this run started - the reviewer
+          # cannot have taken custody of a finding it never saw (the latest-
+          # comment check keeps a mid-round human reply in an old thread
+          # open), and on a final CLEAN round no later round exists to
+          # re-raise it. REST has no
           # thread-resolve endpoint; GraphQL only, and a failed resolve is a
           # warning, never an error: an open stale thread is harmless, a lost
           # review post is not.
           resolved_threads=0
-          # Run-start cutoff for the thread filter below: github.run_started_at
-          # predates the reviewer agent's first read, so it is a conservative
-          # bound. An unparseable timestamp degrades to 0 - no thread passes
-          # the cutoff, so nothing is resolved (fail closed: a stale open
-          # thread is harmless, resolving a fresh one unread is not).
-          run_started_epoch="$(date -u -d "$RUN_STARTED_AT" +%s 2>/dev/null || echo 0)"
+          # Run-start cutoff for the thread filter below: the REST workflow
+          # run's run_started_at, which predates the reviewer agent's first
+          # read, so it is a conservative bound. The github context has no
+          # run_started_at property - the previous context read of that name
+          # was always empty, and GNU date does not fail on an empty -d
+          # value but parses it as midnight of the current day, so the intended
+          # epoch-0 fallback never fired and the cutoff silently excluded
+          # every same-day thread. An empty or unparseable timestamp now
+          # degrades to 0 with a warning - no thread passes the cutoff, so
+          # nothing is resolved (fail closed: a stale open thread is harmless,
+          # resolving a fresh one unread is not).
+          run_started_at="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" --jq '.run_started_at // empty' 2>/dev/null || true)"
+          run_started_epoch=0
+          if [ -n "$run_started_at" ]; then
+            run_started_epoch="$(date -u -d "$run_started_at" +%s 2>/dev/null || echo 0)"
+          fi
+          if [ "$run_started_epoch" -le 0 ]; then
+            echo "::warning::Could not determine the workflow run start (run_started_at='${run_started_at}'); leaving all prior review threads open (fail closed - a stale open thread is harmless, resolving a fresh one unread is not)."
+          fi
           # gh's --paginate contract: the query must declare $endCursor and
           # select pageInfo { hasNextPage endCursor }, or gh fetches exactly
           # one first:100 page and open threads beyond the first 100 would
@@ -690,6 +705,7 @@ jobs:
                       id
                       isResolved
                       comments(first: 1) { nodes { databaseId createdAt } }
+                      lastComment: comments(last: 1) { nodes { createdAt } }
                     }
                   }
                 }
@@ -699,6 +715,7 @@ jobs:
               '.data.repository.pullRequest.reviewThreads.nodes[]?
                | select(.isResolved == false)
                | select(try ((.comments.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
+               | select(try ((.lastComment.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
                | .id + " " + (.comments.nodes[0].databaseId | tostring)')"
           # --paginate: the REST listing defaults to per_page=30, and anchored
           # findings beyond the first 30 must not fall out of the exclusion

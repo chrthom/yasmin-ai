@@ -193,8 +193,8 @@ verifies the claim against reality (head SHA moved) before relying on it.
   PRIOR review (marker and human alike) via the GraphQL `resolveReviewThread`
   mutation (REST has no endpoint). The new review is the single source of truth:
   the continuity rule above guarantees everything still live was re-raised into it.
-  Threads of the review just posted are excluded, as are threads whose root comment
-  was created after the reviewer run started — the reviewer cannot have taken
+  Threads of the review just posted are excluded, as are threads whose root or
+  latest comment was created after the reviewer run started — the reviewer cannot have taken
   custody of a finding it never saw (a human review posted mid-round would
   otherwise be resolved unread, and on a final CLEAN round no later round exists
   to re-raise it). A failed resolve is a warning, never an error. Without this,
