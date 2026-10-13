@@ -168,7 +168,16 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   PR #106 wedge), validates the payload file is valid JSON, surfaces gh's full
   error object in the log instead of discarding it, and never dispatches the
   fixer with a non-numeric review id.
-- **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
+- **Stale-thread auto-resolve**: after posting, the post-step resolves inline threads
+  from **earlier marker reviews** whose finding the new review no longer reports
+  (dropped = fixed or no longer valid). Eligibility is enforced in code, not by the
+  agent: only threads whose every comment is the token user's own (a human reply keeps
+  it open), only threads rooted in a prior `<!-- dev-loop-review -->` review (human
+  inline comments are never touched), never the review just posted. A finding counts
+  as still live when the new review reports one on the same path within ±5 lines
+  (inline anchors drift across format-only pushes). Best-effort: a failed resolve is
+  a `::warning::`, never an escalation. A `CLEAN` verdict resolves all eligible threads.
+- **Red CI heads skip the review**:
   (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
   fetches the failing check logs). An auto-format push never reaches the fixer this way —
   the formatter's own push moves the tip, so the waiting reviewer skips and the new head's

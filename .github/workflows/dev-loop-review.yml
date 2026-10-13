@@ -627,6 +627,69 @@ jobs:
             esac
           fi
 
+          # Auto-resolve stale threads: inline threads opened by earlier
+          # marker reviews whose finding this review no longer reports
+          # (dropped = fixed or no longer valid). Best-effort and idempotent:
+          # a failed resolve is a warning, never an escalation. A thread is
+          # only eligible when every comment in it is the token user's own
+          # (a human reply keeps the thread open) and its root comment belongs
+          # to a prior marker review - human inline comments are never touched.
+          bot_login="$(gh api user --jq .login 2>/dev/null || true)"
+          if [ -n "$bot_login" ]; then
+            marker_review_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
+              | jq -r --arg posted "${review_post_id:-0}" \
+                '[.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | .id | select((. | tostring) != $posted)] | join(" ")')"
+            if [ -n "$marker_review_ids" ]; then
+              threads_json="$(gh api graphql -f query='
+                query($owner: String!, $name: String!, $number: Int!) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      reviewThreads(first: 100) {
+                        nodes {
+                          id
+                          isResolved
+                          comments(first: 100) {
+                            nodes {
+                              author { login }
+                              path
+                              line
+                              originalLine
+                              pullRequestReview { databaseId }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }' \
+                -F owner="${REPOSITORY%%/*}" -F name="${REPOSITORY##*/}" -F number="$PR_NUMBER" \
+                2>/dev/null || true)"
+              printf '%s' "$threads_json" \
+                | jq -r --arg bot "$bot_login" --arg marker "$marker_review_ids" \
+                    --argjson live "$(printf '%s' "$findings_json" | jq 'if type == "array" then . else [] end')" '
+                  ($marker | split(" ") | map(tonumber)) as $marker_ids
+                                    | .data.repository.pullRequest.reviewThreads.nodes[]
+                  | select(.isResolved == false)
+                  | select([.comments.nodes[].author.login] | all(. == $bot))
+                  | . as $t
+                  | select(($marker_ids | index($t.comments.nodes[0].pullRequestReview.databaseId)) != null)
+                  | $t.comments.nodes[0] as $c
+                  | ($c.line // $c.originalLine // 0) as $cl
+                  | select(([$live[] | select(.path == $c.path and (((.line - $cl) | if . < 0 then (0 - .) else . end) <= 5))] | length) == 0)
+                  | .id' \
+                | while read -r thread_id; do
+                    [ -n "$thread_id" ] || continue
+                    if gh api graphql \
+                      -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+                      -f id="$thread_id" >/dev/null 2>&1; then
+                      echo "Resolved stale review thread $thread_id (its finding is no longer reported)."
+                    else
+                      echo "::warning::Could not resolve review thread $thread_id; leaving it open."
+                    fi
+                  done
+            fi
+          fi
+
           case "$verdict" in
             CLEAN)
               echo "Verdict CLEAN: the PR stands ready for a human merge decision; no state change."

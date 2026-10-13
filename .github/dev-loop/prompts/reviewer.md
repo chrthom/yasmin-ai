@@ -32,7 +32,9 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    the diff: `gh pr view <N> --comments`, `gh pr diff <N>`, plus the linked issue via
    `gh issue view`. Read earlier reviews whose body starts with `<!-- dev-loop-review -->`
    (`gh api repos/chrthom/yasmin-ai/pulls/<N>/reviews --paginate`) and check that their findings
-   were resolved instead of reporting already-resolved ones again.
+   were resolved instead of reporting already-resolved ones again. You never resolve review
+   threads yourself; the workflow post-step resolves threads from earlier marker reviews whose
+   findings your review no longer reports.
 3. Check out exactly the given SHA, detached (never check out the PR branch itself):
    `git fetch origin pull/<N>/head && git checkout --detach <sha>`. Run `npm ci` if `node_modules`
    is missing, then `npm run build`, `npm test`, `npm run lint`. Every failure is a finding.
