@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; empty = no-findings run (resolve merge conflicts and/or failing CI checks)
+        description: Review id whose findings to fix; none = no-findings run (push scan, red-CI dispatch and the no-findings retry; resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
         required: false
         default: ''
         type: string
@@ -45,22 +45,54 @@ permissions:
   actions: write
 
 concurrency:
-  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}
+  # Resume events (unlabeled: needs-human removed) fire BOTH the reviewer and
+  # the fixer in the same second; in the shared group they contend for its
+  # single running slot, and any later entrant displaces the pending run
+  # (with cancel-in-progress: false only the newest pending run is kept).
+  # Observed on PR #115: the fixer resume run took the slot, the resume
+  # reviewer went pending behind it, and the fixer - after verifying the
+  # findings were already fixed and pushing nothing (FIXED, unchanged head
+  # 4b3f547) - chained its unchanged-head reviewer dispatch, which displaced
+  # the pending resume reviewer; the chained run then reviewed the head
+  # (CHANGES_NEEDED). What was lost was the intended fresh-budget resume
+  # review, not head coverage. The unlabeled-resume fixer runs into a
+  # distinct sub-group so the two resume runs never contend with each
+  # other - this removes only the resume-vs-resume contention, not the
+  # general single-slot displacement above: a resume reviewer can still
+  # pend behind another shared-group occupant (e.g. a non-resume fixer
+  # run) and be displaced by any later entrant; on a head that already
+  # carries a marker review the substitute reviewer then dedupes and
+  # skips, so the fresh-budget resume review can still be lost. A fix
+  # push landing mid-review is handled by the reviewer's stale-head
+  # re-dispatch (the older verdict is never acted on). Accepted side
+  # effect: the resume fixer no longer serializes against other fixer
+  # runs on the same PR - the chained fixer of a fresh CHANGES_NEEDED
+  # review, or a push-to-main conflict dispatch, may run concurrently in
+  # the shared group. The fixer prompt pulls before pushing, so overlap
+  # costs interleaved merge commits and doubled agent cost, not lost
+  # work - accepted over losing the resume review. All other events
+  # keep the shared group (review/fix serialization on normal cycles is
+  # unchanged).
+  group: >-
+    dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}${{
+    (github.event_name == 'pull_request' && github.event.action == 'unlabeled') && '-resume' || '' }}
   cancel-in-progress: false
 
 jobs:
   fix:
     name: Fixer
     # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
-    # label other than needs-human, or a synchronize on a draft or fork PR,
-    # can never start the fixer - skip before a runner is allocated. The
-    # gate below remains as defense in depth.
+    # label other than needs-human, or a pull_request_review with an empty
+    # body (reply-only submission), can never start the fixer - skip before
+    # a runner is allocated. The gate below remains as defense in depth.
     if: >-
       !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
       !(github.event_name == 'pull_request_review' && github.event.review.body == '')
-    # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
-    # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
-    # re-dispatch in the reviewer (docs/dev-loop.md).
+    # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group,
+    # except unlabeled-resume runs (the -resume sub-group above): a resume
+    # fixer may overlap another fixer run on the same PR - bounded by the
+    # pull-before-push in the fixer prompt plus the head-SHA dedupes and the
+    # reviewer's stale-head re-dispatch (docs/dev-loop.md).
     runs-on: ubuntu-latest
     # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
     timeout-minutes: 75
@@ -82,8 +114,8 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          # synchronize/unlabeled carry the PR in the payload; push does not
-          # (the push-path scan below resolves candidate PRs itself).
+          # unlabeled/pull_request_review carry the PR in the payload; push does
+          # not (the push-path scan below resolves candidate PRs itself).
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
@@ -92,9 +124,89 @@ jobs:
           REVIEW_BODY: ${{ github.event.review.body }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
+          # GraphQL node id for the push-scan's repo filter: gh pr list's
+          # headRepository.id is a node id, not the numeric REST id.
+          REPO_NODE_ID: ${{ github.event.repository.node_id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
         run: |
           set -eu
+          # Conflict origin 2: a push to main can leave open ready dev-loop PRs
+          # CONFLICTING. One scan per merge to main (docs/dev-loop.md): find all
+          # conflicting candidates, dispatch each (conflict-only, no review
+          # findings), and let the one-run-per-head-SHA dedupe bound the runs.
+          # This must run BEFORE the empty-PR_NUMBER guard below: a push event
+          # carries no PR, so the guard would otherwise exit the scan run before
+          # it ever enumerated candidates (observed on PR #113: the push run
+          # printed "No PR number in event; nothing to do." and succeeded).
+          if [ "$EVENT_NAME" = "push" ]; then
+            gh label create dev-loop --color 46A1AA \
+              --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
+            # The push just made GitHub recompute every open PR's mergeability,
+            # so a single list may still report UNKNOWN; re-list boundedly
+            # (up to 5 lists, 10s apart) and dispatch PRs still UNKNOWN
+            # afterwards anyway: the dispatched run re-checks CONFLICTING
+            # live and skips non-conflicting PRs, so over-dispatching is safe
+            # by design. Draft and needs-human PRs are excluded from the
+            # wait: the candidate filter below drops them anyway, so an
+            # UNKNOWN parked PR must not hold the scan for nothing.
+            prs_json="[]"
+            for attempt in 1 2 3 4 5; do
+              prs_json="$(gh pr list --state open --label dev-loop -L 200 \
+                --json number,headRepository,isDraft,mergeable,labels)"
+              if ! printf '%s' "$prs_json" | jq -e \
+                'any(.[]; .isDraft == false and .headRepository.id == $repo_id
+                      and all(.labels[]?; .name != "needs-human")
+                      and .mergeable == "UNKNOWN")' \
+                --arg repo_id "$REPO_NODE_ID" >/dev/null; then
+                break
+              fi
+              # The candidates below are built from this prs_json, so sleep
+              # only when another list follows - a trailing sleep after the
+              # final list would wait for data nobody reads.
+              [ "$attempt" = 5 ] || sleep 10
+            done
+            # gh's JSON carries the GraphQL node id in headRepository.id, so
+            # compare against repository.node_id - the numeric REST id in
+            # repository.id never matches. The fork gate below compares two
+            # numeric ids from the event payload; each check stays in its
+            # own ID space. needs-human PRs are parked by a human decision:
+            # a dispatched run would only gate-skip on them, so filter them
+            # out of the candidates instead of spending a runner allocation
+            # on every push to main until they are unparked.
+            candidates="$(printf '%s' "$prs_json" \
+              | jq -r '[.[] | select(.isDraft == false)
+                        | select(.headRepository.id == $repo_id)
+                        | select(all(.labels[]?; .name != "needs-human"))
+                        | select(.mergeable == "CONFLICTING" or .mergeable == "UNKNOWN")]
+                       | .[].number' --arg repo_id "$REPO_NODE_ID")"
+            if [ -z "$candidates" ]; then
+              echo "No conflicting open dev-loop PRs after the push to main; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Dispatch one conflict-only fixer run per candidate PR via
+            # workflow_dispatch; review_id=none is the no-findings sentinel
+            # the gate resolves as an explicit no-findings run (an empty
+            # review id would fall into the gate's resume resolution and
+            # pull an outstanding CHANGES_NEEDED review's findings in). The
+            # dispatched run resolves the PR from the input, re-checks
+            # CONFLICTING live, and enforces the head-SHA dedupe. The scan
+            # run itself never runs the agent. A transient dispatch failure
+            # (network blip, secondary rate limit) must not abort the loop
+            # under set -eu and leave the remaining candidates undispatched:
+            # warn and continue per PR - the next push to main re-offers a
+            # missed one.
+            for pr in $candidates; do
+              if gh workflow run dev-loop-fix.yml --ref main \
+                -f pr_number="$pr" -f review_id=none -f retry=0; then
+                echo "Dispatched conflict-only fixer run for PR #$pr."
+              else
+                echo "::warning::Failed to dispatch a conflict-only fixer run for PR #$pr; continuing with the remaining candidates."
+              fi
+            done
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -z "$PR_NUMBER" ]; then
             echo "No PR number in event; nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -109,6 +221,9 @@ jobs:
           # Fork PRs: never touch them (pull_request_review events carry the PR too).
           # Compare repository IDs: head.repo.id and repository.id share the
           # repository ID space; the owner is a user/org ID and never matches.
+          # workflow_dispatch runs carry no PR in their event payload, so this
+          # check never fires there — the push scan's same-repo candidate
+          # filter is the fork gate for scan-dispatched runs (docs/dev-loop.md).
           if [ -n "$HEAD_REPO_ID" ] && [ "$HEAD_REPO_ID" != "$REPO_ID" ]; then
             echo "PR #$PR_NUMBER is from a fork; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -118,34 +233,6 @@ jobs:
             --description "dev-loop: human decision required" 2>/dev/null || true
           gh label create dev-loop --color 46A1AA \
             --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
-          # Conflict origin 2: a push to main can leave open ready dev-loop PRs
-          # CONFLICTING. One scan per merge to main (docs/dev-loop.md): find all
-          # conflicting candidates, dispatch each (conflict-only, no review
-          # findings), and let the one-run-per-head-SHA dedupe bound the runs.
-          if [ "$EVENT_NAME" = "push" ]; then
-            candidates="$(gh pr list --state open --label dev-loop \
-              --json number,headRefOid,headRepository,isDraft,mergeable \
-              | jq -r '[.[] | select(.isDraft == false)
-                        | select(.headRepository.id == $repo_id)
-                        | select(.mergeable == "CONFLICTING")] 
-                       | .[].number' --arg repo_id "$REPO_ID")"
-            if [ -z "$candidates" ]; then
-              echo "No conflicting open dev-loop PRs after the push to main; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            # Dispatch one conflict-only fixer run per candidate PR via
-            # workflow_dispatch; the dispatched run resolves the PR from the
-            # input, re-checks CONFLICTING live, and enforces the head-SHA
-            # dedupe. The scan run itself never runs the agent.
-            for pr in $candidates; do
-              gh workflow run dev-loop-fix.yml --ref main \
-                -f pr_number="$pr" -f review_id="" -f retry=0
-              echo "Dispatched conflict-only fixer run for PR #$pr."
-            done
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
           # starts the fixer. CLEAN and human reviews start nothing. The
           # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.
@@ -170,6 +257,30 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Draft is a human parking brake (docs/dev-loop.md): the loop never
+          # touches a draft PR on any event. The push-to-main scan filters
+          # drafts at list time, but a dispatched run may sit in the
+          # dev-loop-pr-<N> concurrency slot long after the PR was converted
+          # to draft, so re-check live here - this covers every dispatch
+          # origin (push scan, red-CI, manual/retry). Mirrors the reviewer's
+          # gate order in dev-loop-review.yml.
+          if [ "$(gh pr view "$PR_NUMBER" --json isDraft --jq .isDraft)" = "true" ]; then
+            echo "PR #$PR_NUMBER is draft; the loop never touches drafts on any event. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The same queue-delay window also covers a PR closed between the
+          # scan's gh pr list and this run's gate: it still passes every check
+          # above (closed PRs report mergeable UNKNOWN, and a conflicted
+          # head's checks are red, so the no-findings re-check below would
+          # find "work") - burning a full agent run on a merge commit pushed
+          # onto the closed PR's branch. Covers every dispatch origin (push
+          # scan, red-CI, manual/retry), mirroring the isDraft re-check.
+          if [ "$(gh pr view "$PR_NUMBER" --json state --jq .state)" != "OPEN" ]; then
+            echo "PR #$PR_NUMBER is not open; the loop never touches closed PRs. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if gh pr view "$PR_NUMBER" --json labels \
             | jq -e 'any(.labels[]; .name == "needs-human")' >/dev/null; then
             echo "PR #$PR_NUMBER is labeled needs-human; skipping."
@@ -181,6 +292,13 @@ jobs:
           # review on the PR (resume path).
           if [ -n "$EVENT_REVIEW_ID" ]; then
             review_id="$EVENT_REVIEW_ID"
+          elif [ "$REVIEW_ID_INPUT" = "none" ]; then
+            # review_id=none is the no-findings sentinel (the push-to-main
+            # scan, the reviewer's red-CI dispatch, the post-step's
+            # no-findings retry): an explicit no-findings run. An empty input
+            # would fall through to the resume resolution below and pull an
+            # outstanding CHANGES_NEEDED review's findings in.
+            review_id=""
           elif [ -n "$REVIEW_ID_INPUT" ]; then
             review_id="$REVIEW_ID_INPUT"
           else
@@ -197,19 +315,37 @@ jobs:
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
               | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
           fi
+          # Defense in depth: a non-numeric review id must never reach the
+          # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
+          # 404 that fails this gate (PR #106 once dispatched a 422 error body
+          # as the review id). Degrade any unknown non-numeric input to the
+          # no-findings sentinel: the re-check below skips green when there is
+          # no conflict or CI failure to work on, so a version-skewed
+          # sender's unrecognized sentinel cannot crash the gate.
+          case "$review_id" in
+            *[!0-9]*)
+              echo "::warning::Review id '$review_id' is not numeric; treating this as a no-findings run (resolve merge conflicts and/or failing CI checks)."
+              review_id=""
+              ;;
+          esac
           if [ -z "$review_id" ]; then
-            # Dispatch with an empty review id: no-findings run (the
-            # push-to-main scan, the synchronize conflict path and the
-            # reviewer's red-CI dispatch resolve to this). Re-check live
+            # No findings to fix: the no-findings sentinel resolved to an
+            # empty review id above (the push-to-main scan, the reviewer's
+            # red-CI dispatch, the post-step's no-findings retry), or the
+            # resume resolution found no outstanding CHANGES_NEEDED review
+            # (a manual dispatch with an empty input). Re-check live
             # that there is actually work to do - the dispatch may queue
             # behind another fixer run that already resolved the conflict or
             # the CI failure. Proceed without findings; the fixer prompt
             # handles a missing review (conflict and/or CI-failure task).
             mergeable=""
-            for _ in 1 2 3 4 5; do
+            for attempt in 1 2 3 4 5; do
               mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
               [ "$mergeable" != "UNKNOWN" ] && break
-              sleep 10
+              # mergeable is read after the loop, so sleep only when another
+              # attempt follows - a trailing sleep after the final attempt
+              # would wait for data nobody reads.
+              [ "$attempt" = 5 ] || sleep 10
             done
             head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
             ci_red="false"
@@ -576,9 +712,13 @@ jobs:
               # workflow_dispatch, passing the same review id so the gate does
               # not have to re-resolve it; the counter in the input prevents a
               # loop. No fix was pushed, so the head is unchanged and the retry
-              # runs on the same state.
+              # runs on the same state. A no-findings run retries with the
+              # same review_id=none sentinel: an empty input would fall into
+              # the gate's resume resolution and pull an outstanding
+              # CHANGES_NEEDED review in.
+              retry_review_id="${REVIEW_ID:-none}"
               if [ "$RETRY_COUNT" -lt 1 ] \
-                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$REVIEW_ID" -f retry=1; then
+                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1; then
                 echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1). Transcript artifact preserved for diagnosis."
                 exit 0
               fi
