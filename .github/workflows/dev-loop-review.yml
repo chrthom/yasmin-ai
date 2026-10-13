@@ -703,9 +703,25 @@ jobs:
           # --paginate: the REST listing defaults to per_page=30, and anchored
           # findings beyond the first 30 must not fall out of the exclusion
           # list (their threads would be resolved the moment they are posted).
-          this_review_comment_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$review_post_id/comments" --paginate \
-            | jq -r '.[].id' 2>/dev/null || true)"
-          while read -r thread_id root_comment_id; do
+          # Fail closed like the run-start cutoff above: a failed fetch skips
+          # the whole resolve loop, because an empty or partial id list would
+          # resolve THIS review's own just-posted threads unread (a stale open
+          # thread is harmless, resolving a fresh one unread is not). The gh
+          # exit status is captured before jq runs - piping gh into jq would
+          # swallow it (jq exits 0 on gh's empty output), and any failed page
+          # of a --paginate sequence exits non-zero.
+          exclusion_fetch_failed=0
+          this_review_comment_ids=""
+          exclusion_json="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$review_post_id/comments" --paginate)" \
+            || exclusion_fetch_failed=1
+          if [ "$exclusion_fetch_failed" -eq 0 ]; then
+            this_review_comment_ids="$(printf '%s' "$exclusion_json" | jq -r '.[].id' 2>/dev/null)" \
+              || exclusion_fetch_failed=1
+          fi
+          if [ "$exclusion_fetch_failed" -ne 0 ]; then
+            echo "::warning::Could not fetch the just-posted review's inline comment ids; leaving all review threads open (fail closed - a stale open thread is harmless, resolving a fresh one unread is not)."
+          fi
+          while [ "$exclusion_fetch_failed" -eq 0 ] && read -r thread_id root_comment_id; do
             [ -n "$thread_id" ] || continue
             if printf '%s\n' "$this_review_comment_ids" | grep -qx "$root_comment_id"; then
               continue
