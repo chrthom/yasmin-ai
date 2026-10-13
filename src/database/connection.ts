@@ -5,7 +5,8 @@ let dbPool: Pool | null = null;
 
 /**
  * Creates a connection pool to the MariaDB database
- * @returns Pool Database connection pool
+ *
+ * @returns The (lazily created, process-wide) database connection pool.
  */
 export function getDatabasePool(): Pool {
   if (dbPool) {
@@ -34,10 +35,12 @@ export function getDatabasePool(): Pool {
 
 /**
  * Executes a query with automatic retry on connection timeouts
- * @param query SQL query to execute
- * @param params Query parameters
- * @param noRetry Whether to disable retry logic
- * @returns Promise<any> Query result
+ *
+ * @param query SQL query to execute.
+ * @param params Query parameters.
+ * @param noRetry Whether to disable retry logic.
+ * @returns The raw query result.
+ * @throws The underlying error when the query fails (after one retry on connection timeouts).
  */
 export async function executeQuery(
   query: string,
@@ -71,6 +74,8 @@ export async function executeQuery(
 
 /**
  * Closes the database connection pool
+ *
+ * @throws The underlying error when the pool cannot be closed.
  */
 export async function closeDatabasePool(): Promise<void> {
   if (dbPool) {

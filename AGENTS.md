@@ -49,7 +49,6 @@ src/
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
-│   ├── db_proxy.ts     # Database proxy loaded with mock background entries
 │   └── models/
 │       ├── context.model.ts         # Context model query methods
 │       ├── intraday_notes.model.ts  # Cross-person note outbox (intraday_notes): staging, fetch-for-delivery,
@@ -158,7 +157,6 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 
 - **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory (see above); on a restart it prepends the handoff block built by `src/handoff.ts`.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
-- **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
 - **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files and `general/topic-index.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
 
@@ -282,3 +280,16 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - Unix line endings
 - TypeScript strict mode
 - Prefer arrow functions
+
+### Comment convention
+
+- **Unit comments**: every function, class, and arrow-function constant gets a TSDoc block
+  (`/** ... */`) directly above it, interfaces and types too when they carry a behavior contract.
+  One concise sentence about what the unit does, elaboration only if needed, plus `@param`,
+  `@returns` and `@throws` as applicable. Trivial private helpers still get a one-line block.
+- **Inline comments**: brief, single-purpose `//` hints explaining _why_ something non-obvious is
+  done. No multi-paragraph essays: anything longer than ~3 lines belongs in the unit comment (or the
+  referenced design doc) instead.
+- Enforcement: `jsdoc/require-jsdoc` (eslint-plugin-jsdoc) fails `npm run lint` on any undocumented
+  function/class in `src/` and `scripts/`. Test files in `src/__tests__/` are exempt; comment test
+  scaffolding only where behavior is genuinely non-obvious.
