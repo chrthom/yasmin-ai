@@ -140,7 +140,7 @@ jobs:
           # open to the pre-gate behavior on timeout):
           #   - green + tip unchanged -> proceed to the review
           #   - red + tip unchanged   -> dispatch the fixer (CI-failure mode,
-          #                               empty review id) and skip
+          #                               review_id=none sentinel) and skip
           #   - tip moved             -> skip: the push (e.g. chore: auto-format
           #                               from ci.yml) fires synchronize, which
           #                               starts a fresh reviewer on the new head
@@ -188,7 +188,7 @@ jobs:
               exit 0
             fi
             echo "CI is red on head $head_sha with the tip unchanged; dispatching the fixer (CI-failure mode, no review findings)."
-            if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="" -f retry=0; then
+            if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id=none -f retry=0; then
               echo "Fixer dispatched for the CI failure; its push will re-enter the loop via synchronize."
             else
               echo "::warning::Failed to dispatch the fixer for the red CI; proceeding with the review instead."

@@ -127,7 +127,7 @@ release-claim lifecycle (`claimNoteDelivery` / `releaseNoteDelivery` in
 request and the claim is rolled back if that request fails, so a failed delivery does not lose the
 note. The privacy barrier lives only in the live agent's prompt: never relay anything
 confidential or `[PRIVACY:SENSITIVE]`-related. Deployment checklist: `docs/intraday_notes_deployment.md`. The nightly job feeds still-undelivered notes to
-the integrate agent as evidence and then empties the outbox (only after phases 3+4 succeeded, and
+the integrate agent and into the review/revision evidence as well, and then empties the outbox (only after phases 3+4 succeeded, and
 only up to the snapshot's max id, so concurrently inserted notes survive for the next run).
 
 #### Conversation restarts and the handoff
@@ -172,6 +172,16 @@ consolidates the day's Synology conversations into long-term memory after the fa
 At a high level, each run:
 
 1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
+   If the collected batch is empty — fresh **or** resumed — and the `intraday_notes` outbox holds no undelivered
+   notes, the run **short-circuits** right there: it records a `completed` job row with `conversationsProcessed: 0`,
+   advances the watermark, releases the lock, and skips phases 2-7 entirely (no LLM calls, no Mistral writes or
+   deletes). A non-empty outbox keeps the consolidation path running even with zero conversations, so undelivered
+   notes are never stranded by the skip. The skip also fires when the outbox state is unknown because reading it
+   failed (`getUnconsolidatedNotes` threw): the skip performs no outbox writes, so any pending notes stay in the
+   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (phase 6.5), so
+   already-delivered notes can linger across consecutive quiet nights; they are inert (delivery and consolidation
+   only ever look at rows with `delivered_at IS NULL`) and are cleared by the next non-skipped run's bounded
+   delete.
 2. **Journals** each conversation into a per-conversation markdown summary.
 3. **Integrates** today's journals into proposed updates to a small set of verbose long-term memory files
    (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`, `topics/<topic>.md`, `general/topic-index.md`), using a dedicated nightly Mistral

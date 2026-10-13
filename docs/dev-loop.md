@@ -41,18 +41,18 @@ picking the item up on future events.
 
 ## Event map (final, agreed)
 
-| Trigger | Fires | Guard / notes |
-| --- | --- | --- |
-| `issues: [opened, reopened, labeled]` | implementer | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate |
-| `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]` | reviewer | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
-| `pull_request_review: [submitted]` | fixer | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN`, human reviews and **reply-only submissions (empty review body)** start nothing - a job-level `if` skips them before runner allocation, because the fixer's own inline replies would otherwise spawn fixer runs whose concurrency-slot claims cancel a pending re-review of the just-pushed fix (the PR #106 race) |
-| (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106) |
-| `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING` | fixer (conflict-only runs, dispatched) | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR |
-| `pull_request: [unlabeled]` on `needs-human` | resume (PRs only) | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above) |
-| `workflow_dispatch` | manual backstop | re-tick on missed events; also the `/dev-loop status` equivalent |
+| Trigger                                                                                                         | Fires                                                | Guard / notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issues: [opened, reopened, labeled]`                                                                           | implementer                                          | requires `dev-loop` label; skip if a `vibe/issue-<N>-*` branch exists; `labeled: dev-loop` starts the loop on an existing issue. `needs-human` on an issue is informational only (parking = removing `dev-loop`, resume = re-adding it); there is no `unlabeled` trigger and no `needs-human` gate                                                                                                                                                                                                                        |
+| `pull_request: [opened, ready_for_review, synchronize, labeled, unlabeled]`                                     | reviewer                                             | skip if draft, or no `dev-loop` label, or `needs-human`; marker-dedupe on head SHA; **CI gate**: poll the head's check runs (bounded, fail open) — green + tip unchanged → review; red + tip unchanged → dispatch the fixer (no-findings CI-failure run) and skip; tip moved (e.g. `chore: auto-format` pushed by ci.yml) → skip, the push's `synchronize` re-offers on the new head. `opened`/`labeled` cover the implementer's ready PR (created non-draft, label added right after) and human opt-in on an existing PR |
+| `pull_request_review: [submitted]`                                                                              | fixer                                                | event payload gate: marker line + `Verdict: CHANGES_NEEDED`; `CLEAN`, human reviews and **reply-only submissions (empty review body)** start nothing - a job-level `if` skips them before runner allocation, because the fixer's own inline replies would otherwise spawn fixer runs whose concurrency-slot claims cancel a pending re-review of the just-pushed fix (the PR #106 race)                                                                                                                                   |
+| (reviewer's CI gate, red dispatch) `pull_request: [synchronize]` with red/failed checks on a `CONFLICTING` head | fixer (no-findings run: conflicts and/or failing CI) | conflict origin 1: the PR's own push made it conflicting - a conflicted head cannot produce green checks, so the reviewer's CI gate dispatches the fixer (one per head SHA). The fixer has **no** `synchronize` trigger of its own: it would race the reviewer for the shared `dev-loop-pr-<N>` concurrency slot on every fix push and cancel the pending re-review (observed on PR #106)                                                                                                                                 |
+| `push: [main]` + scan of open dev-loop PRs for `mergeable == CONFLICTING`                                       | fixer (conflict-only runs, dispatched)               | conflict origin 2: `main` moved under a ready PR; one scan per merge, one dispatch per conflicting PR (`review_id=none` sentinel; `UNKNOWN` mergeability re-listed boundedly, leftovers dispatched and re-checked live)                                                                                                                                                                                                                                                                                                   |
+| `pull_request: [unlabeled]` on `needs-human`                                                                    | resume (PRs only)                                    | reviewer or fixer, per PR state; resets the iteration budget; still requires the `dev-loop` label. Issue-side resume is re-adding `dev-loop` (the `issues: [labeled]` implementer row above)                                                                                                                                                                                                                                                                                                                              |
+| `workflow_dispatch`                                                                                             | manual backstop                                      | re-tick on missed events; also the `/dev-loop status` equivalent                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 Job-level event filters (all three role workflows): every role job carries an `if:` that
-skips events which can never start that role *before a runner is allocated* — `labeled` for
+skips events which can never start that role _before a runner is allocated_ — `labeled` for
 any label other than `dev-loop`, `unlabeled` for any label other than `needs-human`, and on
 the fixer a `synchronize` on a draft or fork PR (the gate would skip it anyway). This keeps the loop's own state transitions (escalations adding/removing `needs-human`)
 from spawning gated no-op runs; the in-job gate remains as defense in depth and still enforces
@@ -75,15 +75,15 @@ Non-events by design:
 
 ## Post-step state machine (all post-steps, no agent involvement)
 
-| Post-step | Condition | Action |
-| --- | --- | --- |
-| reviewer | `Verdict: CHANGES_NEEDED` | dispatch the fixer with the posted review's id (direct chain is the single exception: no GitHub event carries the review id) |
-| reviewer | `Verdict: NEEDS_HUMAN` | label `needs-human` + marker escalation comment `@chrthom` |
-| reviewer | head SHA moved since review start | re-dispatch reviewer (stale review is not acted on) |
-| fixer | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer |
-| fixer | outcome `WALL:`/budget stop | label `needs-human` + escalation comment |
-| implementer | outcome `finished` | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review |
-| implementer | outcome `NO_PR` | comment questions on the issue + label `needs-human` |
+| Post-step   | Condition                                                                       | Action                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| reviewer    | `Verdict: CHANGES_NEEDED`                                                       | dispatch the fixer with the posted review's id (direct chain is the single exception: no GitHub event carries the review id) |
+| reviewer    | `Verdict: NEEDS_HUMAN`                                                          | label `needs-human` + marker escalation comment `@chrthom`                                                                   |
+| reviewer    | head SHA moved since review start                                               | re-dispatch reviewer (stale review is not acted on)                                                                          |
+| fixer       | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                          |
+| fixer       | outcome `WALL:`/budget stop                                                     | label `needs-human` + escalation comment                                                                                     |
+| implementer | outcome `finished`                                                              | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review                     |
+| implementer | outcome `NO_PR`                                                                 | comment questions on the issue + label `needs-human`                                                                         |
 
 The reviewer is never called twice for the same work: dispatches on the same PR serialize in
 the shared `dev-loop-pr-<N>` concurrency group, the head-SHA marker dedupe makes at most one
@@ -100,10 +100,22 @@ There is no separate merger role. The fixer's scope grows by merge-conflict reso
   merge commit, resolving both sides minimally, then proceeds to the findings (conflicts first:
   `npm run build`/`npm test` cannot run meaningfully on a conflicted tree).
 - The conflict triggers dispatch the **same** fixer workflow with a conflict-only task: no
-  open `CHANGES_NEEDED` review, only the conflict. Origin 1 is the reviewer's red-dispatch
+  open `CHANGES_NEEDED` review, only the conflict — both dispatch origins pass
+  `review_id=none`, a sentinel the fixer gate resolves as an explicit no-findings run (an
+  empty review id would fall into the gate's resume resolution and pull an outstanding
+  `CHANGES_NEEDED` review's findings in). Origin 1 is the reviewer's red-dispatch
   (the PR's own push made it conflicting; the conflicted head's checks are red); origin 2
   is a `push` to `main`, whose gate scans open dev-loop PRs and dispatches one
-  conflict-only run per conflicting PR.
+  conflict-only run per conflicting PR (a mergeability of `UNKNOWN` right after the push
+  is re-listed boundedly; PRs still `UNKNOWN` are dispatched anyway — the dispatched run
+  re-checks `CONFLICTING` live and skips non-conflicting PRs).
+- `review_id` dispatches resolve the fixer workflow at `--ref main`, so sentinel sender
+  (reviewer red-CI dispatch, fixer no-findings retry, push scan) and receiving gate must be
+  the same protocol generation. Until they merge together, a dispatch can still resolve
+  `main`'s previous gate, which treats `none` as a literal review id and fails with an
+  HTTP 404 (observed on PR #116's own pre-merge window). The window closes when both
+  workflow files merge atomically; the gate also degrades any non-numeric review id to a
+  no-findings run, so an unrecognized sentinel skips green instead of red.
 - Conflict-dispatch dedupe: one fixer run per head SHA — the dispatched conflict-only run
   re-checks `CONFLICTING` live and skips if the head has already moved (another fixer
   resolved it); the next push (or a manual `workflow_dispatch`) moves the head and re-offers.
@@ -141,8 +153,13 @@ verifies the claim against reality (head SHA moved) before relying on it.
 - **Own-repo PRs only**: compare `pull_request.head.repo.id` against `repository.id` (same
   repository-ID space; an owner ID never matches — see PR #93); never `pull_request_target`.
   Fork PRs are skipped, as in PR #80. The `push: main` conflict scan resolves candidate PRs
-  via `gh pr list` (which carries `headRepository.id`) and applies the same repo-ID check;
-  the dispatched conflict-only run re-checks it on the resolved PR.
+  via `gh pr list`, whose `headRepository.id` is a GraphQL node id — the scan therefore
+  compares it against `repository.node_id`, not the numeric REST id (each check stays in
+  its own ID space: REST ids in the event payload, GraphQL node ids in gh's JSON). For
+  the dispatched runs the scan's same-repo candidate filter **is** the fork gate: they
+  arrive as `workflow_dispatch` events, whose payload carries no PR, so the fixer gate's
+  own fork check (guarded to skip on an empty `pull_request.head.repo.id`) never fires
+  there — only on `pull_request`/`pull_request_review` events.
 - **Three reviewer gates, in order**: `dev-loop` label present → not draft → no `needs-human`
   label. A PR failing any gate is never reviewed. Draft is a human parking brake; the loop
   never flips it either way.
@@ -151,6 +168,20 @@ verifies the claim against reality (head SHA moved) before relying on it.
   resolution), "fix findings minimally" (fixer), "review adversarially, report every nit"
   (reviewer). Agents are prompt-forbidden from `gh pr ready`/`gh pr merge`/label changes
   entirely — with no draft/ready state machine there is simply nothing for an agent to flip.
+- **Verdict semantics (reviewer)**: `CLEAN` requires zero findings of severity `blocker`,
+  `major` or `minor`; new `nit` findings do not block the verdict — they are reported as
+  informational feedback (the fixer is never dispatched on `CLEAN`), while anything at
+  `minor` or above still means `CHANGES_NEEDED`. This is the loop's convergence mechanism:
+  an adversarial full-diff re-review by a fresh reviewer instance would otherwise almost
+  always find one new nit on a non-trivial PR and re-enter the fix cycle on a converged
+  head (observed on PRs #115 and #117: eight strictly-converging rounds each hit the
+  iteration cap because the zero-nit `CLEAN` bar made the goalposts move every round).
+- **Continuity across review rounds (reviewer)**: each round reads the prior marker reviews
+  and the fixer's inline replies (`pulls/<N>/comments`, threaded by `in_reply_to_id`). A
+  fixed finding is verified and dropped; a finding the fixer declined with a rationale is
+  accepted unless factually wrong. Re-raising a settled nit with no new argument is the
+  non-convergence failure mode the iteration cap would otherwise have to break
+  mechanically.
 
 ## CI (`ci.yml`)
 
@@ -177,9 +208,9 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   as still live when the new review reports one on the same path within ±5 lines
   (inline anchors drift across format-only pushes). Best-effort: a failed resolve is
   a `::warning::`, never an escalation. A `CLEAN` verdict resolves all eligible threads.
-- **Red CI heads skip the review**:
-  (empty review id = no-findings run: conflicts and/or failing CI checks; the fixer prompt
-  fetches the failing check logs). An auto-format push never reaches the fixer this way —
+- **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
+  (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
+  prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
   the formatter's own push moves the tip, so the waiting reviewer skips and the new head's
   `synchronize` starts a fresh cycle; the formatted head's CI is green by construction.
 
@@ -256,11 +287,11 @@ Calibrate from the `out/stream.ndjson` artifacts after the first real runs; thes
 (steps/tokens enforced by the stream watchdog — a cap hit kills `opencode run` and the
 post-step classifies rc 99; time enforced by `timeout(1)`, rc 124 — not a hang):
 
-| Role | steps (watchdog) | tokens (watchdog, cost-weighted) | time limit (`timeout(1)`) | job `timeout-minutes` | Rationale |
-| --- | --- | --- | --- | --- | --- |
-| implementer | 800 | 6M | 5400 | 105 | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint. First live run used 71 steps / 3.03M tokens / $4.63 on a modest issue; with opencode prompt caching observed at 93-99% hit rate, steps are cheap (~10% input cost), so the step cap is a generous runaway guard (~7x the vibe-era 120-turn budget) and the 90-min deadline is the real constraint |
-| reviewer | 400 | 4M | 3600 | 75 | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate from its first artifacts |
-| fixer (incl. conflict resolution) | 400 | 4M | 3600 | 75 | scoped to one review's findings and/or one conflict; usually well under. Conflict resolution is bounded work; a conflict-heavy run that cannot finish stops with `WALL:` like anything else |
+| Role                              | steps (watchdog) | tokens (watchdog, cost-weighted) | time limit (`timeout(1)`) | job `timeout-minutes` | Rationale                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ---------------- | -------------------------------- | ------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| implementer                       | 800              | 6M                               | 5400                      | 105                   | the heaviest role: reads issue + AGENTS.md, full src, writes code + tests, runs build/test/lint. First live run used 71 steps / 3.03M tokens / $4.63 on a modest issue; with opencode prompt caching observed at 93-99% hit rate, steps are cheap (~10% input cost), so the step cap is a generous runaway guard (~7x the vibe-era 120-turn budget) and the 90-min deadline is the real constraint |
+| reviewer                          | 400              | 4M                               | 3600                      | 75                    | read-only but adversarial: reads diff + linked issue + prior reviews, runs build/test/lint once; calibrate from its first artifacts                                                                                                                                                                                                                                                                |
+| fixer (incl. conflict resolution) | 400              | 4M                               | 3600                      | 75                    | scoped to one review's findings and/or one conflict; usually well under. Conflict resolution is bounded work; a conflict-heavy run that cannot finish stops with `WALL:` like anything else                                                                                                                                                                                                        |
 
 The token cap is cost-weighted: input + output + cache.write + 0.1 × cache.read —
 cached tokens count at their 10% billing rate, so the cap means "N uncached-equivalent
@@ -306,17 +337,17 @@ outcome contract (`PR_URL:`/`NO_PR:`/`WALL:`, `VERDICT:`, `FIXED:`/`WALL:`), and
 only when it does not. Remaining exit codes: 124 deadline (`timeout(1)`), 130 killed by
 signal, 99 watchdog kill (convention of this workflow, not opencode's):
 
-| What failed | Detection | Handling (post-step, in code) |
-| --- | --- | --- |
-| model API outage / runner infra | exit 1 with a connection-error signature in stderr | escalate with reason + run link; manual retry stays available via the `workflow_dispatch` retry input (never auto-retry: rc 1 cannot distinguish transient from deterministic) |
-| budget hit (steps/tokens) | watchdog kills opencode after the cap, rc 99 | escalate: label `needs-human`, comment the caps + cost summed from `step_finish` events, link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem. Step cap = agent looped; token cap = run consumed excessive tokens |
-| deadline | rc 124 from `timeout(1)` | escalate with cost from the stream; never auto-retry |
-| wall-clock timeout (belt above the time limit) | job killed by `timeout-minutes` (no opencode exit code) | red run; the re-run backstop covers it |
-| usage/config error (bad flag, missing API key) | exit 1 (`Error: ...` in stderr) | escalate; deterministic, a retry fails the same way |
-| tool-failure loop (agent retries failing commands) | watchdog kills opencode after N consecutive failed tool calls (`state.status == "failed"`, or non-zero shell exit in `state.metadata.metadata.exit`) | escalate: the agent could not use its tools; a full budget spent on failing calls is pure waste (this happened on the first live run) |
-| agent finished but outcome unparseable | exit 0, final `text` event doesn't match the contract | escalate with reason "unparseable outcome" + link to the transcript artifact; the transcript is preserved for diagnosis |
-| agent reported `WALL:` / `NO_PR:` | exit 0, parseable | the designed escalation: implementer comments its questions on the issue + labels it; fixer escalates on the PR |
-| workflow step failed *outside* opencode (npm ci, install, push rejected) | step exit code | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice (run attempt > 1), escalate instead of leaving it red silently |
+| What failed                                                              | Detection                                                                                                                                            | Handling (post-step, in code)                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| model API outage / runner infra                                          | exit 1 with a connection-error signature in stderr                                                                                                   | escalate with reason + run link; manual retry stays available via the `workflow_dispatch` retry input (never auto-retry: rc 1 cannot distinguish transient from deterministic)                                                                             |
+| budget hit (steps/tokens)                                                | watchdog kills opencode after the cap, rc 99                                                                                                         | escalate: label `needs-human`, comment the caps + cost summed from `step_finish` events, link the artifact. Never auto-retry: a budget hit means the task, not the run, is the problem. Step cap = agent looped; token cap = run consumed excessive tokens |
+| deadline                                                                 | rc 124 from `timeout(1)`                                                                                                                             | escalate with cost from the stream; never auto-retry                                                                                                                                                                                                       |
+| wall-clock timeout (belt above the time limit)                           | job killed by `timeout-minutes` (no opencode exit code)                                                                                              | red run; the re-run backstop covers it                                                                                                                                                                                                                     |
+| usage/config error (bad flag, missing API key)                           | exit 1 (`Error: ...` in stderr)                                                                                                                      | escalate; deterministic, a retry fails the same way                                                                                                                                                                                                        |
+| tool-failure loop (agent retries failing commands)                       | watchdog kills opencode after N consecutive failed tool calls (`state.status == "failed"`, or non-zero shell exit in `state.metadata.metadata.exit`) | escalate: the agent could not use its tools; a full budget spent on failing calls is pure waste (this happened on the first live run)                                                                                                                      |
+| agent finished but outcome unparseable                                   | exit 0, final `text` event doesn't match the contract                                                                                                | escalate with reason "unparseable outcome" + link to the transcript artifact; the transcript is preserved for diagnosis                                                                                                                                    |
+| agent reported `WALL:` / `NO_PR:`                                        | exit 0, parseable                                                                                                                                    | the designed escalation: implementer comments its questions on the issue + labels it; fixer escalates on the PR                                                                                                                                            |
+| workflow step failed _outside_ opencode (npm ci, install, push rejected) | step exit code                                                                                                                                       | normal Actions red run: visible on the run, GitHub can "re-run failed jobs"; if the same step fails twice (run attempt > 1), escalate instead of leaving it red silently                                                                                   |
 
 Per-role specifics:
 
@@ -326,7 +357,7 @@ Per-role specifics:
   fresh budget (the escalation removed it to park the issue).
 - **reviewer fails** → the PR sits ready-for-review with no review. Post-step comments
   on the PR with the failure reason. Human can re-run the job or push a trivial change to
-  re-trigger `synchronize`. A ready PR with zero findings stays unmergeable by review policy,
+  re-trigger `synchronize`. A ready PR without a review stays unmergeable by review policy,
   so nothing unsafe happens.
 - **fixer fails** → the review's findings still stand; the PR simply doesn't progress. Post-step
   comments on the PR; the human can remove `needs-human` to re-trigger the fixer on the same review.

@@ -35,6 +35,15 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    were resolved instead of reporting already-resolved ones again. You never resolve review
    threads yourself; the workflow post-step resolves threads from earlier marker reviews whose
    findings your review no longer reports.
+
+   Continuity across review rounds: you are one reviewer in a multi-round loop, not a
+   blank-slate auditor. The fixer acts on your findings and pushes a new head; the next
+   round is yours again. Do not treat previously-settled ground as fresh scope: when a
+   prior round's finding was fixed, verify the fix and move on; when the fixer's inline
+   reply (in `gh api repos/chrthom/yasmin-ai/pulls/<N>/comments`, threaded by
+   `in_reply_to_id`) explains why a finding was not addressed, accept that rationale
+   unless it is factually wrong - re-raising a declined nit with no new argument
+   re-enters an infinite loop that the iteration cap has to break mechanically.
 3. Check out exactly the given SHA, detached (never check out the PR branch itself):
    `git fetch origin pull/<N>/head && git checkout --detach <sha>`. Run `npm ci` if `node_modules`
    is missing, then `npm run build`, `npm test`, `npm run lint`. Every failure is a finding.
@@ -42,7 +51,10 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    error handling, project code style, and docs (`AGENTS.md`). Report every finding, including
    minors and nits. Severities: `blocker`, `major`, `minor`, `nit`.
 5. Choose the verdict:
-   - `CLEAN`: zero findings of any severity. If you have even one nit, it is not clean.
+   - `CLEAN`: zero findings of severity `blocker`, `major` or `minor`. New `nit` findings do
+     not block the verdict: report them (they are still useful feedback for the author), but
+     the verdict is `CLEAN` with the nits attached. Anything at `minor` or above still means
+     `CHANGES_NEEDED`.
    - `NEEDS_HUMAN`: at least one finding a coding agent cannot or should not resolve alone
      (product or design decision, conflicting requirements, missing information, risky migration
      or deployment choice). Tag those findings `"needs_human": true`.
@@ -84,7 +96,8 @@ then the JSON object (fenced or bare — either is fine, but it must parse with 
 finding needs `path` (repo-relative), `line` (a line inside the PR diff, `side: RIGHT`), one of
 the four severities, and a `message` with the finding and the suggested fix. Findings that cannot
 be anchored to a diff line are still findings: anchor them to the nearest diff line of the file
-they concern. For `CLEAN`, `"findings"` is an empty array.
+they concern. For `CLEAN`, `"findings"` may be an empty array or contain only `nit`
+findings - the fixer is never dispatched on `CLEAN`, so they are informational for the author.
 
 For `WALL: <reason>`, the final message is exactly `WALL: <reason>` with no verdict. Any other
 first line makes the run unparseable and escalates to a human.
