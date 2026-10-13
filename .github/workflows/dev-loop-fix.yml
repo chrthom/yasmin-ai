@@ -119,8 +119,9 @@ jobs:
           # stream shows a successful git push (evidence-based attribution:
           # the per-PR concurrency slot excludes only other loop runs, so a
           # manual push by the owner must not count as the attempt's fix).
-          # The stale-review retry branch plain-skips only on an attributed
-          # movement; empty on event triggers, hence || '0'.
+          # The stale-review retry branch skips (with a consumed-review
+          # PR notice, no reviewer chain) only on an attributed movement;
+          # empty on event triggers, hence || '0'.
           MOVED_BY_FIX_INPUT: ${{ inputs.moved_by_fix || '0' }}
         run: |
           set -eu
@@ -485,22 +486,36 @@ jobs:
             elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null && [ "${MOVED_BY_FIX_INPUT:-0}" = "1" ]; then
               # A workflow_dispatch retry (the post-step's auto-retry on an
               # unparseable outcome) re-submits the SAME review id after the
-              # first attempt already consumed it. Plain-skip ONLY on an
+              # first attempt already consumed it. Skip ONLY on an
               # attributed movement (moved_by_fix=1): the dispatching
               # post-step observed the head move AND found a successful git
               # push in that attempt's own event stream, so the movement is
-              # that attempt's pushed fix. Plain skip like the marker branch
-              # above - no notice, no reviewer chain: the first attempt's
-              # push fired synchronize, which already re-reviews the moved
-              # head. An unattributed movement (moved_by_fix=0: the first
-              # attempt pushed nothing - the mover was a manual push by the
-              # owner during the attempt, or a fixer run for another review
-              # that took the FIFO per-PR concurrency slot only after this
-              # attempt released it), a malformed manual retry value and a
-              # manual re-dispatch (defaults) all fail a test above and fall
-              # through to the notice+chain branch below - never a silent
-              # drop.
+              # that attempt's pushed fix. Skip without a reviewer chain,
+              # like the marker branch above - the first attempt's push
+              # fired synchronize, which already re-reviews the moved
+              # head - but WITH a PR notice the marker skip does not
+              # need: the truncated attempt's fix may be partial and the
+              # fresh re-review never reads the human review's body, so
+              # a finding it does not independently re-surface would
+              # otherwise end a green skipped run with only a run-log
+              # echo; the notice tells the owner to re-submit if the
+              # findings persist. An unattributed movement (moved_by_fix=0:
+              # the first attempt pushed nothing - the mover was a manual
+              # push by the owner during the attempt, or a fixer run for
+              # another review that took the FIFO per-PR concurrency slot
+              # only after this attempt released it), a malformed manual
+              # retry value and a manual re-dispatch (defaults) all fail
+              # a test above and fall through to the notice+chain
+              # branch below - never a silent drop.
               echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT, moved_by_fix=$MOVED_BY_FIX_INPUT) whose first attempt pushed the fix for review $review_id. Skipping."
+              cat > /tmp/dev-loop-consumed-notice.md <<EOF
+          dev-loop notice: human findings review ${review_id} was consumed by the fixer attempt whose push moved the head (${reviewed_sha} -> ${head_sha_before}); that attempt ended unparseable, so its fix may be partial, and the re-review of the moved head re-surfaces findings only if it independently finds them - re-submit the review on the current head if findings persist.
+
+          PR: #${PR_NUMBER}
+          Review: ${review_id}
+          EOF
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-consumed-notice.md >/dev/null \
+                || echo "::warning::Could not post the consumed-review notice for review $review_id"
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             else
@@ -867,11 +882,12 @@ jobs:
               # own stream shows a successful git push: a completed, exit-0
               # tool call whose command contains at least one push segment
               # (chain-aware anchor: "git push" at the command start or
-              # right after a command separator - ;, &, |, a subshell ( -
-              # because the fixer's own step 6 chains the
-              # commit/pull/push sequence and a leading-only anchor would
-              # find no evidence in any real run; a quote before "git push"
-              # (an echoed command) matches no separator) and none of the
+              # right after a command separator - ;, &, |, a subshell (,
+              # a newline (multi-line commands) - because the fixer's own
+              # step 6 chains the commit/pull/push sequence and a
+              # leading-only anchor would find no evidence in any real
+              # run; a quote before "git push" (an echoed command)
+              # matches no separator) and none of the
               # matched push segments carries --dry-run or its -n
               # shorthand. The exclusion is scoped to the push segment
               # itself, not the whole chained command: the token anywhere
@@ -879,12 +895,15 @@ jobs:
               # mentioning --dry-run) does not disqualify a real push,
               # while a dry-run segment makes the whole command no push
               # evidence - unattributed, so the fail-visible notice+chain
-              # branch below. A head movement without push evidence stays
-              # unattributed and goes to the retry's notice+chain branch
-              # instead of a silent skip. A no-findings run retries with
-              # the same review_id=none sentinel: an empty input would
-              # fall into the gate's resume resolution and pull an
-              # outstanding CHANGES_NEEDED review in.
+              # branch below. Residual, same fail-visible direction: a
+              # push segment spans newlines, so a dry-run token in a
+              # later line of the same multi-line command over-excludes
+              # a real push. A head movement without push evidence
+              # stays unattributed and goes to the retry's notice+chain
+              # branch instead of a silent skip. A no-findings run
+              # retries with the same review_id=none sentinel: an empty
+              # input would fall into the gate's resume resolution and
+              # pull an outstanding CHANGES_NEEDED review in.
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               moved_by_fix=0
               if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
@@ -892,7 +911,7 @@ jobs:
                 # evidence, so the movement stays unattributed (the retry's
                 # notice+chain branch), never a plain skip.
                 if jq -e 'select(.type == "tool_use")
-                           | select((.part.state.input.command? // "") | ([match("(^|[;&|(] *)git push[^;&|]*"; "g") | .string] | (length > 0) and (any(test("--dry-run") or test("(^| )-n( |$)")) | not)))
+                           | select((.part.state.input.command? // "") | ([match("(^|[;&|(\n] *)git push[^;&|]*"; "g") | .string] | (length > 0) and (any(test("--dry-run") or test("(^| )-n( |$)")) | not)))
                            | select(.part.state.status == "completed")
                            | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
                   out/stream.ndjson >/dev/null 2>&1; then

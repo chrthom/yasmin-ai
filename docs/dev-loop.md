@@ -89,8 +89,11 @@ partitioned by review shape, not identity alone):
   The retry's stale-review skip is attribution-aware for human (non-marker) reviews:
   the auto-retry carries the first attempt's head-before/after observation plus push
   evidence from its own event stream (`moved_by_fix`), so a head moved by that attempt's
-  own successful `git push` plain-skips (its findings were consumed; `synchronize`
-  re-reviews the moved head), while a head that moved without a push of the attempt's
+  own successful `git push` skips with a PR notice that the review was consumed by that
+  attempt (which ended unparseable, so its fix may be partial; the re-review of the moved
+  head re-surfaces findings only if it independently finds them - re-submit if findings
+  persist; `synchronize` re-reviews the moved head), while a head that moved without a
+  push of the attempt's
   own - a manual push by the owner (the per-PR concurrency slot excludes only other
   loop runs) or a fixer run for another review that ran after the attempt released the
   slot - gets the stale-review notice and reviewer chain - the unattributed human case
