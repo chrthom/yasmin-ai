@@ -55,7 +55,9 @@ picking the item up on future events.
 Job-level event filters (all three role workflows): every role job carries an `if:` that
 skips events which can never start that role _before a runner is allocated_ — `labeled` for
 any label other than `dev-loop`, `unlabeled` for any label other than `needs-human`, and on
-the fixer a `synchronize` on a draft or fork PR (the gate would skip it anyway). This keeps the loop's own state transitions (escalations adding/removing `needs-human`)
+the fixer an empty-body `pull_request_review` (the human findings channel requires a body;
+the gate would skip it anyway — the fixer has no `synchronize` trigger at all, per the event
+map's conflict-origin-1 row). This keeps the loop's own state transitions (escalations adding/removing `needs-human`)
 from spawning gated no-op runs; the in-job gate remains as defense in depth and still enforces
 label/draft/fork/SHA rules against the live API state. On issues, `needs-human` is informational
 only: the implementer's escalation removes `dev-loop` (parking) and re-adding `dev-loop` resumes

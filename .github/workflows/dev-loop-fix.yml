@@ -57,9 +57,10 @@ jobs:
   fix:
     name: Fixer
     # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
-    # label other than needs-human, or a synchronize on a draft or fork PR,
-    # can never start the fixer - skip before a runner is allocated. The
-    # gate below remains as defense in depth.
+    # label other than needs-human, or an empty-body review event (the human
+    # findings channel requires a body), can never start the fixer - skip
+    # before a runner is allocated. The gate below remains as defense in
+    # depth.
     if: >-
       !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
       !(github.event_name == 'pull_request_review' && github.event.review.body == '')
@@ -864,15 +865,21 @@ jobs:
               # also moves the head, and head observation alone would
               # misattribute it - moved_by_fix=1 only when this attempt's
               # own stream shows a successful git push: a completed, exit-0
-              # tool call whose command contains a real push (chain-aware
-              # anchor: "git push" at the command start or right after a
-              # command separator - ;, &, |, a subshell ( - because the
-              # fixer's own step 6 chains the commit/pull/push sequence and
-              # a leading-only anchor would find no evidence in any real
-              # run; a quote before "git push" (an echoed command) matches
-              # no separator, and --dry-run and its -n shorthand are
-              # excluded - a dry-run or an echoed "git push" is never push
-              # evidence). A head movement without push evidence stays
+              # tool call whose command contains at least one push segment
+              # (chain-aware anchor: "git push" at the command start or
+              # right after a command separator - ;, &, |, a subshell ( -
+              # because the fixer's own step 6 chains the
+              # commit/pull/push sequence and a leading-only anchor would
+              # find no evidence in any real run; a quote before "git push"
+              # (an echoed command) matches no separator) and none of the
+              # matched push segments carries --dry-run or its -n
+              # shorthand. The exclusion is scoped to the push segment
+              # itself, not the whole chained command: the token anywhere
+              # else in the chain (a git commit -n, a commit message
+              # mentioning --dry-run) does not disqualify a real push,
+              # while a dry-run segment makes the whole command no push
+              # evidence - unattributed, so the fail-visible notice+chain
+              # branch below. A head movement without push evidence stays
               # unattributed and goes to the retry's notice+chain branch
               # instead of a silent skip. A no-findings run retries with
               # the same review_id=none sentinel: an empty input would
@@ -885,7 +892,7 @@ jobs:
                 # evidence, so the movement stays unattributed (the retry's
                 # notice+chain branch), never a plain skip.
                 if jq -e 'select(.type == "tool_use")
-                           | select((.part.state.input.command? // "") | (test("(^|[;&|(] *)git push") and ((contains("--dry-run") or test("(^| )-n( |$)")) | not)))
+                           | select((.part.state.input.command? // "") | ([match("(^|[;&|(] *)git push[^;&|]*"; "g") | .string] | (length > 0) and (any(test("--dry-run") or test("(^| )-n( |$)")) | not)))
                            | select(.part.state.status == "completed")
                            | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
                   out/stream.ndjson >/dev/null 2>&1; then
