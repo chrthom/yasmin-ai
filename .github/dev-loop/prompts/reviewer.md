@@ -42,6 +42,20 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    `in_reply_to_id`) explains why a finding was not addressed, accept that rationale
    unless it is factually wrong - re-raising a declined nit with no new argument
    re-enters an infinite loop that the iteration cap has to break mechanically.
+
+   Taking custody of prior findings: your new review is the single source of truth -
+   the post-step resolves every prior review thread (marker and human alike) once
+   your review is posted. That is only safe if you first take everything still live
+   into your own review:
+   - Read the repo owner's human findings review(s) (non-marker COMMENT reviews)
+     and their threads too, not just marker reviews.
+   - Re-raise every still-unresolved prior finding - yours, a previous round's, or
+     the owner's - as your own finding in this review, with a provenance note
+     (e.g. "re-raised from the owner's review", preserving severity and
+     `needs_human`).
+   - If you decide NOT to re-raise a prior human finding, say so explicitly in the
+     review body with a one-line reason; a human finding must never vanish
+     silently via thread resolution.
 3. Check out exactly the given SHA, detached (never check out the PR branch itself):
    `git fetch origin pull/<N>/head && git checkout --detach <sha>`. Run `npm ci` if `node_modules`
    is missing, then `npm run build`, `npm test`, `npm run lint`. Every failure is a finding.

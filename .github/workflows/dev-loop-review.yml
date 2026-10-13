@@ -627,6 +627,57 @@ jobs:
             esac
           fi
 
+          # The new review is now the single source of truth: resolve every
+          # still-open review thread rooted in a PRIOR review (marker or human
+          # alike). The continuity rule in reviewer.md obliges this round to
+          # re-raise every still-live prior finding as its own (with a
+          # provenance note), and to state an explicit one-line reason for
+          # every prior finding it does not re-raise - so nothing live is lost
+          # by resolving; leaving old threads open would only stack stale
+          # diff anchors round over round (observed on PRs #115/#117: eight
+          # rounds of open threads each). Threads of THIS review (posted above,
+          # id $review_post_id) are excluded - it is the current round, not a
+          # prior one. REST has no thread-resolve endpoint; GraphQL only, and
+          # a failed resolve is a warning, never an error: an open stale
+          # thread is harmless, a lost review post is not.
+          resolved_threads=0
+          thread_ids="$(gh api graphql --paginate -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100) {
+                    nodes {
+                      id
+                      isResolved
+                      comments(first: 1) { nodes { databaseId } }
+                    }
+                  }
+                }
+              }
+            }' -F owner="${REPOSITORY%/*}" -F name="${REPOSITORY#*/}" -F number="$PR_NUMBER" \
+            | jq -r '.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false) | .id + " " + (.comments.nodes[0].databaseId | tostring)')"
+          this_review_comment_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$review_post_id/comments" \
+            | jq -r '.[].id' 2>/dev/null || true)"
+          while read -r thread_id root_comment_id; do
+            [ -n "$thread_id" ] || continue
+            if printf '%s\n' "$this_review_comment_ids" | grep -qx "$root_comment_id"; then
+              continue
+            fi
+            if gh api graphql -f query='
+              mutation($threadId: ID!) {
+                resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
+              }' -f threadId="$thread_id" >/dev/null 2>&1; then
+              resolved_threads=$((resolved_threads + 1))
+            else
+              echo "::warning::Could not resolve review thread $thread_id; it stays open (harmless - the new review re-raised anything still live)."
+            fi
+          done <<EOF
+          $thread_ids
+          EOF
+          if [ "$resolved_threads" -gt 0 ]; then
+            echo "Resolved $resolved_threads prior-review thread(s); the new review ($review_post_id) carries everything still live."
+          fi
+
           case "$verdict" in
             CLEAN)
               echo "Verdict CLEAN: the PR stands ready for a human merge decision; no state change."
