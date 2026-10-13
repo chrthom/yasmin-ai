@@ -412,7 +412,12 @@ jobs:
         run: |
           set -u
           escalate() {
-            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            # The escalation path must itself fail open: under set -e an
+            # unguarded gh call here would kill the post-step with a red run
+            # instead of the usual warning-and-continue style. Guard both
+            # signals so at least one of them reaches a human.
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null \
+              || echo "::warning::Could not add the needs-human label (gh pr edit failed); relying on the escalation comment."
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @chrthom dev-loop reviewer escalation: $1
@@ -420,7 +425,8 @@ jobs:
           PR: #${PR_NUMBER}
           Run: ${RUN_URL}
           EOF
-            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null \
+              || echo "::warning::Could not post the escalation comment (gh pr comment failed); the needs-human label marks the PR."
           }
 
           rc="${{ steps.opencode.outputs.rc }}"
@@ -522,8 +528,13 @@ jobs:
           # (observed on PR #119: the freshness poll exited 5 mid-run and
           # the state machine died silently). An empty current_sha skips
           # the stale-head re-dispatch and posts on the reviewed SHA -
-          # the same head the agent actually reviewed.
+          # the same head the agent actually reviewed - and warns, so the
+          # fail-open leaves a trace in the run log like every other one
+          # (the #119 diagnosis relied on exactly that trace).
           current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+          if [ -z "$current_sha" ]; then
+            echo "::warning::Head-SHA freshness poll failed; proceeding on the reviewed SHA $REVIEWED_SHA (fail open)."
+          fi
           if [ -n "$current_sha" ] && [ "$current_sha" != "$REVIEWED_SHA" ]; then
             echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
             if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
@@ -573,8 +584,11 @@ jobs:
           # previously failed post blocks every new POST with 422 (observed on
           # PR #106). Delete any pending review of the token user before
           # posting - pending reviews carry no findings, so nothing is lost.
+          # The lookup fails open like the freshness poll above: a transient
+          # gh failure must not kill the post-step right before the review is
+          # posted (#119 class); an empty id simply skips the delete.
           pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
-            | jq -r '[.[] | select(.state == "PENDING")] | first | .id // empty')"
+            --jq '[.[] | select(.state == "PENDING")] | first | .id // empty' 2>/dev/null || true)"
           if [ -n "$pending_review_id" ]; then
             echo "Deleting stale pending review $pending_review_id before posting (it would 422-block the POST)."
             gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
