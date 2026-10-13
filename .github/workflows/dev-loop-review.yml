@@ -67,6 +67,10 @@ jobs:
           UNLABELED_NAME: ${{ github.event.label.name }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
+          # The same github.repository_owner-derived identity the fixer gate
+          # and the post-step's escalation templates address the human
+          # through (no hardcoded login).
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
           if [ -z "$PR_NUMBER" ]; then
@@ -125,10 +129,13 @@ jobs:
             exit 0
           fi
           # One review per head SHA: skip if a marker review already exists for it.
+          # --paginate streams one JSON array per page: slurp the pages before
+          # selecting (a per-page evaluation prints one result per page, and a
+          # 2-page PR's '0\n0' would read as "exists" in the test below).
           existing="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-            | jq -r --arg sha "$head_sha" \
-              '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.commit_id == $sha)] | length')"
-          if [ "$existing" != "0" ]; then
+            | jq -rs --arg sha "$head_sha" \
+              '(add // []) | any(.[]; ((.body // "") | startswith("<!-- dev-loop-review -->")) and .commit_id == $sha)')"
+          if [ "$existing" = "true" ]; then
             echo "A marker review for head SHA $head_sha already exists; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -204,18 +211,21 @@ jobs:
           # Iteration cap: count marker reviews in the current escalation epoch
           # (since the last dev-loop-escalation comment). At MAX_ITERATIONS the
           # loop parks the PR instead of dispatching - agents cannot see or
-          # negotiate the cap.
+          # negotiate the cap. Both jqs slurp the --paginate pages (one JSON
+          # array per page) before selecting, or a 2-page PR emits one
+          # timestamp / one count per page and silently breaks the epoch cut
+          # and the cap comparison.
           epoch_cut="$(gh api repos/${GH_REPO}/issues/$PR_NUMBER/comments --paginate \
-            | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-escalation -->")) | .created_at] | last // empty')"
+            | jq -rs '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-escalation -->")) | .created_at] | last // empty')"
           marker_count="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-            | jq -r --arg after "${epoch_cut:-1970-01-01T00:00:00Z}" \
-              '[.[] | select(.body | startswith("<!-- dev-loop-review -->")) | select(.submitted_at >= $after)] | length')"
+            | jq -rs --arg after "${epoch_cut:-1970-01-01T00:00:00Z}" \
+              '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | select(.submitted_at >= $after)] | length')"
           if [ "$marker_count" -ge "$MAX_ITERATIONS" ]; then
             echo "Iteration cap reached ($marker_count >= $MAX_ITERATIONS marker reviews this epoch); escalating."
             gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
+          @$REPO_OWNER dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
           EOF
             gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -413,6 +423,9 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
+          # The token user is the repo owner (the PAT's login) - the same
+          # identity the fixer gate trusts as REPO_OWNER.
+          REPO_OWNER: ${{ github.repository_owner }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
@@ -420,7 +433,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop reviewer escalation: $1
+          @$REPO_OWNER dev-loop reviewer escalation: $1
 
           PR: #${PR_NUMBER}
           Run: ${RUN_URL}
@@ -568,16 +581,44 @@ jobs:
 
           $body_findings"
           fi
-          # One pending review per user per PR: a stale pending review from a
-          # previously failed post blocks every new POST with 422 (observed on
-          # PR #106). Delete any pending review of the token user before
-          # posting - pending reviews carry no findings, so nothing is lost.
+          # One pending review per user per PR: a stale pending review of the
+          # TOKEN USER from a previously failed post blocks every new POST with
+          # 422 (observed on PR #106). Delete it before posting - but ONLY the
+          # token user's own (the repo owner; the list-reviews endpoint returns
+          # every user's pending review and reviews are world-postable on this
+          # public repo, so a third party's draft must not be touched), and
+          # ONLY one provably not the owner's draft findings: zero draft
+          # comments AND an empty body, or a first-line
+          # <!-- dev-loop-review --> marker - an HTML comment that renders
+          # invisibly in the GitHub UI; the human findings channel is
+          # non-marker by definition, so a marker-prefixed pending review
+          # is a loop leftover (e.g. a misbehaving actor POSTing a
+          # body-carrying review) that must self-heal too, or it 422-blocks
+          # every future POST. Anything else may be the owner's findings
+          # review being drafted in the GitHub UI (or autosaved via the API
+          # with its body already set) - the body is the primary human
+          # findings payload - and is left alone (it 422-blocks the POST; the
+          # warning below makes that visible instead).
           pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
-            | jq -r '[.[] | select(.state == "PENDING")] | first | .id // empty')"
+            | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.state == "PENDING") | select(.user.login == $owner)] | first | .id // empty')"
           if [ -n "$pending_review_id" ]; then
-            echo "Deleting stale pending review $pending_review_id before posting (it would 422-block the POST)."
-            gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
-              || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
+            # Fail closed: an unknown comment count or body means "maybe a
+            # draft" - the POST can still 422, which escalates visibly, but a
+            # human draft is never destroyed on a query failure. The marker
+            # check stays outside fail-closed: a marker-prefixed body proves
+            # loop origin even when the comment count is unknown.
+            pending_comments="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id/comments" \
+              --jq 'length' 2>/dev/null || echo unknown)"
+            pending_body="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" \
+              --jq '.body // ""' 2>/dev/null || echo unknown)"
+            if { [ "$pending_comments" = "0" ] && [ -z "$(printf '%s' "$pending_body" | tr -d '[:space:]')" ]; } \
+              || printf '%s' "$pending_body" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
+              echo "Deleting stale pending review $pending_review_id before posting (comment- and body-less, or marker-prefixed i.e. provably a loop leftover, not a human draft; it would 422-block the POST)."
+              gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
+                || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
+            else
+              echo "::warning::Pending review $pending_review_id carries ${pending_comments} draft comment(s) or a non-marker draft body (likely the owner's review draft in the GitHub UI); NOT deleting it. If it is a loop leftover, delete it manually - it 422-blocks the review POST."
+            fi
           fi
           cat > /tmp/dev-loop-review.json <<EOF
           {
