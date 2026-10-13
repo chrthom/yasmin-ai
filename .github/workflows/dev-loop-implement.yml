@@ -276,6 +276,9 @@ jobs:
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           REPOSITORY: ${{ github.repository }}
+          # The same github.repository_owner-derived identity the fixer and
+          # reviewer escalation templates address the human through.
+          REPO_OWNER: ${{ github.repository_owner }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
@@ -286,7 +289,7 @@ jobs:
             gh issue edit "$ISSUE_NUMBER" --remove-label dev-loop --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop implementer escalation: $1
+          @$REPO_OWNER dev-loop implementer escalation: $1
 
           Issue: #${ISSUE_NUMBER}
           Run: ${RUN_URL}

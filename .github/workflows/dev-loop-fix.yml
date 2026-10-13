@@ -28,12 +28,17 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; none = no-findings run (push scan, red-CI dispatch and the no-findings retry; resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
+        description: Review id whose findings to fix; none = no-findings run (push scan, red-CI dispatch and the no-findings retry; resolve merge conflicts and/or failing CI checks); empty = resume the latest findings review (the newest CHANGES_NEEDED marker review or the owner's human findings review), else no-findings
         required: false
         default: ''
         type: string
       retry:
         description: Internal retry counter (do not edit)
+        required: false
+        default: '0'
+        type: string
+      moved_by_fix:
+        description: Internal, set by the auto-retry only - '1' when the dispatching attempt's own pushed fix moved the head (do not edit)
         required: false
         default: '0'
         type: string
@@ -82,9 +87,10 @@ jobs:
   fix:
     name: Fixer
     # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
-    # label other than needs-human, or a pull_request_review with an empty
-    # body (reply-only submission), can never start the fixer - skip before
-    # a runner is allocated. The gate below remains as defense in depth.
+    # label other than needs-human, or an empty-body review event (a reply-
+    # only submission - the human findings channel requires a body), can
+    # never start the fixer - skip before a runner is allocated. The gate
+    # below remains as defense in depth.
     if: >-
       !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
       !(github.event_name == 'pull_request_review' && github.event.review.body == '')
@@ -122,12 +128,33 @@ jobs:
           UNLABELED_NAME: ${{ github.event.label.name }}
           EVENT_REVIEW_ID: ${{ github.event.review.id }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          REVIEW_AUTHOR: ${{ github.event.review.user.login }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          # The repo owner is the human by definition; the loop actors post
+          # under the owner's PAT, so this is the single identity both the
+          # marker and the human branch trust (no hardcoded login).
+          REPO_OWNER: ${{ github.repository_owner }}
+          # Run link for the gate's stale-review escalation comment (matches
+          # the post-step's RUN_URL convention).
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
           # GraphQL node id for the push-scan's repo filter: gh pr list's
           # headRepository.id is a node id, not the numeric REST id.
           REPO_NODE_ID: ${{ github.event.repository.node_id }}
           REVIEW_ID_INPUT: ${{ inputs.review_id }}
+          # Retry counter of a workflow_dispatch re-run (the post-step's
+          # auto-retry passes retry=1); empty on event triggers, hence || '0'.
+          RETRY_INPUT: ${{ inputs.retry || '0' }}
+          # Auto-retry attribution flag: '1' when the attempt dispatching the
+          # retry observed the head move past its start SHA AND its own event
+          # stream shows a successful git push (evidence-based attribution:
+          # the per-PR concurrency slot excludes only other loop runs, so a
+          # manual push by the owner must not count as the attempt's fix).
+          # The stale-review retry branch skips (with a consumed-review
+          # PR notice, no reviewer chain) only on an attributed movement;
+          # empty on event triggers, hence || '0'.
+          MOVED_BY_FIX_INPUT: ${{ inputs.moved_by_fix || '0' }}
         run: |
           set -eu
           # Conflict origin 2: a push to main can leave open ready dev-loop PRs
@@ -233,20 +260,56 @@ jobs:
             --description "dev-loop: human decision required" 2>/dev/null || true
           gh label create dev-loop --color 46A1AA \
             --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
-          # Event-payload gate: only a marker review with verdict CHANGES_NEEDED
-          # starts the fixer. CLEAN and human reviews start nothing. The
-          # unlabeled resume path re-fixes the latest CHANGES_NEEDED review.
-          # KEEP IN SYNC with dev-loop-review.yml: these greps match the exact
-          # marker-review body its post-step composes - the marker alone on
-          # line 1 and a bare `Verdict: <V>` line.
+          # Event-payload gate: a marker review by the repo owner with verdict
+          # CHANGES_NEEDED starts the fixer, and so does a human findings
+          # review by the repo owner. The author is checked on BOTH branches:
+          # reviews are world-postable on a public repo, so a third party
+          # forging the marker shape must not dispatch the fixer on
+          # attacker-authored "findings" (injection surface). Shape partition
+          # within the owner's identity (all loop actors post under the
+          # owner's PAT, so the body shape is the discriminator):
+          #   - loop reviewer  -> marker line 1 on the body
+          #   - fixer          -> inline replies only, EMPTY review body (pre-
+          #                       filtered by the job-level if; if one ever
+          #                       reaches here it falls through to the skip)
+          #   - human owner    -> non-empty body WITHOUT the marker
+          # Any other author or shape starts nothing. Inline replies by the
+          # owner are empty-body submissions and are NOT a trigger: their
+          # content is consumed on the needs-human resume path instead.
+          # KEEP IN SYNC with dev-loop-review.yml: the marker greps match the
+          # exact marker-review body its post-step composes - the marker alone
+          # on line 1 and a bare `Verdict: <V>` line. KEEP IN SYNC with the
+          # fixer prompt: automated reviews must carry either the marker or an
+          # empty body - a non-empty non-marker automated review would be
+          # misread as human findings and self-trigger the fixer.
           if [ "$EVENT_NAME" = "pull_request_review" ]; then
-            if ! printf '%s' "$REVIEW_BODY" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
-              echo "Review is not a dev-loop marker review; skipping."
+            if [ "$REVIEW_AUTHOR" != "$REPO_OWNER" ]; then
+              echo "Review author '$REVIEW_AUTHOR' is not the repo owner '$REPO_OWNER' (all loop reviews are owner-PAT posts; third-party reviews are an injection surface); skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            if ! printf '%s' "$REVIEW_BODY" | grep -q '^Verdict: CHANGES_NEEDED$'; then
-              echo "Marker review verdict is not CHANGES_NEEDED; skipping."
+            if printf '%s' "$REVIEW_BODY" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
+              if ! printf '%s' "$REVIEW_BODY" | grep -q '^Verdict: CHANGES_NEEDED$'; then
+                echo "Marker review verdict is not CHANGES_NEEDED; skipping."
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            # github.event.review.state is the WEBHOOK payload, which
+            # delivers lowercase values ('commented'; only the REST API
+            # returns uppercase) - normalize case-insensitively so the
+            # branch matches both payload shapes.
+            elif [ "${REVIEW_STATE,,}" = "commented" ] && [ -n "$(printf '%s' "$REVIEW_BODY" | tr -d '[:space:]')" ]; then
+              # The repo owner cannot APPROVE/REQUEST_CHANGES on their own PRs
+              # (the loop opens PRs under the owner's PAT), so their findings
+              # channel is a COMMENT review. Treat its body and inline
+              # comments as findings; the fixer decides what is actionable,
+              # replies to every comment, and pushes only real changes. The
+              # state check keeps owner APPROVE/CHANGES_REQUESTED bodies
+              # (possible on human-authored PRs opted into the loop) from
+              # dispatching the fixer.
+              echo "Human findings review by $REVIEW_AUTHOR (COMMENT, non-marker, non-empty body); treating it as findings input."
+            else
+              echo "Review is not a dev-loop marker review and not an owner-authored COMMENT findings review; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -258,12 +321,14 @@ jobs:
             exit 0
           fi
           # Draft is a human parking brake (docs/dev-loop.md): the loop never
-          # touches a draft PR on any event. The push-to-main scan filters
-          # drafts at list time, but a dispatched run may sit in the
+          # touches a draft PR on any event. pull_request_review fires on
+          # drafts and the owner can comment-review their own draft PR, so
+          # the human-findings channel makes drafts reachable on this gate's
+          # event path - and a dispatched run may sit in the
           # dev-loop-pr-<N> concurrency slot long after the PR was converted
-          # to draft, so re-check live here - this covers every dispatch
-          # origin (push scan, red-CI, manual/retry). Mirrors the reviewer's
-          # gate order in dev-loop-review.yml.
+          # to draft. Re-check the live API state either way, mirroring the
+          # reviewer gate's draft skip; this covers every dispatch origin
+          # (push scan, red-CI, manual/retry).
           if [ "$(gh pr view "$PR_NUMBER" --json isDraft --jq .isDraft)" = "true" ]; then
             echo "PR #$PR_NUMBER is draft; the loop never touches drafts on any event. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -288,8 +353,8 @@ jobs:
             exit 0
           fi
           # Resolve the review to act on: the event's own review id (exact, no
-          # race), the explicit input, or the latest CHANGES_NEEDED marker
-          # review on the PR (resume path).
+          # race), the explicit input, or the latest findings review by the
+          # repo owner on the PR (resume path; marker CHANGES_NEEDED or human).
           if [ -n "$EVENT_REVIEW_ID" ]; then
             review_id="$EVENT_REVIEW_ID"
           elif [ "$REVIEW_ID_INPUT" = "none" ]; then
@@ -302,18 +367,40 @@ jobs:
           elif [ -n "$REVIEW_ID_INPUT" ]; then
             review_id="$REVIEW_ID_INPUT"
           else
-            # Act on the newest marker review, and only if it is
-            # CHANGES_NEEDED. Picking the latest CHANGES_NEEDED review
-            # regardless of newer reviews made the resume path act on a
-            # stale review superseded by e.g. a NEEDS_HUMAN review at the
+            # Act on the newest findings review by the repo owner, and only
+            # if it is still current. If it is a marker review it must carry
+            # Verdict: CHANGES_NEEDED: picking the latest CHANGES_NEEDED
+            # review regardless of newer reviews made the resume path act on
+            # a stale review superseded by e.g. a NEEDS_HUMAN review at the
             # current head: the fixer then verified already-resolved
             # findings, pushed nothing, and the post-step misread the
             # unchanged head as "made no change". A newer non-CHANGES_NEEDED
             # verdict stands on its own (the reviewer workflow's unlabeled
-            # resume path re-reviews with a fresh budget); a newer
-            # CHANGES_NEEDED review is the one to act on.
+            # resume path re-reviews with a fresh budget). If it is a
+            # non-marker owner review, it is the human findings channel: a
+            # fixer run that escalated on it resumes into that same review
+            # instead of dead-ending on a stale marker review or a silent
+            # no-op. The author filter excludes third-party reviews
+            # (injection surface); the non-empty-body filter excludes the
+            # fixer's own reply reviews and mirrors the event gate's
+            # trimmed emptiness (a whitespace-only body is empty on both
+            # paths). Marker and verdict classification
+            # mirror the event gate's exact shape (the marker alone on
+            # line 1, Verdict as a full line), so dispatch and resume cannot
+            # diverge on a body whose first line carries trailing text
+            # after the marker.
+            # --paginate streams one JSON array per page, so the selection
+            # must run over the concatenated list: jq -s 'add' merges the
+            # pages first, keeping sort_by/last on the true newest review
+            # (a per-page evaluation can return an older page's pick or
+            # several newline-joined ids, and the gh api below then fails
+            # on the multi-id review path). add over an empty stream (a
+            # transient gh api failure prints nothing) is null, and [.[]]
+            # over null red-fails the gate under set -e; `// []` restores
+            # the pre-slurp soft degradation to an empty review id - the
+            # no-findings path below.
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -r '[.[] | select(.body | startswith("<!-- dev-loop-review -->"))] | sort_by(.submitted_at) | last | select(. != null) | select(.body | contains("Verdict: CHANGES_NEEDED")) | .id // empty')"
+              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") | test("\\S"))] | sort_by(.submitted_at) | last | select(. != null) | (.body | split("\n")) as $lines | select((($lines[0]) == "<!-- dev-loop-review -->" and ($lines | any(. == "Verdict: CHANGES_NEEDED"))) or (($lines[0]) != "<!-- dev-loop-review -->" and .state == "COMMENTED")) | .id // empty')"
           fi
           # Defense in depth: a non-numeric review id must never reach the
           # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
@@ -368,8 +455,22 @@ jobs:
             fi
           fi
           if [ -n "$review_id" ]; then
-            review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
-            if ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
+            # Shape-based verdict check, not event-based: a marker review must
+            # carry Verdict: CHANGES_NEEDED; a non-marker review is the owner's
+            # human findings and is exempt from the verdict check. Keying the
+            # exemption on the event type silently dropped the owner's findings
+            # on the workflow_dispatch retry path (the post-step's built-in
+            # auto-retry and the escalation's advice both re-dispatch the same
+            # human review id, where no pull_request_review event exists).
+            # One fetch of the review object, reused for every field the
+            # gate reads: the body here, and the commit_id/state in the
+            # stale-review branches below - three separate REST calls would
+            # cost two extra requests per gated run and could observe
+            # different snapshots of the same review between calls.
+            review_json="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id)"
+            review_body="$(jq -r '.body' <<<"$review_json")"
+            if printf '%s' "$review_body" | head -1 | grep -q '^<!-- dev-loop-review -->$' \
+              && ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
               echo "Review $review_id is not a CHANGES_NEEDED review; nothing to fix. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
@@ -378,7 +479,24 @@ jobs:
           # One fixer per review, implicitly: the reviewer chains the fixer only
           # while the head SHA still equals the reviewed commit_id, so if the head
           # has already moved past the reviewed SHA, a fix (or a human push) has
-          # landed since - this review is already being acted on. Skip. On the
+          # landed since - this review is already being acted on. Skip. A human
+          # findings review is the exception: the moving commit fixed a DIFFERENT
+          # review and never saw its findings, so it is chained to the reviewer
+          # below instead of dropped; only the human-findings shape the event
+          # gate and resume jq both enforce (non-marker AND state COMMENTED AND
+          # non-empty body) takes that exception, re-checked by the shape branch
+          # below - any other non-marker shape plain-skips like a marker review.
+          # A workflow_dispatch retry re-submits
+          # the SAME review id after the first attempt already consumed it, so
+          # the movement is expected ONLY when it is that attempt's own pushed
+          # fix: the auto-retry dispatch carries the post-step's
+          # head-before/after observation (moved_by_fix), an attributed
+          # movement skips like a marker review, and an unattributed one
+          # falls through to the notice+chain branch - for non-marker
+          # (human) reviews only: a marker review takes the marker skip
+          # below on any non-auto-format movement, attributed or not, which
+          # strands nothing because its findings are machine-derived and
+          # the mover's own synchronize re-review re-derives them. On the
           # unlabeled resume path the human decides a re-fix is needed, so the
           # check does not apply. Exception: if every commit between the reviewed
           # SHA and the current head is a CI auto-format commit (message
@@ -387,8 +505,15 @@ jobs:
           # the formatted head.
           head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
           reviewed_sha=""
+          review_state=""
           if [ -n "$review_id" ]; then
-            reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
+            # Both extracted from the single review fetch in the verdict
+            # re-check above (one consistent snapshot). The state feeds the
+            # stale-branch shape classification below (the REST API
+            # returns uppercase values, matching the resume jq's exact
+            # .state == "COMMENTED" on the same data).
+            reviewed_sha="$(jq -r '.commit_id' <<<"$review_json")"
+            review_state="$(jq -r '.state' <<<"$review_json")"
           fi
           if [ -n "$reviewed_sha" ] && [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
             git fetch origin "$reviewed_sha" "$head_sha_before" --quiet
@@ -403,8 +528,110 @@ jobs:
             non_format="$(git log --format='%s' "$reviewed_sha..$head_sha_before" | grep -vc '^chore: auto-format$' || true)"
             if [ "${non_format:-1}" = "0" ]; then
               echo "Head moved only by CI auto-format commits ($reviewed_sha -> $head_sha_before); no fix ran yet, proceeding with the findings."
-            else
+            elif printf '%s' "$review_body" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
               echo "Head SHA ($head_sha_before) already moved past the reviewed SHA ($reviewed_sha) by a non-auto-format commit; a fix for review $review_id already ran. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            elif [ "$review_state" != "COMMENTED" ] || [ -z "$(printf '%s' "$review_body" | tr -d '[:space:]')" ]; then
+              # Shape re-check mirroring the event gate and the resume jq: a
+              # human findings review is non-marker AND state COMMENTED AND
+              # non-empty body, and only that shape reaches these branches
+              # through either. A manual workflow_dispatch can carry any
+              # other review id past both - an owner reply review (empty
+              # body; the fixer's own inline replies create exactly those)
+              # or an APPROVED/CHANGES_REQUESTED body review - and without
+              # this check such a review passes the shape-exempt verdict
+              # re-check above and is misread as human findings here: a
+              # misleading stale/consumed PR notice plus a redundant
+              # reviewer chain. Non-consummable shapes carry no findings
+              # the loop could consume, so the marker-style plain skip
+              # strands nothing.
+              echo "Head SHA ($head_sha_before) moved past review $review_id, which is not a marker and not a consumable human findings review (state ${review_state:-unknown}, empty or non-COMMENTED body); no findings to strand. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null && [ "${MOVED_BY_FIX_INPUT:-0}" = "1" ]; then
+              # A workflow_dispatch retry (the post-step's auto-retry on an
+              # unparseable outcome) re-submits the SAME review id after the
+              # first attempt already consumed it. Skip ONLY on an
+              # attributed movement (moved_by_fix=1): the dispatching
+              # post-step observed the head move AND found a successful git
+              # push in that attempt's own event stream, so the movement is
+              # that attempt's pushed fix. Skip without a reviewer chain,
+              # like the marker branch above - the first attempt's push
+              # fired synchronize, which already re-reviews the moved
+              # head - but WITH a PR notice the marker skip does not
+              # need: the truncated attempt's fix may be partial and the
+              # fresh re-review never reads the human review's body, so
+              # a finding it does not independently re-surface would
+              # otherwise end a green skipped run with only a run-log
+              # echo; the notice tells the owner to re-submit if the
+              # findings persist. An unattributed movement (moved_by_fix=0:
+              # the first attempt pushed nothing - the mover was a manual
+              # push by the owner during the attempt, or a fixer run for
+              # another review that took the FIFO per-PR concurrency slot
+              # only after this attempt released it), a malformed manual
+              # retry value and a manual re-dispatch (defaults) all fail
+              # a test above and fall through to the notice+chain
+              # branch below - never a silent drop.
+              echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT, moved_by_fix=$MOVED_BY_FIX_INPUT) whose first attempt pushed the fix for review $review_id. Skipping."
+              cat > /tmp/dev-loop-consumed-notice.md <<EOF
+          dev-loop notice: human findings review ${review_id} was consumed by the fixer attempt whose push moved the head (${reviewed_sha} -> ${head_sha_before}); that attempt ended unparseable, so its fix may be partial, and the re-review of the moved head re-surfaces findings only if it independently finds them - re-submit the review on the current head if findings persist.
+
+          PR: #${PR_NUMBER}
+          Review: ${review_id}
+          EOF
+              gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-consumed-notice.md >/dev/null \
+                || echo "::warning::Could not post the consumed-review notice for review $review_id"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              # A human findings review skipped here would be silently
+              # dropped: the movement is unattributed (another review's fix,
+              # or a manual push by the owner) and no fixer run for this
+              # review saw these findings - no reply, no signal, and the
+              # owner cannot tell consumption from a drop. A retry whose
+              # first attempt pushed nothing (moved_by_fix=0) lands here
+              # too: the movement is not that attempt's fix, so the findings
+              # were equally not consumed by it. Chain the reviewer instead: its
+              # fresh review of the moved head re-enters the loop and its
+              # head-SHA dedupe bounds it (mirrors the stale-verdict
+              # re-dispatch in dev-loop-review.yml). The chain is only a
+              # dedupe-bounded backstop (the fix push's synchronize usually
+              # reviews the moved head first, and the fresh reviewer does not
+              # read the human review's body), so a PR comment also marks the
+              # review stale for the owner - never a review POST, which is
+              # the human findings channel; a failed comment post emits a
+              # workflow warning so the drop stays visible. Escalate if the
+              # chain fails, so the owner knows no fixer run consumed the
+              # findings.
+              echo "Head SHA ($head_sha_before) moved past the human findings review $review_id ($reviewed_sha) before it was consumed (another review's fix or a manual push may have moved it). Chaining the reviewer on the moved head."
+              if gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
+                cat > /tmp/dev-loop-notice.md <<EOF
+          dev-loop notice: human findings review ${review_id} is stale - the head moved past the review's commit (${reviewed_sha} -> ${head_sha_before}) before it was consumed (another review's fix or a manual push may have moved it). A fresh review of the moved head is queued (a backstop: its findings re-enter the loop only if the fresh review re-surfaces them); re-submit the review on the current head if the findings persist.
+
+          PR: #${PR_NUMBER}
+          Review: ${review_id}
+          EOF
+                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-notice.md >/dev/null \
+                  || echo "::warning::Could not post the stale-review notice for review $review_id"
+              else
+                # Unguarded on purpose (no || true), matching the post-step's
+                # escalate(): if both gh calls fail here the gate step must go
+                # red instead of ending a green skipped run with no PR-visible
+                # signal - this branch is the one place the gate promises an
+                # escalation for unconsumed human findings (set -e fails the
+                # step on a gh error).
+                gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+                cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @$REPO_OWNER dev-loop fixer escalation: human findings review $review_id was skipped - the head moved past the review's commit ($reviewed_sha -> $head_sha_before) before it was consumed (another review's fix or a manual push may have moved it) - and chaining the reviewer failed; re-submit the review on the current head or remove needs-human to resume.
+
+          PR: #${PR_NUMBER}
+          Review: ${review_id}
+          Run: ${RUN_URL}
+          EOF
+                gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+              fi
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -596,6 +823,10 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
+          # The same github.repository_owner-derived identity the gate's
+          # author check trusts; escalation templates address the human
+          # through it (no hardcoded login).
+          REPO_OWNER: ${{ github.repository_owner }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
@@ -603,7 +834,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop fixer escalation: $1
+          @$REPO_OWNER dev-loop fixer escalation: $1
 
           PR: #${PR_NUMBER}
           Review: ${REVIEW_ID}
@@ -706,15 +937,57 @@ jobs:
               # transient, unlike a deterministic parse failure. Retry once via
               # workflow_dispatch, passing the same review id so the gate does
               # not have to re-resolve it; the counter in the input prevents a
-              # loop. No fix was pushed, so the head is unchanged and the retry
-              # runs on the same state. A no-findings run retries with the
-              # same review_id=none sentinel: an empty input would fall into
-              # the gate's resume resolution and pull an outstanding
-              # CHANGES_NEEDED review in.
+              # loop. A truncated run may or may not have pushed: observe the
+              # head and pass the observation as moved_by_fix, so the retry's
+              # stale-review branch can attribute a movement. Attribution is
+              # evidence-based, not head observation alone: the per-PR
+              # concurrency slot excludes only other loop runs, so a manual
+              # push by the owner landing while this attempt pushed nothing
+              # also moves the head, and head observation alone would
+              # misattribute it - moved_by_fix=1 only when this attempt's
+              # own stream shows a successful git push: a completed, exit-0
+              # tool call whose command contains at least one push segment
+              # (chain-aware anchor: "git push" at the command start or
+              # right after a command separator - ;, &, |, a subshell (,
+              # a newline (multi-line commands) - because the fixer's own
+              # step 6 chains the commit/pull/push sequence and a
+              # leading-only anchor would find no evidence in any real
+              # run; a quote before "git push" (an echoed command)
+              # matches no separator) and none of the
+              # matched push segments carries --dry-run or its -n
+              # shorthand. The exclusion is scoped to the push segment
+              # itself, not the whole chained command: the token anywhere
+              # else in the chain (a git commit -n, a commit message
+              # mentioning --dry-run) does not disqualify a real push,
+              # while a dry-run segment makes the whole command no push
+              # evidence - unattributed, so the fail-visible notice+chain
+              # branch below. Residual, same fail-visible direction: a
+              # push segment spans newlines, so a dry-run token in a
+              # later line of the same multi-line command over-excludes
+              # a real push. A head movement without push evidence
+              # stays unattributed and goes to the retry's notice+chain
+              # branch instead of a silent skip. A no-findings run
+              # retries with the same review_id=none sentinel: an empty
+              # input would fall into the gate's resume resolution and
+              # pull an outstanding CHANGES_NEEDED review in.
+              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+              moved_by_fix=0
+              if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
+                # Fail-visible: a missing or unreadable stream is no
+                # evidence, so the movement stays unattributed (the retry's
+                # notice+chain branch), never a plain skip.
+                if jq -e 'select(.type == "tool_use")
+                           | select((.part.state.input.command? // "") | ([match("(^|[;&|(\n] *)git push[^;&|]*"; "g") | .string] | (length > 0) and (any(test("--dry-run") or test("(^| )-n( |$)")) | not)))
+                           | select(.part.state.status == "completed")
+                           | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
+                  out/stream.ndjson >/dev/null 2>&1; then
+                  moved_by_fix=1
+                fi
+              fi
               retry_review_id="${REVIEW_ID:-none}"
               if [ "$RETRY_COUNT" -lt 1 ] \
-                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1; then
-                echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1). Transcript artifact preserved for diagnosis."
+                && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1 -f moved_by_fix="$moved_by_fix"; then
+                echo "Unparseable fixer outcome (cost: \$$cost); re-dispatching the fixer once (retry=1, moved_by_fix=$moved_by_fix). Transcript artifact preserved for diagnosis."
                 exit 0
               fi
               escalate "unparseable outcome (exit 0, final message does not match the contract; retry exhausted); transcript artifact preserved for diagnosis"
