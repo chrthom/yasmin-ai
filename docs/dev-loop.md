@@ -80,6 +80,7 @@ Non-events by design:
 | reviewer    | `Verdict: CHANGES_NEEDED`                                                       | dispatch the fixer with the posted review's id (direct chain is the single exception: no GitHub event carries the review id) |
 | reviewer    | `Verdict: NEEDS_HUMAN`                                                          | label `needs-human` + marker escalation comment `@chrthom`                                                                   |
 | reviewer    | head SHA moved since review start                                               | re-dispatch reviewer (stale review is not acted on)                                                                          |
+| reviewer    | review posted (any verdict)                                                     | resolve every still-open thread rooted in a prior review (GraphQL `resolveReviewThread`; failures are warnings)              |
 | fixer       | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                          |
 | fixer       | outcome `WALL:`/budget stop                                                     | label `needs-human` + escalation comment                                                                                     |
 | implementer | outcome `finished`                                                              | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review                     |
@@ -184,17 +185,22 @@ verifies the claim against reality (head SHA moved) before relying on it.
   mechanically. The reviewer also reads the repo owner's human findings review(s)
   and re-raises every still-unresolved prior finding (marker or human) as its own,
   with a provenance note; a prior human finding it declines to re-raise must be
-  dismissed explicitly in the review body with a one-line reason - human input
-  must never vanish silently.
+  dismissed via the review's `dismissals` JSON array, whose one-line reasons the
+  post-step renders into the review body - human input must never vanish
+  silently.
 - **Thread resolution on new reviews (reviewer post-step)**: once a new marker review
   is posted, the post-step resolves every still-open review thread rooted in a
   PRIOR review (marker and human alike) via the GraphQL `resolveReviewThread`
   mutation (REST has no endpoint). The new review is the single source of truth:
   the continuity rule above guarantees everything still live was re-raised into it.
-  Threads of the review just posted are excluded; a failed resolve is a warning,
-  never an error. Without this, every fix round stacks another set of stale open
-  threads on the PR page (observed on PRs #115/#117: eight rounds of open threads
-  each, burying the current findings).
+  Threads of the review just posted are excluded, as are threads whose root comment
+  was created after the reviewer run started — the reviewer cannot have taken
+  custody of a finding it never saw (a human review posted mid-round would
+  otherwise be resolved unread, and on a final CLEAN round no later round exists
+  to re-raise it). A failed resolve is a warning, never an error. Without this,
+  every fix round stacks another set of stale open threads on the PR page
+  (observed on PRs #115/#117: eight rounds of open threads each, burying the
+  current findings).
 
 ## CI (`ci.yml`)
 

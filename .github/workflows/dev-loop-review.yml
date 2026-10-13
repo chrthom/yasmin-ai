@@ -409,6 +409,7 @@ jobs:
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
           set -u
           escalate() {
@@ -526,18 +527,24 @@ jobs:
             exit 0
           fi
 
-          # Compose and post the marker review. The findings JSON object is
-          # the text after the VERDICT line in the final assistant message
-          # (fenced or bare); anything missing or unparseable degrades to [].
+          # Compose and post the marker review. The JSON object after the
+          # VERDICT line in the final assistant message (fenced or bare) is
+          # the review payload: `findings`, plus the optional `dismissals`
+          # array the custody rule in reviewer.md uses for prior human
+          # findings this round declines to re-raise (the post-step renders
+          # the reasons into the review body). Anything missing or
+          # unparseable degrades to [].
           # KEEP IN SYNC with dev-loop-fix.yml: its gates match this exact body
           # shape - the marker alone on line 1 and a bare `Verdict: <V>` line -
           # and the reviewer's own head-SHA dedupe greps the marker line too.
-          findings_json="$(printf '%s\n' "$final_msg" \
+          review_json="$(printf '%s\n' "$final_msg" \
             | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
             | sed -n '/^{/,$p' \
             | sed '/^```/d' \
-            | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
-          [ -n "$findings_json" ] || findings_json='[]'
+            | jq 'try (select(type == "object")) catch null' 2>/dev/null)"
+          [ -n "$review_json" ] || review_json='{}'
+          findings_json="$(printf '%s' "$review_json" | jq '.findings // []' 2>/dev/null || echo '[]')"
+          dismissals_json="$(printf '%s' "$review_json" | jq '.dismissals // []' 2>/dev/null || echo '[]')"
           # Verdict and findings must fail together: the verdict rules say a
           # non-CLEAN verdict always has at least one finding, so a non-CLEAN
           # verdict with zero parsed findings is a parse failure, not a clean
@@ -554,6 +561,21 @@ jobs:
           body_findings="$(printf '%s' "$findings_json" \
             | jq -r '.[] | select((.path // empty | length) == 0 or (.line // 0) == 0) \
               | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring))' 2>/dev/null || true)"
+          # Dismissal notes ride the body like the findings list: resolving a
+          # prior human thread leaves this rendered reason as its only trace.
+          # It is the accountability half of the custody rule - the
+          # reviewer's free text (the one-line summary included) never
+          # reaches the body, so the dismissals array is the only data path.
+          body_dismissals="$(printf '%s' "$dismissals_json" \
+            | jq -r '.[] | "- " + (.reason // (. | tostring))' 2>/dev/null || true)"
+          dismissals_section=""
+          if [ -n "$body_dismissals" ]; then
+            dismissals_section="
+
+          Prior human findings not re-raised (dismissed with a reason):
+
+          $body_dismissals"
+          fi
           body="<!-- dev-loop-review -->
           Verdict: $verdict
 
@@ -563,6 +585,7 @@ jobs:
 
           $body_findings"
           fi
+          body="$body$dismissals_section"
           # One pending review per user per PR: a stale pending review from a
           # previously failed post blocks every new POST with 422 (observed on
           # PR #106). Delete any pending review of the token user before
@@ -606,6 +629,7 @@ jobs:
           dev-loop review of $REVIEWED_SHA (cost: \$$cost).
 
           $all_findings"
+            fallback_body="$fallback_body$dismissals_section"
             # -n (null input): without it jq emits the object once per input
             # document, and a step with no stdin produces zero documents - an
             # empty payload file that then fails the validation below (the
@@ -631,32 +655,55 @@ jobs:
           # still-open review thread rooted in a PRIOR review (marker or human
           # alike). The continuity rule in reviewer.md obliges this round to
           # re-raise every still-live prior finding as its own (with a
-          # provenance note), and to state an explicit one-line reason for
-          # every prior finding it does not re-raise - so nothing live is lost
+          # provenance note), and to record a one-line dismissal reason in the
+          # `dismissals` JSON array for every prior human finding it does not
+          # re-raise (rendered into the body above) - so nothing live is lost
           # by resolving; leaving old threads open would only stack stale
           # diff anchors round over round (observed on PRs #115/#117: eight
-          # rounds of open threads each). Threads of THIS review (posted above,
-          # id $review_post_id) are excluded - it is the current round, not a
-          # prior one. REST has no thread-resolve endpoint; GraphQL only, and
-          # a failed resolve is a warning, never an error: an open stale
-          # thread is harmless, a lost review post is not.
+          # rounds of open threads each). Two classes of threads are never
+          # resolved: threads of THIS review (posted above, id $review_post_id
+          # - the current round, not a prior one) and threads whose root
+          # comment was created after this run started - the reviewer cannot
+          # have taken custody of a finding it never saw, and on a final CLEAN
+          # round no later round exists to re-raise it. REST has no
+          # thread-resolve endpoint; GraphQL only, and a failed resolve is a
+          # warning, never an error: an open stale thread is harmless, a lost
+          # review post is not.
           resolved_threads=0
+          # Run-start cutoff for the thread filter below: github.run_started_at
+          # predates the reviewer agent's first read, so it is a conservative
+          # bound. An unparseable timestamp degrades to 0 - no thread passes
+          # the cutoff, so nothing is resolved (fail closed: a stale open
+          # thread is harmless, resolving a fresh one unread is not).
+          run_started_epoch="$(date -u -d "$RUN_STARTED_AT" +%s 2>/dev/null || echo 0)"
+          # gh's --paginate contract: the query must declare $endCursor and
+          # select pageInfo { hasNextPage endCursor }, or gh fetches exactly
+          # one first:100 page and open threads beyond the first 100 would
+          # silently stay unresolved.
           thread_ids="$(gh api graphql --paginate -f query='
-            query($owner: String!, $name: String!, $number: Int!) {
+            query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
-                  reviewThreads(first: 100) {
+                  reviewThreads(first: 100, after: $endCursor) {
+                    pageInfo { hasNextPage endCursor }
                     nodes {
                       id
                       isResolved
-                      comments(first: 1) { nodes { databaseId } }
+                      comments(first: 1) { nodes { databaseId createdAt } }
                     }
                   }
                 }
               }
             }' -F owner="${REPOSITORY%/*}" -F name="${REPOSITORY#*/}" -F number="$PR_NUMBER" \
-            | jq -r '.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false) | .id + " " + (.comments.nodes[0].databaseId | tostring)')"
-          this_review_comment_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$review_post_id/comments" \
+            | jq -r --argjson runStart "$run_started_epoch" \
+              '.data.repository.pullRequest.reviewThreads.nodes[]?
+               | select(.isResolved == false)
+               | select(try ((.comments.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
+               | .id + " " + (.comments.nodes[0].databaseId | tostring)')"
+          # --paginate: the REST listing defaults to per_page=30, and anchored
+          # findings beyond the first 30 must not fall out of the exclusion
+          # list (their threads would be resolved the moment they are posted).
+          this_review_comment_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$review_post_id/comments" --paginate \
             | jq -r '.[].id' 2>/dev/null || true)"
           while read -r thread_id root_comment_id; do
             [ -n "$thread_id" ] || continue

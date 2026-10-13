@@ -47,15 +47,18 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    the post-step resolves every prior review thread (marker and human alike) once
    your review is posted. That is only safe if you first take everything still live
    into your own review:
-   - Read the repo owner's human findings review(s) (non-marker COMMENT reviews)
-     and their threads too, not just marker reviews.
+   - Read the repo owner's human findings review(s) - any non-marker review by the
+     owner, whatever its state (COMMENTED, CHANGES_REQUESTED, APPROVED) - and
+     their threads too, not just marker reviews.
    - Re-raise every still-unresolved prior finding - yours, a previous round's, or
      the owner's - as your own finding in this review, with a provenance note
      (e.g. "re-raised from the owner's review", preserving severity and
      `needs_human`).
-   - If you decide NOT to re-raise a prior human finding, say so explicitly in the
-     review body with a one-line reason; a human finding must never vanish
-     silently via thread resolution.
+   - If you decide NOT to re-raise a prior human finding, record it in the review's
+     `"dismissals"` JSON array (see the outcome contract) with a one-line reason
+     that names the finding; the post-step renders every dismissal into the
+     review body, so a human finding never vanishes silently via thread
+     resolution.
 3. Check out exactly the given SHA, detached (never check out the PR branch itself):
    `git fetch origin pull/<N>/head && git checkout --detach <sha>`. Run `npm ci` if `node_modules`
    is missing, then `npm run build`, `npm test`, `npm run lint`. Every failure is a finding.
@@ -98,6 +101,9 @@ VERDICT: CLEAN|CHANGES_NEEDED|NEEDS_HUMAN
       "message": "<finding and suggested fix>",
       "needs_human": false
     }
+  ],
+  "dismissals": [
+    { "reason": "<one-line reason for not re-raising a prior human finding>" }
   ]
 }
 ```
@@ -110,6 +116,11 @@ the four severities, and a `message` with the finding and the suggested fix. Fin
 be anchored to a diff line are still findings: anchor them to the nearest diff line of the file
 they concern. For `CLEAN`, `"findings"` may be an empty array or contain only `nit`
 findings - the fixer is never dispatched on `CLEAN`, so they are informational for the author.
+`"dismissals"` is optional (omit it or leave it empty when nothing is dismissed): one entry
+per prior human finding you deliberately do not re-raise, each with a one-line `reason`
+naming the finding. The post-step renders the reasons into the review body — free text
+outside the JSON object (the one-line summary included) never reaches the body, so this
+array is the only data path for a dismissal note.
 
 For `WALL: <reason>`, the final message is exactly `WALL: <reason>` with no verdict. Any other
 first line makes the run unparseable and escalates to a human.
