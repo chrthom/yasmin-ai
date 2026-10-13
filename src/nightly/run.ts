@@ -35,6 +35,10 @@ async function runDryRun(): Promise<void> {
   console.log('INFO DRY RUN COMPLETE -- no data was written');
 }
 
+/**
+ * CLI entry point: runs the nightly pipeline once (or only its dry-run preflight), exits 0 on
+ * success or a skipped run (lock held), and non-zero on a failed or merely 'partial' run.
+ */
 async function main(): Promise<void> {
   const isDryRun = process.argv.includes('--dry-run');
 

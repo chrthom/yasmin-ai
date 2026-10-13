@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { executeQuery } from '../connection';
 
+/** One memory_archive row: a versioned, verbose long-term memory file (the pipeline's source of truth). */
 export interface MemoryArchiveRow {
   id: number;
   filePath: string;
@@ -14,6 +15,9 @@ export interface MemoryArchiveRow {
 
 /**
  * Maps a raw snake_case DB row into a camelCase MemoryArchiveRow
+ *
+ * @param row The raw mysql2 row.
+ * @returns The mapped archive row.
  */
 function mapRow(row: any): MemoryArchiveRow {
   return {
@@ -30,6 +34,9 @@ function mapRow(row: any): MemoryArchiveRow {
 
 /**
  * Computes the SHA-256 hex digest of the given content
+ *
+ * @param content The file content to hash.
+ * @returns The hex digest, used to detect unchanged rewrites.
  */
 export function computeContentHash(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
@@ -37,6 +44,10 @@ export function computeContentHash(content: string): string {
 
 /**
  * Retrieves the current (highest version) row for a file path, or null if none exists
+ *
+ * @param filePath The memory file path.
+ * @returns The current archive row, or null when the path has no version yet.
+ * @throws The underlying error when the query fails.
  */
 export async function getCurrentVersion(filePath: string): Promise<MemoryArchiveRow | null> {
   try {
@@ -56,6 +67,12 @@ export async function getCurrentVersion(filePath: string): Promise<MemoryArchive
 
 /**
  * Inserts the next version for a file path, unless content is unchanged from the current version
+ *
+ * @param filePath The memory file path.
+ * @param content The full new file content.
+ * @param createdAt The timestamp to record (defaults to now; the pipeline passes its snapshot time).
+ * @returns The resulting row and whether a new version was actually created.
+ * @throws The underlying error when any query fails.
  */
 export async function insertNextVersion(
   filePath: string,
@@ -92,6 +109,9 @@ export async function insertNextVersion(
 
 /**
  * Lists the current (MAX version) row for every file_path
+ *
+ * @returns The current version of every archived file path.
+ * @throws The underlying error when the query fails.
  */
 export async function listCurrentVersions(): Promise<MemoryArchiveRow[]> {
   try {
@@ -110,6 +130,10 @@ export async function listCurrentVersions(): Promise<MemoryArchiveRow[]> {
 
 /**
  * Marks a memory_archive row as synced to Mistral
+ *
+ * @param id The archive row id.
+ * @param mistralDocId The id of the uploaded library document.
+ * @throws The underlying error when the update fails.
  */
 export async function markSynced(id: number, mistralDocId: string): Promise<void> {
   try {
@@ -125,6 +149,9 @@ export async function markSynced(id: number, mistralDocId: string): Promise<void
 
 /**
  * Lists current versions that have not yet been synced to Mistral
+ *
+ * @returns The unsynced current versions, ready for library upload.
+ * @throws The underlying error when the query fails.
  */
 export async function listUnsynced(): Promise<MemoryArchiveRow[]> {
   try {
@@ -144,7 +171,11 @@ export async function listUnsynced(): Promise<MemoryArchiveRow[]> {
 
 /**
  * Prunes old versions per file_path, keeping the most recent keepN but never fewer than keepMin
- * @returns The total number of rows deleted
+ *
+ * @param keepN How many versions to keep per path.
+ * @param keepMin Lower bound for the kept-version count.
+ * @returns The total number of rows deleted.
+ * @throws The underlying error when any query fails.
  */
 export async function pruneOldVersions(keepN: number, keepMin: number): Promise<number> {
   try {

@@ -67,6 +67,10 @@ jobs:
           UNLABELED_NAME: ${{ github.event.label.name }}
           HEAD_REPO_ID: ${{ github.event.pull_request.head.repo.id }}
           REPO_ID: ${{ github.event.repository.id }}
+          # The same github.repository_owner-derived identity the fixer gate
+          # and the post-step's escalation templates address the human
+          # through (no hardcoded login).
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
           if [ -z "$PR_NUMBER" ]; then
@@ -140,7 +144,7 @@ jobs:
           # open to the pre-gate behavior on timeout):
           #   - green + tip unchanged -> proceed to the review
           #   - red + tip unchanged   -> dispatch the fixer (CI-failure mode,
-          #                               empty review id) and skip
+          #                               review_id=none sentinel) and skip
           #   - tip moved             -> skip: the push (e.g. chore: auto-format
           #                               from ci.yml) fires synchronize, which
           #                               starts a fresh reviewer on the new head
@@ -188,7 +192,7 @@ jobs:
               exit 0
             fi
             echo "CI is red on head $head_sha with the tip unchanged; dispatching the fixer (CI-failure mode, no review findings)."
-            if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="" -f retry=0; then
+            if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id=none -f retry=0; then
               echo "Fixer dispatched for the CI failure; its push will re-enter the loop via synchronize."
             else
               echo "::warning::Failed to dispatch the fixer for the red CI; proceeding with the review instead."
@@ -215,7 +219,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
+          @$REPO_OWNER dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
           EOF
             gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -418,7 +422,7 @@ jobs:
             gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
-          @chrthom dev-loop reviewer escalation: $1
+          @$REPO_OWNER dev-loop reviewer escalation: $1
 
           PR: #${PR_NUMBER}
           Run: ${RUN_URL}

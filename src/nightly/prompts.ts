@@ -19,6 +19,12 @@ const PROMPT_DIR_FALLBACK = path.resolve(process.cwd(), 'mistral_config/nightly/
 /** One fs read per template; prompt builders call loadTemplate repeatedly within a nightly run. */
 const templateCache = new Map<string, string>();
 
+/**
+ * Returns the directory the nightly prompt templates are read from: the source checkout's
+ * mistral_config dir when it exists (ts-node runs), else the working directory fallback.
+ *
+ * @returns The resolved prompt template directory.
+ */
 export function promptDir(): string {
   if (fs.existsSync(PROMPT_DIR_PRIMARY)) {
     return PROMPT_DIR_PRIMARY;
@@ -26,6 +32,13 @@ export function promptDir(): string {
   return PROMPT_DIR_FALLBACK;
 }
 
+/**
+ * Loads a prompt template by file name, caching it in memory for the rest of the run.
+ *
+ * @param name The template file name (e.g. 'journal_prompt.txt').
+ * @returns The template's raw text.
+ * @throws Error when the template file cannot be read.
+ */
 export function loadTemplate(name: string): string {
   const cached = templateCache.get(name);
   if (cached !== undefined) {
@@ -41,7 +54,14 @@ export function loadTemplate(name: string): string {
   return template;
 }
 
-/** Renders a template, replacing every {{token}} occurrence with the given value. */
+/**
+ * Renders a template, replacing every {{token}} occurrence with the given value.
+ *
+ * @param template The raw template text.
+ * @param values The token values to interpolate.
+ * @returns The rendered template.
+ * @throws Error when a {{token}} in the template has no value.
+ */
 function renderTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, token: string) => {
     if (!(token in values)) {
@@ -51,6 +71,14 @@ function renderTemplate(template: string, values: Record<string, string>): strin
   });
 }
 
+/**
+ * Loads and renders a prompt template in one step.
+ *
+ * @param name The template file name (e.g. 'journal_prompt.txt').
+ * @param values The token values to interpolate.
+ * @returns The rendered prompt.
+ * @throws Error when the template is missing or a {{token}} has no value.
+ */
 export function renderPrompt(name: string, values: Record<string, string>): string {
   return renderTemplate(loadTemplate(name), values);
 }

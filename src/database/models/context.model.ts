@@ -1,6 +1,7 @@
 import { executeQuery } from '../connection';
 import { PROFILE_TITLE_PREFIX } from '../../strings';
 
+/** One context_entries row: the title the agent selects and its eager-cache content. */
 export interface ContextEntry {
   title: string;
   content: string;
@@ -8,6 +9,9 @@ export interface ContextEntry {
 
 /**
  * Retrieves all entries (title + content) from the database
+ *
+ * @returns Every stored context entry.
+ * @throws The underlying error when the query fails.
  */
 export async function getAllEntriesFromDb(): Promise<ContextEntry[]> {
   try {
@@ -21,6 +25,9 @@ export async function getAllEntriesFromDb(): Promise<ContextEntry[]> {
 
 /**
  * Retrieves all titles from the database
+ *
+ * @returns Every stored context entry title.
+ * @throws The underlying error when the query fails.
  */
 export async function getAllTitlesFromDb(): Promise<string[]> {
   try {
@@ -34,6 +41,10 @@ export async function getAllTitlesFromDb(): Promise<string[]> {
 
 /**
  * Retrieves the content for a given title
+ *
+ * @param title The exact entry title (matched case-insensitively by the DB collation).
+ * @returns The entry's content, or null when no entry has this title.
+ * @throws The underlying error when the query fails.
  */
 export async function getContentByTitleFromDb(title: string): Promise<string | null> {
   try {
@@ -55,6 +66,7 @@ export async function getContentByTitleFromDb(title: string): Promise<string | n
  * @param title The title of the entry
  * @param content The content text (Markdown format)
  * @returns Promise<void>
+ * @throws The underlying error when the insert fails.
  */
 export async function insertContextEntry(title: string, content: string): Promise<void> {
   try {
@@ -71,7 +83,7 @@ export async function insertContextEntry(title: string, content: string): Promis
  * @param title The exact title of the entry to update
  * @param newContent The new content text (optional)
  * @param newTitle The new title (optional)
- * @returns Promise<boolean> True if update was successful
+ * @returns True if a row was updated (or nothing needed updating), false on failure/no match.
  */
 export async function updateContextEntry(
   title: string,
@@ -109,8 +121,9 @@ export async function updateContextEntry(
 
 /**
  * Deletes a context entry
+ *
  * @param title The title of the entry to delete
- * @returns Promise<boolean> True if deletion was successful
+ * @returns True if a row was deleted, false on failure/no match.
  */
 export async function deleteContextEntry(title: string): Promise<boolean> {
   try {
@@ -124,6 +137,11 @@ export async function deleteContextEntry(title: string): Promise<boolean> {
 
 /**
  * Inserts a context entry if it doesn't exist yet, otherwise updates its content
+ *
+ * @param title The entry title (PRIMARY KEY).
+ * @param content The eager-cache content to write.
+ * @returns 'inserted' when the row was newly created, 'updated' when a row pre-existed.
+ * @throws The underlying error when the atomic upsert fails.
  */
 export async function upsertContextEntry(title: string, content: string): Promise<'inserted' | 'updated'> {
   try {
@@ -145,7 +163,8 @@ export async function upsertContextEntry(title: string, content: string): Promis
 
 /**
  * Lists all context entries
- * @returns Promise<Array<{title: string, content: string}>>
+ *
+ * @returns All entries ordered by title; an empty array on failure (logged, not thrown).
  */
 export async function listContextEntries(): Promise<Array<{ title: string; content: string }>> {
   try {
@@ -161,6 +180,10 @@ export async function listContextEntries(): Promise<Array<{ title: string; conte
  * Checks whether a first name is a known person (or Yasmin herself), via the canonical
  * "Profile of [name]" entry titles. People whose profile exists only in context_entries --
  * e.g. a brand-new person file the nightly integrate agent created -- are recognized too.
+ *
+ * @param name The first name to check.
+ * @returns true when a matching profile entry exists.
+ * @throws The underlying error when the title query fails.
  */
 export async function isKnownPerson(name: string): Promise<boolean> {
   const sought = name.trim().toLowerCase();
