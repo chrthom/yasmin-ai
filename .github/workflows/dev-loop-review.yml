@@ -440,7 +440,7 @@ jobs:
           rc="${{ steps.opencode.outputs.rc }}"
 
           if [ -z "$rc" ]; then
-            # opencode never ran: a pre-run step (npm ci, install, version check, render) failed.
+            # A pre-run step (install/render) failed before the agent ran.
             if [ "$RUN_ATTEMPT" = "1" ]; then
               echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
               exit 1
@@ -449,36 +449,24 @@ jobs:
             exit 0
           fi
 
-          # Cost = sum of the per-step cost fields in the event stream
-          # (opencode reports cost/tokens on every step_finish event). tokens
-          # uses the same cost-weighted sum as the watchdog cap, so the
-          # reported number matches what the cap enforced.
-          # Round to cents: every consumer prints $cost verbatim, and the raw
-          # sum has float artifacts (e.g. $0.16212848000000002).
+          # Per-step cost sum, rounded to cents (matches the watchdog cap; raw sums have float artifacts).
           cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
           if [ "$rc" = "99" ]; then
-            # The watchdog killed opencode (failure streak / step / token cap):
-            # the run misbehaved or blew the budget. Never retry, escalate.
+            # Watchdog kill - never retry, escalate.
             escalate "reviewer killed by the watchdog (rc=99; failure streak / step cap ${MAX_TURNS} / token cap ${MAX_TOKENS}; cost: \$$cost) - see the opencode output artifact"
             exit 0
           fi
 
           if [ "$rc" = "124" ]; then
-            # deadline hit (timeout(1)): never auto-retry, escalate.
+            # Deadline hit - never retry, escalate.
             escalate "reviewer stopped on the ${TIME_LIMIT_MIN} min deadline (rc=124, cost: \$$cost); see the opencode output artifact"
             exit 0
           fi
 
           if [ "$rc" = "1" ]; then
-            # opencode exits 1 for config/infra failures AND for sessions that
-            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
-            # loop: a failed websearch/webfetch (no provider key configured)
-            # marks the session errored even when the agent completed its work
-            # with a valid VERDICT line. The verdict is the ground truth: fall
-            # through to normal handling when the contract line parses, and
-            # escalate only when it does not.
+            # Exit 1 covers config/infra failures AND recovered tool errors; the VERDICT line is ground truth.
             contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
               | grep -E '^(VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)|WALL:)' | tail -1 || true)"
             if [ -z "$contract_line" ]; then
@@ -494,10 +482,7 @@ jobs:
             exit 0
           fi
 
-          # exit 0: the verdict lives in the final assistant message; the agent
-          # never posts the review itself - this step does, with the PAT.
-          # Assistant text = the stream's text events (all of them; the verdict
-          # contract lives in the final message, so the last VERDICT line wins).
+          # rc=0: the verdict lives in the final assistant message; this step posts the review with the PAT (last VERDICT line wins).
           final_msg="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null || true)"
           outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
 
@@ -513,12 +498,7 @@ jobs:
           case "${verdict_line:-}" in
             VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
             *)
-              # A clean exit (rc=0) with no VERDICT line is usually a truncated
-              # run (agent stopped mid-investigation, opencode gave up silently)
-              # - transient, unlike a deterministic parse failure. Retry once
-              # via workflow_dispatch; the retry counter in the input prevents
-              # a loop. The retry run re-reviews the same head; no marker review
-              # was posted, so the reviewer gate's dedupe cannot block it.
+              # rc=0 without a VERDICT line is usually a truncated run - retry once via workflow_dispatch (RETRY_COUNT prevents loops; no marker posted, so dedupe cannot block).
               if [ "$RETRY_COUNT" -lt 1 ] \
                 && gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER" -f retry=1; then
                 echo "Unparseable outcome with no VERDICT line (cost: \$$cost); re-dispatching the reviewer once (retry=1). Transcript artifact preserved for diagnosis."
@@ -540,31 +520,21 @@ jobs:
             exit 0
           fi
 
-          # Compose and post the marker review. The findings JSON object is
-          # the text after the VERDICT line in the final assistant message
-          # (fenced or bare); anything missing or unparseable degrades to [].
-          # KEEP IN SYNC with dev-loop-fix.yml: its gates match this exact body
-          # shape - the marker alone on line 1 and a bare `Verdict: <V>` line -
-          # and the reviewer's own head-SHA dedupe greps the marker line too.
+          # Findings JSON: the text after the VERDICT line (fenced or bare); missing/unparseable degrades to [].
+          # KEEP IN SYNC with dev-loop-fix.yml: its gates match this exact body shape (marker alone on line 1, bare `Verdict: <V>`), and the reviewer's dedupe greps the marker.
           findings_json="$(printf '%s\n' "$final_msg" \
             | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
             | sed -n '/^{/,$p' \
             | sed '/^```/d' \
             | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
           [ -n "$findings_json" ] || findings_json='[]'
-          # Verdict and findings must fail together: the verdict rules say a
-          # non-CLEAN verdict always has at least one finding, so a non-CLEAN
-          # verdict with zero parsed findings is a parse failure, not a clean
-          # result - escalate instead of posting an empty findings review the
-          # fixer cannot act on.
+          # A non-CLEAN verdict with zero parsed findings is a parse failure - escalate, never post an empty findings review.
           if [ "$verdict" != "CLEAN" ] \
             && [ "$(printf '%s' "$findings_json" | jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
             escalate "unparseable outcome (exit 0, verdict $verdict but the findings JSON is missing or has zero findings); transcript artifact preserved for diagnosis"
             exit 0
           fi
-          # Hybrid posting: findings anchored to a diff line become inline
-          # comments; the rest (and every finding if inline posting fails)
-          # go into the review body as a markdown list.
+          # Hybrid posting: diff-anchored findings become inline comments; the rest go into the review body.
           body_findings="$(printf '%s' "$findings_json" \
             | jq -r '.[] | select((.path // empty | length) == 0 or (.line // 0) == 0) \
               | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring))' 2>/dev/null || true)"
@@ -577,32 +547,11 @@ jobs:
 
           $body_findings"
           fi
-          # One pending review per user per PR: a stale pending review of the
-          # TOKEN USER from a previously failed post blocks every new POST with
-          # 422 (observed on PR #106). Delete it before posting - but ONLY the
-          # token user's own (the repo owner; the list-reviews endpoint returns
-          # every user's pending review and reviews are world-postable on this
-          # public repo, so a third party's draft must not be touched), and
-          # ONLY one provably not the owner's draft findings: zero draft
-          # comments AND an empty body, or a first-line
-          # <!-- dev-loop-review --> marker - an HTML comment that renders
-          # invisibly in the GitHub UI; the human findings channel is
-          # non-marker by definition, so a marker-prefixed pending review
-          # is a loop leftover (e.g. a misbehaving actor POSTing a
-          # body-carrying review) that must self-heal too, or it 422-blocks
-          # every future POST. Anything else may be the owner's findings
-          # review being drafted in the GitHub UI (or autosaved via the API
-          # with its body already set) - the body is the primary human
-          # findings payload - and is left alone (it 422-blocks the POST; the
-          # warning below makes that visible instead).
+          # Delete ONLY the token user's own stale pending review before posting (it 422-blocks every POST, PR #106): only zero-comment AND empty-body, or marker-prefixed (provably a loop leftover) reviews; a third party's or the owner's human draft is never touched.
           pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
             | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.state == "PENDING") | select(.user.login == $owner)] | first | .id // empty')"
           if [ -n "$pending_review_id" ]; then
-            # Fail closed: an unknown comment count or body means "maybe a
-            # draft" - the POST can still 422, which escalates visibly, but a
-            # human draft is never destroyed on a query failure. The marker
-            # check stays outside fail-closed: a marker-prefixed body proves
-            # loop origin even when the comment count is unknown.
+            # Fail closed: an unknown comment count/body means maybe a human draft - never destroyed on query failure; a marker-prefixed body proves loop origin regardless.
             pending_comments="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id/comments" \
               --jq 'length' 2>/dev/null || echo unknown)"
             pending_body="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" \
@@ -631,15 +580,13 @@ jobs:
           review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>&1 || true)"
           case "$review_post_id" in
             ''|*[!0-9]*)
-              # gh emits the error object (not an id) on failure - never pass
-              # it on; log it in full for diagnosis.
+              # gh emits an error object, not an id, on failure - log it, never pass it on.
               echo "::warning::Inline review POST failed: $review_post_id"
               review_post_id=""
               ;;
           esac
           if [ -z "$review_post_id" ]; then
-            # GitHub rejects inline comments outside the diff: retry once with
-            # every finding in the body (PR #80 behavior) before escalating.
+            # GitHub rejects inline comments outside the diff: retry once with every finding in the body (PR #80).
             all_findings="$(printf '%s' "$findings_json" \
               | jq -r '.[] | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + ((.path // "?") + ":" + ((.line // 0) | tostring) + " ") + (.message // .body // (. | tostring))' 2>/dev/null || true)"
             fallback_body="<!-- dev-loop-review -->
@@ -648,11 +595,7 @@ jobs:
           dev-loop review of $REVIEWED_SHA (cost: \$$cost).
 
           $all_findings"
-            # -n (null input): without it jq emits the object once per input
-            # document, and a step with no stdin produces zero documents - an
-            # empty payload file that then fails the validation below (the
-            # PR #113 escalation; the fallback had never run before #108
-            # surfaced it).
+            # jq -n (null input): without it an empty stdin yields zero documents (PR #113).
             jq -n --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
               '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
               > /tmp/dev-loop-review.json
@@ -669,28 +612,8 @@ jobs:
             esac
           fi
 
-          # Auto-resolve stale threads: inline threads opened by earlier
-          # marker reviews whose finding this review no longer reports
-          # (dropped = fixed or no longer valid). Best-effort and idempotent:
-          # a failed resolve is a warning, never an escalation. A thread is
-          # only eligible when every comment in it is the token user's own
-          # (only a reply from a user other than the token user keeps it open;
-          # the token user's own replies - which, while DEV_LOOP_TOKEN is the
-          # owner's PAT, include his manual UI replies - never block
-          # auto-resolution) and its root comment belongs to a prior marker
-          # review - human inline comments are never touched.
-          #
-          # Run-start cutoff (adopted from the #121 design): the resolve
-          # filter only touches threads whose root AND latest comment predate
-          # this run. The reviewer reads the PR once at run start, so a thread
-          # created or replied to mid-run carries a finding this review never
-          # saw - resolving it would silently drop it. The github context has
-          # no run_started_at property (an empty -d value parses as midnight
-          # of the current day in GNU date, silently excluding every same-day
-          # thread), so the cutoff epoch comes from the REST run object and
-          # degrades to 0 with a warning - no thread then passes the cutoff,
-          # so nothing is resolved (fail closed: a stale open thread is
-          # harmless, resolving a fresh one unread is not).
+          # Auto-resolve stale threads (findings this review no longer reports), best-effort and idempotent: only threads whose every comment is the token user's own and whose root belongs to a prior marker review; human inline comments are never touched.
+          # Run-start cutoff (#121): only threads whose root AND latest comment predate this run are eligible; a mid-run thread may carry an unseen finding. The epoch comes from the REST run object (the github context has no run_started_at) and degrades to 0 = resolve nothing (fail closed).
           run_started_at="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" --jq '.run_started_at // empty' 2>/dev/null || true)"
           run_started_epoch=0
           if [ -n "$run_started_at" ]; then
@@ -705,21 +628,13 @@ jobs:
               '[.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | .id | select((. | tostring) != $posted)] | join(" ")')"
           if [ -n "$marker_review_ids" ]; then
             if [ -z "$bot_login" ]; then
-              # The all-bot eligibility check below needs the token user's
-              # login; without it no thread can be safely auto-resolved.
+              # Without the token user's login no thread is safely resolvable.
               echo "::warning::Could not look up the token user (gh api user failed); skipping stale-thread auto-resolve."
             elif [ "$run_started_epoch" -le 0 ]; then
-              # Fail closed: without a cutoff epoch no thread predates the
-              # run start for certain, so none can be safely auto-resolved.
-              # The cutoff block above already logged the warning.
+              # Fail closed: without a cutoff epoch nothing can be safely resolved (warning logged above).
               :
             else
-              # Paged fetch: GitHub returns reviewThreads oldest-first and
-              # resolved threads stay in the connection, so a single unpaged
-              # window fills with old threads while the newest unresolved ones
-              # fall outside it. A page that fails to fetch or parse logs a
-              # warning and ends the fetch; auto-resolve then proceeds with
-              # the threads collected so far (best-effort, never an escalation).
+              # Paged fetch: resolved threads stay in the connection, so an unpaged window misses the newest unresolved threads; a failed page logs a warning and ends the fetch (best-effort).
               threads_nodes="[]"
               after_cursor=""
               while :; do
@@ -768,23 +683,17 @@ jobs:
                 fi
                 after_cursor="$(printf '%s' "$page_info" | jq -r '.endCursor' 2>/dev/null)"
               done
-              # The live-findings guard must contain only objects: the select
-              # below indexes .path/.line of each entry, and a non-object entry
-              # in the agent-authored findings array would abort the whole jq
-              # run with zero threads resolved.
+              # Keep only object entries in the live-findings guard: a non-object entry would abort the jq run.
               printf '%s' "$threads_nodes" \
                 | jq -r --arg bot "$bot_login" --arg marker "$marker_review_ids" \
                     --argjson live "$(printf '%s' "$findings_json" | jq 'if type == "array" then [.[] | select(type == "object")] else [] end')" \
                     --argjson runStart "$run_started_epoch" '
                   ($marker | split(" ") | map(tonumber)) as $marker_ids
                   | .[]
-                  # A thread with more than 100 comments cannot be verified as
-                  # bot-only from the truncated comment list - leave it open.
+                  # >100 comments: bot-only cannot be verified from the truncated list - leave open.
                   | select((.comments.totalCount // 100) <= 100)
                   | select(.isResolved == false)
-                  # Run-start cutoff: only threads fully predating this run
-                  # (root and latest comment) are eligible - a mid-run thread
-                  # carries a finding this review never saw.
+                  # Run-start cutoff: root and latest comment must predate the run start.
                   | select(try ((.comments.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
                   | select(try ((.lastComment.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
                   | select([.comments.nodes[].author.login] | all(. == $bot))
@@ -792,10 +701,7 @@ jobs:
                   | select(($marker_ids | index($t.comments.nodes[0].pullRequestReview.databaseId)) != null)
                   | $t.comments.nodes[0] as $c
                   | ($c.line // $c.originalLine // 0) as $cl
-                  # .line comes straight from the findings JSON of the review
-                  # agent: body-only findings carry null (or string/boolean)
-                  # lines, and raw arithmetic on those aborts the whole jq
-                  # run - coerce to a number first.
+                  # .line may be null or non-numeric (agent-authored findings) - coerce before arithmetic.
                   | select(([$live[] | select(.path == $c.path and ((((.line | tonumber? // 0) - $cl) | if . < 0 then (0 - .) else . end) <= 5))] | length) == 0)
                   | .id' \
                 | while read -r thread_id; do
@@ -819,17 +725,13 @@ jobs:
             CHANGES_NEEDED)
               case "$review_post_id" in
                 ''|*[!0-9]*)
-                  # Unreachable with the hardened post above, but a non-numeric
-                  # id must never reach the fixer (PR #106: the 422 error JSON
-                  # was dispatched as a review id and crashed the fixer gate).
+                  # A non-numeric id must never reach the fixer (PR #106: the 422 error JSON crashed the fixer gate).
                   escalate "internal error: review_post_id is not numeric ('$review_post_id'); the review stands - retry the fixer via workflow_dispatch"
                   exit 0
                   ;;
               esac
               echo "Verdict CHANGES_NEEDED: dispatching the fixer with the exact review id ($review_post_id)."
-              # Pass the posted review's id, not "latest": a second
-              # CHANGES_NEEDED review landing before the fixer's gate must
-              # not make the fixer act on the wrong review.
+              # Pass the posted review's id, not "latest": a second CHANGES_NEEDED review must not make the fixer act on the wrong one.
               if ! gh workflow run dev-loop-fix.yml --ref main \
                 -f pr_number="$PR_NUMBER" -f review_id="$review_post_id"; then
                 escalate "failed to dispatch the fixer for this CHANGES_NEEDED review; the review stands - retry via workflow_dispatch (Actions -> Dev Loop Fix -> Run workflow)"
