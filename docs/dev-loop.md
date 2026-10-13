@@ -209,7 +209,12 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   only threads rooted in a prior `<!-- dev-loop-review -->` review (human
   inline comments are never touched), never the review just posted. A finding counts
   as still live when the new review reports one on the same path within ±5 lines
-  (inline anchors drift across format-only pushes). The thread listing is paged
+  (inline anchors drift across format-only pushes). A **run-start cutoff** guards the
+  whole filter: only threads whose root and latest comment predate this workflow run
+  are eligible - the reviewer reads the PR once at run start, so a mid-run thread
+  carries a finding this review never saw. An unresolvable run-start timestamp fails
+  closed (nothing is resolved; a stale open thread is harmless, resolving a fresh one
+  unread is not). The thread listing is paged
   (GitHub returns threads oldest-first, resolved ones included), and a thread with
   more than 100 comments is left open - its all-bot eligibility cannot be verified
   from the truncated comment list. Best-effort: a failed resolve or thread listing is

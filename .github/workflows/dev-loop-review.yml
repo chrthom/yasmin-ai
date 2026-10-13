@@ -409,6 +409,7 @@ jobs:
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -u
           escalate() {
@@ -637,6 +638,26 @@ jobs:
           # owner's PAT, include his manual UI replies - never block
           # auto-resolution) and its root comment belongs to a prior marker
           # review - human inline comments are never touched.
+          #
+          # Run-start cutoff (adopted from the #121 design): the resolve
+          # filter only touches threads whose root AND latest comment predate
+          # this run. The reviewer reads the PR once at run start, so a thread
+          # created or replied to mid-run carries a finding this review never
+          # saw - resolving it would silently drop it. The github context has
+          # no run_started_at property (an empty -d value parses as midnight
+          # of the current day in GNU date, silently excluding every same-day
+          # thread), so the cutoff epoch comes from the REST run object and
+          # degrades to 0 with a warning - no thread then passes the cutoff,
+          # so nothing is resolved (fail closed: a stale open thread is
+          # harmless, resolving a fresh one unread is not).
+          run_started_at="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}" --jq '.run_started_at // empty' 2>/dev/null || true)"
+          run_started_epoch=0
+          if [ -n "$run_started_at" ]; then
+            run_started_epoch="$(date -u -d "$run_started_at" +%s 2>/dev/null || echo 0)"
+          fi
+          if [ "$run_started_epoch" -le 0 ]; then
+            echo "::warning::Could not determine the workflow run start (run_started_at='${run_started_at}'); leaving all prior review threads open (fail closed - a stale open thread is harmless, resolving a fresh one unread is not)."
+          fi
           bot_login="$(gh api user --jq .login 2>/dev/null || true)"
           marker_review_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
             | jq -r --arg posted "${review_post_id:-0}" \
@@ -646,6 +667,11 @@ jobs:
               # The all-bot eligibility check below needs the token user's
               # login; without it no thread can be safely auto-resolved.
               echo "::warning::Could not look up the token user (gh api user failed); skipping stale-thread auto-resolve."
+            elif [ "$run_started_epoch" -le 0 ]; then
+              # Fail closed: without a cutoff epoch no thread predates the
+              # run start for certain, so none can be safely auto-resolved.
+              # The cutoff block above already logged the warning.
+              :
             else
               # Paged fetch: GitHub returns reviewThreads oldest-first and
               # resolved threads stay in the connection, so a single unpaged
@@ -673,12 +699,14 @@ jobs:
                               totalCount
                               nodes {
                                 author { login }
+                                createdAt
                                 path
                                 line
                                 originalLine
                                 pullRequestReview { databaseId }
                               }
                             }
+                            lastComment: comments(last: 1) { nodes { createdAt } }
                           }
                         }
                       }
@@ -705,13 +733,19 @@ jobs:
               # run with zero threads resolved.
               printf '%s' "$threads_nodes" \
                 | jq -r --arg bot "$bot_login" --arg marker "$marker_review_ids" \
-                    --argjson live "$(printf '%s' "$findings_json" | jq 'if type == "array" then [.[] | select(type == "object")] else [] end')" '
+                    --argjson live "$(printf '%s' "$findings_json" | jq 'if type == "array" then [.[] | select(type == "object")] else [] end')" \
+                    --argjson runStart "$run_started_epoch" '
                   ($marker | split(" ") | map(tonumber)) as $marker_ids
                   | .[]
                   # A thread with more than 100 comments cannot be verified as
                   # bot-only from the truncated comment list - leave it open.
                   | select((.comments.totalCount // 100) <= 100)
                   | select(.isResolved == false)
+                  # Run-start cutoff: only threads fully predating this run
+                  # (root and latest comment) are eligible - a mid-run thread
+                  # carries a finding this review never saw.
+                  | select(try ((.comments.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
+                  | select(try ((.lastComment.nodes[0].createdAt | fromdateiso8601) <= $runStart) catch false)
                   | select([.comments.nodes[].author.login] | all(. == $bot))
                   | . as $t
                   | select(($marker_ids | index($t.comments.nodes[0].pullRequestReview.databaseId)) != null)
