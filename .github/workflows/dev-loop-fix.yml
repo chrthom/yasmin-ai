@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       review_id:
-        description: Review id whose findings to fix; none = no-findings run (push scan, red-CI dispatch and the no-findings retry; resolve merge conflicts and/or failing CI checks); empty = resume the latest CHANGES_NEEDED review, else no-findings
+        description: Review id whose findings to fix; none = no-findings run (push scan, red-CI dispatch and the no-findings retry; resolve merge conflicts and/or failing CI checks); empty = resume the latest findings review (the newest CHANGES_NEEDED marker review or the owner's human findings review), else no-findings
         required: false
         default: ''
         type: string
@@ -38,7 +38,7 @@ on:
         default: '0'
         type: string
       moved_by_fix:
-        description: Internal, set by the auto-retry only - '1' when the dispatching attempt observed the head move (do not edit)
+        description: Internal, set by the auto-retry only - '1' when the dispatching attempt's own pushed fix moved the head (do not edit)
         required: false
         default: '0'
         type: string
@@ -114,9 +114,12 @@ jobs:
           # auto-retry passes retry=1); empty on event triggers, hence || '0'.
           RETRY_INPUT: ${{ inputs.retry || '0' }}
           # Auto-retry attribution flag: '1' when the attempt dispatching the
-          # retry observed the head move past its start SHA (its own pushed
-          # fix). The stale-review retry branch plain-skips only on an
-          # attributed movement; empty on event triggers, hence || '0'.
+          # retry observed the head move past its start SHA AND its own event
+          # stream shows a successful git push (evidence-based attribution:
+          # the per-PR concurrency slot excludes only other loop runs, so a
+          # manual push by the owner must not count as the attempt's fix).
+          # The stale-review retry branch plain-skips only on an attributed
+          # movement; empty on event triggers, hence || '0'.
           MOVED_BY_FIX_INPUT: ${{ inputs.moved_by_fix || '0' }}
         run: |
           set -eu
@@ -351,9 +354,13 @@ jobs:
             # pages first, keeping sort_by/last on the true newest review
             # (a per-page evaluation can return an older page's pick or
             # several newline-joined ids, and the gh api below then fails
-            # on the multi-id review path).
+            # on the multi-id review path). add over an empty stream (a
+            # transient gh api failure prints nothing) is null, and [.[]]
+            # over null red-fails the gate under set -e; `// []` restores
+            # the pre-slurp soft degradation to an empty review id - the
+            # no-findings path below.
             review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -rs --arg owner "$REPO_OWNER" 'add | [.[] | select(.user.login == $owner) | select((.body // "") != "")] | sort_by(.submitted_at) | last | select(. != null) | select((.body | startswith("<!-- dev-loop-review -->") and contains("Verdict: CHANGES_NEEDED")) or ((.body | startswith("<!-- dev-loop-review -->") | not) and .state == "COMMENTED")) | .id // empty')"
+              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") != "")] | sort_by(.submitted_at) | last | select(. != null) | select((.body | startswith("<!-- dev-loop-review -->") and contains("Verdict: CHANGES_NEEDED")) or ((.body | startswith("<!-- dev-loop-review -->") | not) and .state == "COMMENTED")) | .id // empty')"
           fi
           # Defense in depth: a non-numeric review id must never reach the
           # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
@@ -469,18 +476,19 @@ jobs:
               # unparseable outcome) re-submits the SAME review id after the
               # first attempt already consumed it. Plain-skip ONLY on an
               # attributed movement (moved_by_fix=1): the dispatching
-              # post-step observed the head move while its run still held the
-              # per-PR concurrency slot, so the movement is that attempt's
-              # own pushed fix - not another review's. Plain skip like the
-              # marker branch above - no notice, no reviewer chain: the
-              # first attempt's push fired synchronize, which already
-              # re-reviews the moved head. An unattributed movement
-              # (moved_by_fix=0: the first attempt pushed nothing, and a
-              # fixer run for another review, queued behind it in the FIFO
-              # per-PR concurrency group, moved the head in between), a
-              # malformed manual retry value and a manual re-dispatch
-              # (defaults) all fail a test above and fall through to the
-              # notice+chain branch below - never a silent drop.
+              # post-step observed the head move AND found a successful git
+              # push in that attempt's own event stream, so the movement is
+              # that attempt's pushed fix. Plain skip like the marker branch
+              # above - no notice, no reviewer chain: the first attempt's
+              # push fired synchronize, which already re-reviews the moved
+              # head. An unattributed movement (moved_by_fix=0: the first
+              # attempt pushed nothing - the mover was a manual push by the
+              # owner during the attempt, or a fixer run for another review
+              # that took the FIFO per-PR concurrency slot only after this
+              # attempt released it), a malformed manual retry value and a
+              # manual re-dispatch (defaults) all fail a test above and fall
+              # through to the notice+chain branch below - never a silent
+              # drop.
               echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT, moved_by_fix=$MOVED_BY_FIX_INPUT) whose first attempt pushed the fix for review $review_id. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
@@ -836,18 +844,32 @@ jobs:
               # not have to re-resolve it; the counter in the input prevents a
               # loop. A truncated run may or may not have pushed: observe the
               # head and pass the observation as moved_by_fix, so the retry's
-              # stale-review branch can attribute a movement - plain-skip only
-              # when this attempt's own push moved the head, while a movement
-              # by a fixer run for another review, queued behind this one in
-              # the FIFO per-PR concurrency group, goes to the notice+chain
-              # branch instead of a silent skip. A no-findings run retries
-              # with the same review_id=none sentinel: an empty input would
-              # fall into the gate's resume resolution and pull an
-              # outstanding CHANGES_NEEDED review in.
+              # stale-review branch can attribute a movement. Attribution is
+              # evidence-based, not head observation alone: the per-PR
+              # concurrency slot excludes only other loop runs, so a manual
+              # push by the owner landing while this attempt pushed nothing
+              # also moves the head, and head observation alone would
+              # misattribute it - moved_by_fix=1 only when this attempt's
+              # own stream shows a successful git push (a completed, exit-0
+              # tool call whose command pushed). A head movement without
+              # push evidence stays unattributed and goes to the retry's
+              # notice+chain branch instead of a silent skip. A no-findings
+              # run retries with the same review_id=none sentinel: an empty
+              # input would fall into the gate's resume resolution and pull
+              # an outstanding CHANGES_NEEDED review in.
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               moved_by_fix=0
               if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
-                moved_by_fix=1
+                # Fail-visible: a missing or unreadable stream is no
+                # evidence, so the movement stays unattributed (the retry's
+                # notice+chain branch), never a plain skip.
+                if jq -e 'select(.type == "tool_use")
+                           | select((.part.state.input.command? // "") | contains("git push"))
+                           | select(.part.state.status == "completed")
+                           | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
+                  out/stream.ndjson >/dev/null 2>&1; then
+                  moved_by_fix=1
+                fi
               fi
               retry_review_id="${REVIEW_ID:-none}"
               if [ "$RETRY_COUNT" -lt 1 ] \

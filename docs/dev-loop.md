@@ -85,10 +85,13 @@ partitioned by review shape, not identity alone):
   (only marker reviews are held to `Verdict: CHANGES_NEEDED`), so the post-step's built-in
   auto-retry and a manual `workflow_dispatch` re-dispatch of a human findings review work.
   The retry's stale-review skip is attribution-aware: the auto-retry carries the first
-  attempt's head-before/after observation (`moved_by_fix`), so a head moved by that
-  attempt's own pushed fix plain-skips (its findings were consumed; `synchronize`
-  re-reviews the moved head), while a head moved by another review's fix gets the
-  stale-review notice and reviewer chain - the unattributed case is never a silent skip.
+  attempt's head-before/after observation plus push evidence from its own event stream
+  (`moved_by_fix`), so a head moved by that attempt's own successful `git push`
+  plain-skips (its findings were consumed; `synchronize` re-reviews the moved head),
+  while a head that moved without a push of the attempt's own - a manual push by the
+  owner (the per-PR concurrency slot excludes only other loop runs) or a fixer run for
+  another review that ran after the attempt released the slot - gets the stale-review
+  notice and reviewer chain - the unattributed case is never a silent skip.
 - **Answers while parked** (`needs-human`): inline replies to review comments and answers under
   the `<!-- dev-loop-escalation -->` comment are NOT triggers (empty-body replies are
   pre-filtered); they are consumed by the resume path - removing `needs-human` re-fixes the
