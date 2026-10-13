@@ -446,7 +446,11 @@ jobs:
           # fix: the auto-retry dispatch carries the post-step's
           # head-before/after observation (moved_by_fix), an attributed
           # movement skips like a marker review, and an unattributed one
-          # falls through to the notice+chain branch. On the
+          # falls through to the notice+chain branch - for non-marker
+          # (human) reviews only: a marker review takes the marker skip
+          # below on any non-auto-format movement, attributed or not, which
+          # strands nothing because its findings are machine-derived and
+          # the mover's own synchronize re-review re-derives them. On the
           # unlabeled resume path the human decides a re-fix is needed, so the
           # check does not apply. Exception: if every commit between the reviewed
           # SHA and the current head is a CI auto-format commit (message
@@ -856,15 +860,15 @@ jobs:
               # misattribute it - moved_by_fix=1 only when this attempt's
               # own stream shows a successful git push: a completed, exit-0
               # tool call whose command starts a real push (anchored to a
-              # leading "git push", --dry-run excluded - a dry-run or an
-              # echoed "git push" is never push evidence, and a chained push
-              # the anchor misses only degrades to the unattributed branch
-              # below, fail-visible). A head movement without
-              # push evidence stays unattributed and goes to the retry's
-              # notice+chain branch instead of a silent skip. A no-findings
-              # run retries with the same review_id=none sentinel: an empty
-              # input would fall into the gate's resume resolution and pull
-              # an outstanding CHANGES_NEEDED review in.
+              # leading "git push", --dry-run and its -n shorthand excluded
+              # - a dry-run or an echoed "git push" is never push evidence,
+              # and a chained push the anchor misses only degrades to the
+              # unattributed branch below, fail-visible). A head movement
+              # without push evidence stays unattributed and goes to the
+              # retry's notice+chain branch instead of a silent skip. A
+              # no-findings run retries with the same review_id=none
+              # sentinel: an empty input would fall into the gate's resume
+              # resolution and pull an outstanding CHANGES_NEEDED review in.
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               moved_by_fix=0
               if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
@@ -872,7 +876,7 @@ jobs:
                 # evidence, so the movement stays unattributed (the retry's
                 # notice+chain branch), never a plain skip.
                 if jq -e 'select(.type == "tool_use")
-                           | select((.part.state.input.command? // "") | (startswith("git push") and (contains("--dry-run") | not)))
+                           | select((.part.state.input.command? // "") | (startswith("git push") and ((contains("--dry-run") or test("(^| )-n( |$)")) | not)))
                            | select(.part.state.status == "completed")
                            | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
                   out/stream.ndjson >/dev/null 2>&1; then
