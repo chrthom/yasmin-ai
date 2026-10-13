@@ -202,15 +202,19 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 - **Stale-thread auto-resolve**: after posting, the post-step resolves inline threads
   from **earlier marker reviews** whose finding the new review no longer reports
   (dropped = fixed or no longer valid). Eligibility is enforced in code, not by the
-  agent: only threads whose every comment is the token user's own (a human reply keeps
-  it open), only threads rooted in a prior `<!-- dev-loop-review -->` review (human
+  agent: only threads whose every comment is the token user's own (only a reply from a
+  user _other than the token user_ keeps it open; the token user's own replies - which,
+  while `DEV_LOOP_TOKEN` is the owner's PAT, include his manual UI replies - never do),
+  only threads rooted in a prior `<!-- dev-loop-review -->` review (human
   inline comments are never touched), never the review just posted. A finding counts
   as still live when the new review reports one on the same path within ±5 lines
   (inline anchors drift across format-only pushes). The thread listing is paged
   (GitHub returns threads oldest-first, resolved ones included), and a thread with
   more than 100 comments is left open - its all-bot eligibility cannot be verified
   from the truncated comment list. Best-effort: a failed resolve or thread listing is
-  a `::warning::`, never an escalation. A `CLEAN` verdict resolves all eligible threads.
+  a `::warning::`, never an escalation. A `CLEAN` verdict resolves every eligible thread
+  unless one of its nit findings still sits within ±5 lines of an old anchor (nits do
+  not block the verdict itself, but a live nit keeps a matching old thread open).
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
   prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
