@@ -203,9 +203,22 @@ fi
 
 # Auto-resolve stale threads (findings this review no longer reports), best-effort and idempotent: only threads whose every comment is the token user's own and whose root belongs to a prior marker review; human inline comments are never touched.
 # The marker-review lookup comes first and gates the run-start and token-user lookups: a PR with zero prior marker reviews has nothing to resolve, so those two API calls are skipped entirely (and a transient run-start failure cannot emit its misleading "leaving all prior review threads open" warning when there are none).
-marker_review_ids="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
-  | jq -r --arg posted "${review_post_id:-0}" \
-    '[.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | .id | select((. | tostring) != $posted)] | join(" ")')"
+marker_review_ids=""
+reviews_listing="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate)"
+reviews_listing_rc=$?
+if [ "$reviews_listing_rc" -ne 0 ]; then
+  # A failed listing (transient 5xx, rate limit) would otherwise be indistinguishable from
+  # "no prior marker reviews" and silently skip the whole auto-resolve - warn to keep the
+  # no-op visible in the run log (best-effort contract).
+  echo "::warning::Marker-review listing failed (gh api exit $reviews_listing_rc); skipping stale-thread auto-resolve."
+else
+  # --paginate streams one JSON array per page: slurp before selecting (the pending-review
+  # lookup above uses the same guard), or a multi-page review list joins into a multi-line
+  # result that crashes the resolve jq's map(tonumber) below with no warning at all.
+  marker_review_ids="$(printf '%s' "$reviews_listing" \
+    | jq -rs --arg posted "${review_post_id:-0}" \
+      '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | .id | select((. | tostring) != $posted)] | join(" ")')"
+fi
 if [ -n "$marker_review_ids" ]; then
   bot_login="$(gh api user --jq .login 2>/dev/null || true)"
   # Run-start cutoff (#121): only threads whose root AND latest comment predate this run are eligible; a mid-run thread may carry an unseen finding. The epoch comes from the REST run object (the github context has no run_started_at) and degrades to 0 = resolve nothing (fail closed).

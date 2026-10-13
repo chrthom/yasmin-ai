@@ -291,8 +291,9 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   unread is not). The thread listing is paged
   (GitHub returns threads oldest-first, resolved ones included), and a thread with
   more than 100 comments is left open - its all-bot eligibility cannot be verified
-  from the truncated comment list. Best-effort: a failed resolve, thread listing,
-  run-start lookup, or token-user lookup is a `::warning::`, never an escalation.
+  from the truncated comment list. Best-effort: a failed resolve, marker-review
+  listing, thread listing, run-start lookup, or token-user lookup is a `::warning::`,
+  never an escalation.
   A `CLEAN` verdict resolves every eligible thread unless one of its nit findings
   still sits within ±5 lines of an old anchor (nits do not block the verdict
   itself, but a live nit keeps a matching old thread open).
