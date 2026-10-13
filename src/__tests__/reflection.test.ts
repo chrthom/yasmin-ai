@@ -443,6 +443,43 @@ describe('reflection', () => {
       expect(sentPrompt).toContain('The file was last touched');
       expect(sentPrompt).toContain('on 2026-01-01.');
     });
+
+    it('embeds undelivered pending notes as review evidence so note-derived facts are not judged as invented', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: '{"approved": true, "reason": "grounded in a note"}'
+      });
+
+      await runReview(
+        update,
+        'old content',
+        '2026-01-01T00:00:00.000Z',
+        [],
+        0,
+        [],
+        [
+          {
+            id: 9,
+            fromUsername: 'christopher',
+            toUsername: 'zara',
+            content: 'Please be home by 6 pm',
+            createdAt: new Date('2026-07-05T15:00:00Z')
+          }
+        ]
+      );
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('never delivered in the live chat');
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+      expect(prompt).toContain('supported by the evidence, not invented');
+    });
+
+    it('adds no notes evidence block to the review prompt when the outbox is empty', () => {
+      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(prompt).toContain('(no journal entries today)');
+      expect(prompt).not.toContain('Undelivered note');
+      expect(prompt).not.toContain('never delivered in the live chat');
+    });
   });
 
   describe('reviseProposal', () => {
@@ -520,6 +557,43 @@ describe('reflection', () => {
 
       const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(prompt).toContain('first person');
+    });
+
+    it('embeds undelivered pending notes as evidence in the first correction prompt', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: 'corrected', conversationId: 'rev-conv-1' });
+
+      await reviseProposal(update, 'old content', 'rejected content', 'not grounded', [], undefined, [
+        {
+          id: 9,
+          fromUsername: 'christopher',
+          toUsername: 'zara',
+          content: 'Please be home by 6 pm',
+          createdAt: new Date('2026-07-05T15:00:00Z')
+        }
+      ]);
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+      expect(prompt).toContain('supported by the evidence, not invented');
+    });
+
+    it('re-embeds undelivered pending notes as evidence in every follow-up correction turn', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: 'corrected again', conversationId: 'rev-conv-1' });
+
+      await reviseProposal(update, 'old content', 'rejected again', 'still not grounded', [], 'rev-conv-1', [
+        {
+          id: 9,
+          fromUsername: 'christopher',
+          toUsername: 'zara',
+          content: 'Please be home by 6 pm',
+          createdAt: new Date('2026-07-05T15:00:00Z')
+        }
+      ]);
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
     });
   });
 

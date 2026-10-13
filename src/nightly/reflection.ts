@@ -297,6 +297,18 @@ function formatIntradayNotesText(notes: IntradayNote[]): string {
 }
 
 /**
+ * Renders the still-undelivered pending notes into the evidence block shared by the review and
+ * revision prompts (mirroring the integrate evidence block). Without it the reviewer's evidence
+ * base is just the journals -- which on a quiet night (zero conversations) are empty -- so a
+ * note-derived fact looks invented, gets rejected, and Phase 6.5 would still clear the outbox:
+ * the note's content silently lost from long-term memory. Empty when there are no notes.
+ */
+function renderUndeliveredNotesBlock(undeliveredNotes: IntradayNote[]): string {
+  const notesText = formatIntradayNotesText(undeliveredNotes);
+  return notesText.length > 0 ? '\n\n' + renderPrompt('review_notes_block.txt', { notesText }) : '';
+}
+
+/**
  * Formats today's journal entries into the shared evidence block used by the integrate, review and
  * revision prompts.
  */
@@ -349,7 +361,8 @@ function topicExcerpt(content: string): string {
  * number (0 for the initial review, 1+ for re-reviews after a revision) relaxes the grounding bar: the
  * first rejection is the only one that may cite weak grounding alone; later attempts must not keep a
  * proposal stuck on interpretive disagreement, because a revision cannot create evidence that the
- * journals never contained.
+ * journals never contained. The undelivered pending notes ride along as evidence too, so a fact the
+ * integrate agent grounded in a note is not rejected as invented (see renderUndeliveredNotesBlock).
  *
  * @param update The staged update under review.
  * @param currentContent The file's current archived content, or null when new.
@@ -357,6 +370,7 @@ function topicExcerpt(content: string): string {
  * @param todaysJournals The evidence base.
  * @param attempt 0 for the initial review, 1+ for re-reviews after a revision.
  * @param existingTopics Other archived topics, as the duplicate barrier for topics/ proposals.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
  * @returns The rendered review prompt.
  */
 export function reviewPrompt(
@@ -365,7 +379,8 @@ export function reviewPrompt(
   lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number,
-  existingTopics: ExistingTopic[] = []
+  existingTopics: ExistingTopic[] = [],
+  undeliveredNotes: IntradayNote[] = []
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
   const groundingRule =
@@ -398,6 +413,7 @@ export function reviewPrompt(
     newContent: update.content,
     currentContent: currentContent === null ? '(this is a brand-new file)' : currentContent,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    undeliveredNotesBlock: renderUndeliveredNotesBlock(undeliveredNotes),
     existingTopicsBlock,
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE),
     groundingRule,
@@ -418,6 +434,7 @@ export function reviewPrompt(
  * @param todaysJournals The evidence base.
  * @param attempt 0 for the initial review, 1+ for re-reviews after a revision.
  * @param existingTopics Other archived topics, as the duplicate barrier for topics/ proposals.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
  * @returns The verdict; approved=false with a parse-failure reason when the reply is malformed.
  */
 export async function runReview(
@@ -426,14 +443,23 @@ export async function runReview(
   lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number,
-  existingTopics: ExistingTopic[] = []
+  existingTopics: ExistingTopic[] = [],
+  undeliveredNotes: IntradayNote[] = []
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
     inputs: [
       {
         role: 'user',
-        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt, existingTopics)
+        content: reviewPrompt(
+          update,
+          currentContent,
+          lastTouchedAt,
+          todaysJournals,
+          attempt,
+          existingTopics,
+          undeliveredNotes
+        )
       }
     ],
     store: false
@@ -462,13 +488,15 @@ export async function runReview(
 
 /**
  * Builds the Phase-4 revision prompt asking the nightly agent to produce a corrected FULL replacement
- * for a proposal the reviewer rejected, addressing every point of the reviewer's feedback
+ * for a proposal the reviewer rejected, addressing every point of the reviewer's feedback. The
+ * undelivered pending notes ride along as evidence so the correction can re-ground in them.
  *
  * @param update The staged update being revised.
  * @param currentContent The file's current archived content, or null when new.
  * @param rejectedContent The proposal version the reviewer rejected.
  * @param feedback The reviewer's rejection reason to address.
  * @param todaysJournals The evidence base.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
  * @returns The rendered revision prompt.
  */
 export function revisePrompt(
@@ -476,7 +504,8 @@ export function revisePrompt(
   currentContent: string | null,
   rejectedContent: string,
   feedback: string,
-  todaysJournals: JournalEntry[]
+  todaysJournals: JournalEntry[],
+  undeliveredNotes: IntradayNote[] = []
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
   return renderPrompt('revise_prompt.txt', {
@@ -485,6 +514,7 @@ export function revisePrompt(
     rejectedContent,
     feedback,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    undeliveredNotesBlock: renderUndeliveredNotesBlock(undeliveredNotes),
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE)
   });
 }
@@ -504,7 +534,8 @@ export function reviseFollowUpPrompt(
   update: StagedUpdate,
   rejectedContent: string,
   feedback: string,
-  todaysJournals: JournalEntry[]
+  todaysJournals: JournalEntry[],
+  undeliveredNotes: IntradayNote[] = []
 ): string {
   const voiceRule =
     update.path === 'self-reflection/profile.md'
@@ -516,6 +547,7 @@ export function reviseFollowUpPrompt(
     rejectedContent,
     feedback,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    undeliveredNotesBlock: renderUndeliveredNotesBlock(undeliveredNotes),
     voiceRule
   });
 }
@@ -524,6 +556,7 @@ export function reviseFollowUpPrompt(
  * Runs the Phase-4 revision for one staged update, returning the corrected full replacement content and
  * the conversation id so callers can keep revising within the SAME conversation (full proposal->feedback
  * history stays in scope). Pass the conversationId from a prior call to continue that conversation.
+ * The undelivered pending notes ride along as evidence on every revision turn.
  *
  * @param update The staged update being revised.
  * @param currentContent The file's current archived content, or null when new.
@@ -531,6 +564,7 @@ export function reviseFollowUpPrompt(
  * @param feedback The reviewer's rejection reason to address.
  * @param todaysJournals The evidence base.
  * @param conversationId A prior revision conversation to continue, when re-revising.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
  * @returns The corrected replacement content and the (possibly new) conversation id.
  */
 export async function reviseProposal(
@@ -539,17 +573,30 @@ export async function reviseProposal(
   rejectedContent: string,
   feedback: string,
   todaysJournals: JournalEntry[],
-  conversationId?: string
+  conversationId?: string,
+  undeliveredNotes: IntradayNote[] = []
 ): Promise<{ content: string; conversationId: string }> {
   const inputs =
     conversationId === undefined
       ? [
           {
             role: 'user',
-            content: revisePrompt(update, currentContent, rejectedContent, feedback, todaysJournals)
+            content: revisePrompt(
+              update,
+              currentContent,
+              rejectedContent,
+              feedback,
+              todaysJournals,
+              undeliveredNotes
+            )
           }
         ]
-      : [{ role: 'user', content: reviseFollowUpPrompt(update, rejectedContent, feedback, todaysJournals) }];
+      : [
+          {
+            role: 'user',
+            content: reviseFollowUpPrompt(update, rejectedContent, feedback, todaysJournals, undeliveredNotes)
+          }
+        ];
 
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
