@@ -24,6 +24,11 @@ describe('nightly prompt templates', () => {
         newContent: update.content,
         currentContent: 'old content',
         journalsText: '--- Journal entry for Alice ---\njournal text',
+        undeliveredNotesBlock:
+          '\n\n' +
+          renderPrompt('review_notes_block.txt', {
+            notesText: '--- Undelivered note #1 from a to b ---\nnote text'
+          }),
         existingTopicsBlock: '',
         selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt'),
         groundingRule: renderPrompt('review_grounding_relaxed.txt', {
@@ -36,6 +41,7 @@ describe('nightly prompt templates', () => {
         rejectedContent: 'rejected content',
         feedback: 'add the date please',
         journalsText: '(no journal entries today)',
+        undeliveredNotesBlock: '',
         selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt')
       }),
       renderPrompt('revise_follow_up_prompt.txt', {
@@ -43,6 +49,7 @@ describe('nightly prompt templates', () => {
         rejectedContent: 'rejected again',
         feedback: 'still wrong',
         journalsText: 'journal text',
+        undeliveredNotesBlock: '',
         voiceRule: ''
       }),
       renderPrompt('compact_person_prompt.txt', { cap: '10000', personName: 'Alice' }) +
@@ -64,6 +71,8 @@ describe('nightly prompt templates', () => {
     const templateNames = fs.readdirSync(promptDir()).filter(name => name.endsWith('.txt'));
     expect(templateNames).toContain('journal_prompt.txt');
     expect(templateNames).toContain('integrate_prompt.txt');
+    expect(templateNames).toContain('integrate_notes_block.txt');
+    expect(templateNames).toContain('review_notes_block.txt');
     expect(templateNames).toContain('review_prompt.txt');
     expect(templateNames).toContain('revise_prompt.txt');
     expect(templateNames).toContain('revise_follow_up_prompt.txt');

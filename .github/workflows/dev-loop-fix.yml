@@ -50,23 +50,55 @@ permissions:
   actions: write
 
 concurrency:
-  group: dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}
+  # Resume events (unlabeled: needs-human removed) fire BOTH the reviewer and
+  # the fixer in the same second; in the shared group they contend for its
+  # single running slot, and any later entrant displaces the pending run
+  # (with cancel-in-progress: false only the newest pending run is kept).
+  # Observed on PR #115: the fixer resume run took the slot, the resume
+  # reviewer went pending behind it, and the fixer - after verifying the
+  # findings were already fixed and pushing nothing (FIXED, unchanged head
+  # 4b3f547) - chained its unchanged-head reviewer dispatch, which displaced
+  # the pending resume reviewer; the chained run then reviewed the head
+  # (CHANGES_NEEDED). What was lost was the intended fresh-budget resume
+  # review, not head coverage. The unlabeled-resume fixer runs into a
+  # distinct sub-group so the two resume runs never contend with each
+  # other - this removes only the resume-vs-resume contention, not the
+  # general single-slot displacement above: a resume reviewer can still
+  # pend behind another shared-group occupant (e.g. a non-resume fixer
+  # run) and be displaced by any later entrant; on a head that already
+  # carries a marker review the substitute reviewer then dedupes and
+  # skips, so the fresh-budget resume review can still be lost. A fix
+  # push landing mid-review is handled by the reviewer's stale-head
+  # re-dispatch (the older verdict is never acted on). Accepted side
+  # effect: the resume fixer no longer serializes against other fixer
+  # runs on the same PR - the chained fixer of a fresh CHANGES_NEEDED
+  # review, or a push-to-main conflict dispatch, may run concurrently in
+  # the shared group. The fixer prompt pulls before pushing, so overlap
+  # costs interleaved merge commits and doubled agent cost, not lost
+  # work - accepted over losing the resume review. All other events
+  # keep the shared group (review/fix serialization on normal cycles is
+  # unchanged).
+  group: >-
+    dev-loop-pr-${{ github.event.pull_request.number || inputs.pr_number || 'push-main-scan' }}${{
+    (github.event_name == 'pull_request' && github.event.action == 'unlabeled') && '-resume' || '' }}
   cancel-in-progress: false
 
 jobs:
   fix:
     name: Fixer
     # Job-level event filter (docs/dev-loop.md): an unlabeled event for any
-    # label other than needs-human, or an empty-body review event (the human
-    # findings channel requires a body), can never start the fixer - skip
-    # before a runner is allocated. The gate below remains as defense in
-    # depth.
+    # label other than needs-human, or an empty-body review event (a reply-
+    # only submission - the human findings channel requires a body), can
+    # never start the fixer - skip before a runner is allocated. The gate
+    # below remains as defense in depth.
     if: >-
       !(github.event_name == 'pull_request' && github.event.action == 'unlabeled' && github.event.label.name != 'needs-human') &&
       !(github.event_name == 'pull_request_review' && github.event.review.body == '')
-    # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group;
-    # double-dispatch is bounded by the head-SHA dedupes plus the stale-head
-    # re-dispatch in the reviewer (docs/dev-loop.md).
+    # Fixer runs on the same PR serialize in the shared dev-loop-pr-<N> group,
+    # except unlabeled-resume runs (the -resume sub-group above): a resume
+    # fixer may overlap another fixer run on the same PR - bounded by the
+    # pull-before-push in the fixer prompt plus the head-SHA dedupes and the
+    # reviewer's stale-head re-dispatch (docs/dev-loop.md).
     runs-on: ubuntu-latest
     # 15 min above --time-limit (3600 s = 60 min), per docs/dev-loop.md budgets table
     timeout-minutes: 75
@@ -88,8 +120,8 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          # synchronize/unlabeled carry the PR in the payload; push does not
-          # (the push-path scan below resolves candidate PRs itself).
+          # unlabeled/pull_request_review carry the PR in the payload; push does
+          # not (the push-path scan below resolves candidate PRs itself).
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
@@ -430,7 +462,13 @@ jobs:
             # on the workflow_dispatch retry path (the post-step's built-in
             # auto-retry and the escalation's advice both re-dispatch the same
             # human review id, where no pull_request_review event exists).
-            review_body="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .body)"
+            # One fetch of the review object, reused for every field the
+            # gate reads: the body here, and the commit_id/state in the
+            # stale-review branches below - three separate REST calls would
+            # cost two extra requests per gated run and could observe
+            # different snapshots of the same review between calls.
+            review_json="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id)"
+            review_body="$(jq -r '.body' <<<"$review_json")"
             if printf '%s' "$review_body" | head -1 | grep -q '^<!-- dev-loop-review -->$' \
               && ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
               echo "Review $review_id is not a CHANGES_NEEDED review; nothing to fix. Skipping."
@@ -469,11 +507,13 @@ jobs:
           reviewed_sha=""
           review_state=""
           if [ -n "$review_id" ]; then
-            reviewed_sha="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .commit_id)"
-            # The review's state for the stale-branch shape classification
-            # below (the REST API returns uppercase values, matching the
-            # resume jq's exact .state == "COMMENTED" on the same data).
-            review_state="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id --jq .state)"
+            # Both extracted from the single review fetch in the verdict
+            # re-check above (one consistent snapshot). The state feeds the
+            # stale-branch shape classification below (the REST API
+            # returns uppercase values, matching the resume jq's exact
+            # .state == "COMMENTED" on the same data).
+            reviewed_sha="$(jq -r '.commit_id' <<<"$review_json")"
+            review_state="$(jq -r '.state' <<<"$review_json")"
           fi
           if [ -n "$reviewed_sha" ] && [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
             git fetch origin "$reviewed_sha" "$head_sha_before" --quiet
