@@ -168,6 +168,20 @@ verifies the claim against reality (head SHA moved) before relying on it.
   resolution), "fix findings minimally" (fixer), "review adversarially, report every nit"
   (reviewer). Agents are prompt-forbidden from `gh pr ready`/`gh pr merge`/label changes
   entirely — with no draft/ready state machine there is simply nothing for an agent to flip.
+- **Verdict semantics (reviewer)**: `CLEAN` requires zero findings of severity `blocker`,
+  `major` or `minor`; new `nit` findings do not block the verdict — they are reported as
+  informational feedback (the fixer is never dispatched on `CLEAN`), while anything at
+  `minor` or above still means `CHANGES_NEEDED`. This is the loop's convergence mechanism:
+  an adversarial full-diff re-review by a fresh reviewer instance would otherwise almost
+  always find one new nit on a non-trivial PR and re-enter the fix cycle on a converged
+  head (observed on PRs #115 and #117: eight strictly-converging rounds each hit the
+  iteration cap because the zero-nit `CLEAN` bar made the goalposts move every round).
+- **Continuity across review rounds (reviewer)**: each round reads the prior marker reviews
+  and the fixer's inline replies (`pulls/<N>/comments`, threaded by `in_reply_to_id`). A
+  fixed finding is verified and dropped; a finding the fixer declined with a rationale is
+  accepted unless factually wrong. Re-raising a settled nit with no new argument is the
+  non-convergence failure mode the iteration cap would otherwise have to break
+  mechanically.
 
 ## CI (`ci.yml`)
 
@@ -334,7 +348,7 @@ Per-role specifics:
   fresh budget (the escalation removed it to park the issue).
 - **reviewer fails** → the PR sits ready-for-review with no review. Post-step comments
   on the PR with the failure reason. Human can re-run the job or push a trivial change to
-  re-trigger `synchronize`. A ready PR with zero findings stays unmergeable by review policy,
+  re-trigger `synchronize`. A ready PR without a review stays unmergeable by review policy,
   so nothing unsafe happens.
 - **fixer fails** → the review's findings still stand; the PR simply doesn't progress. Post-step
   comments on the PR; the human can remove `needs-human` to re-trigger the fixer on the same review.
