@@ -274,6 +274,40 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   token user is the owner, and the body is the primary human findings payload - and is never
   deleted), validates the payload file is valid JSON, surfaces gh's full error object in the
   log instead of discarding it, and never dispatches the fixer with a non-numeric review id.
+- **Stale-thread auto-resolve**: after posting, the post-step resolves inline threads
+  from **earlier marker reviews** whose finding the new review no longer reports
+  (dropped = fixed or no longer valid). Eligibility is enforced in code, not by the
+  agent: only threads whose every comment is the token user's own (only a reply from a
+  user _other than the token user_ keeps it open; the token user's own replies - which,
+  while `DEV_LOOP_TOKEN` is the owner's PAT, include his manual UI replies - never do),
+  only threads rooted in a prior `<!-- dev-loop-review -->` review (human
+  inline comments are never touched), never the review just posted. A finding counts
+  as still live when the new review reports one on the same path within ±5 lines
+  (inline anchors drift across format-only pushes). A **run-start cutoff** guards the
+  whole filter: only threads whose root and latest comment predate this workflow run
+  are eligible - the reviewer reads the PR once at run start, so a mid-run thread
+  carries a finding this review never saw. An unresolvable run-start timestamp fails
+  closed (nothing is resolved; a stale open thread is harmless, resolving a fresh one
+  unread is not). The thread listing is paged
+  (GitHub returns threads oldest-first, resolved ones included), and a thread with
+  more than 100 comments is left open - its all-bot eligibility cannot be verified
+  from the truncated comment list. Best-effort: a failed resolve, marker-review
+  listing, thread listing, run-start lookup, or token-user lookup is a `::warning::`,
+  never an escalation.
+  A `CLEAN` verdict resolves every eligible thread unless one of its nit findings
+  still sits within ±5 lines of an old anchor (nits do not block the verdict
+  itself, but a live nit keeps a matching old thread open).
+- **Post-step script is a checked-in file**: the reviewer's post-step state machine lives
+  in `.github/dev-loop/scripts/post-review.sh`, invoked as
+  `run: bash .github/dev-loop/scripts/post-review.sh` - the workflow's `env:` block is its
+  only bridge for GitHub expression contexts (`OPENCODE_RC` carries
+  `steps.opencode.outputs.rc`; everything else arrives as a plain env var). Reason: GitHub
+  caps a `run:` block scalar at **21,000 chars**, and the inline version of the script sat
+  within ~3.3k of that cap - crossing it makes GitHub reject the whole workflow file, a
+  silent full-loop stall, because the loop's escalation machinery lives in that very
+  workflow (observed live: a merge commit that pushed the inline version over the cap left
+  the head without any Reviewer check-run until the next push). Future growth targets the
+  script file, never the YAML scalar.
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
   prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
@@ -290,6 +324,10 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
 .github/dev-loop/prompts/implementer.md    role prompts (ported from PR #80's agent definitions,
 .github/dev-loop/prompts/reviewer.md       minus gh-guard boilerplate; final line is a parseable
 .github/dev-loop/prompts/fixer.md          outcome: PR_URL|NO_PR:, VERDICT:, FIXED:|WALL:)
+.github/dev-loop/scripts/post-review.sh   reviewer post-step state machine (checked-in file, not
+                                           an inline run: scalar - GitHub caps run: at 21,000 chars
+                                           and the inline version sat within ~3.3k of it; the env:
+                                           block bridges expression contexts)
 docs/dev-loop.md                           this plan / runbook
 ```
 
