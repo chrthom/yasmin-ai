@@ -550,8 +550,8 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null && [ "${MOVED_BY_FIX_INPUT:-0}" = "1" ]; then
-              # A workflow_dispatch retry (the post-step's auto-retry on an
-              # unparseable outcome) re-submits the SAME review id after the
+              # A workflow_dispatch retry (the post-step's auto-retry)
+              # re-submits the SAME review id after the
               # first attempt already consumed it. Skip ONLY on an
               # attributed movement (moved_by_fix=1): the dispatching
               # post-step observed the head move AND found a successful git
@@ -575,7 +575,7 @@ jobs:
               # branch below - never a silent drop.
               echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT, moved_by_fix=$MOVED_BY_FIX_INPUT) whose first attempt pushed the fix for review $review_id. Skipping."
               cat > /tmp/dev-loop-consumed-notice.md <<EOF
-          dev-loop notice: human findings review ${review_id} was consumed by the fixer attempt whose push moved the head (${reviewed_sha} -> ${head_sha_before}); that attempt ended unparseable, so its fix may be partial, and the re-review of the moved head re-surfaces findings only if it independently finds them - re-submit the review on the current head if findings persist.
+          dev-loop notice: human findings review ${review_id} was consumed by the fixer attempt whose push moved the head (${reviewed_sha} -> ${head_sha_before}); that attempt ended without a parseable outcome, so its fix may be partial, and the re-review of the moved head re-surfaces findings only if it independently finds them - re-submit the review on the current head if findings persist.
 
           PR: #${PR_NUMBER}
           Review: ${review_id}
@@ -867,6 +867,23 @@ jobs:
           cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
           stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
 
+          # Push-evidence attribution shared by both auto-retry paths (the
+          # rc=1 infra retry and the unparseable-outcome retry): 1 only when
+          # this attempt's own stream shows a successful git push (a
+          # completed, exit-0 tool call whose command contains at least one
+          # push segment - chain-aware anchor: "git push" at the command
+          # start or right after a command separator - ;, &, |, a subshell
+          # (, a newline (multi-line commands) - with no --dry-run / -n on
+          # the push segment). A missing or unreadable stream is no
+          # evidence: unattributed, so the retry's notice+chain branch.
+          push_evidence() {
+            jq -e 'select(.type == "tool_use")
+                       | select((.part.state.input.command? // "") | ([match("(^|[;&|(\n] *)git push[^;&|]*"; "g") | .string] | (length > 0) and (any(test("--dry-run") or test("(^| )-n( |$)")) | not)))
+                       | select(.part.state.status == "completed")
+                       | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
+              out/stream.ndjson >/dev/null 2>&1
+          }
+
           if [ "$rc" = "99" ]; then
             # The watchdog killed opencode (failure streak / step / token cap):
             # the run misbehaved or blew the budget. Never retry, escalate.
@@ -892,6 +909,40 @@ jobs:
               | awk 'NF { line = $0 } END { if (line) print line }' \
               | grep -E '^(FIXED:|WALL:)' || true)"
             if [ -z "$contract_line" ]; then
+              # rc=1 with no outcome line is not homogeneous: a provider/stream
+              # infra failure is transient (observed on the #122 loop: a
+              # provider.invalid-output event, empty stderr, the agent productively
+              # mid-run), while a usage/config error (Error: ... in stderr) or a
+              # tool-failure session is deterministic or functional - a retry
+              # fails the same way or re-spends a full budget on a task problem.
+              # Retry only on the infra signature: a top-level provider.* error
+              # event in the stream and no deterministic Error: line in stderr.
+              # rc=1 + recovered-tool-errors + no outcome line (agent stalled
+              # before finishing) has no provider event, so it escalates -
+              # the watchdog already absorbed the hard tool-failure loop.
+              if jq -e 'select(.type == "error") | select(.error.type | startswith("provider."))' \
+                out/stream.ndjson >/dev/null 2>&1 \
+                && ! grep -q '^Error:' out/opencode.stderr 2>/dev/null; then
+                moved_by_fix=0
+                head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+                if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ] && push_evidence; then
+                  moved_by_fix=1
+                fi
+                retry_review_id="${REVIEW_ID:-none}"
+                if [ "$RETRY_COUNT" -ge 1 ]; then
+                  # This is already the retried run: the one auto-retry is
+                  # spent, so the failure recurs and escalates.
+                  escalate "opencode failed with a provider infra error (exit 1, no outcome line, retry exhausted; cost: \$$cost); see the opencode output artifact"
+                  exit 0
+                fi
+                if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1 -f moved_by_fix="$moved_by_fix"; then
+                  echo "opencode exit 1 with a provider infra signature (cost: \$$cost); re-dispatching the fixer once (retry=1, moved_by_fix=$moved_by_fix). Transcript artifact preserved for diagnosis."
+                  exit 0
+                fi
+                # The dispatch itself failed, so the retry never left.
+                escalate "opencode failed with a provider infra error (exit 1, no outcome line, retry unavailable - the re-dispatch failed; cost: \$$cost); see the opencode output artifact"
+                exit 0
+              fi
               escalate "opencode failed (exit 1, no outcome line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
               exit 0
             fi
@@ -977,17 +1028,8 @@ jobs:
               # pull an outstanding CHANGES_NEEDED review in.
               head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
               moved_by_fix=0
-              if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
-                # Fail-visible: a missing or unreadable stream is no
-                # evidence, so the movement stays unattributed (the retry's
-                # notice+chain branch), never a plain skip.
-                if jq -e 'select(.type == "tool_use")
-                           | select((.part.state.input.command? // "") | ([match("(^|[;&|(\n] *)git push[^;&|]*"; "g") | .string] | (length > 0) and (any(test("--dry-run") or test("(^| )-n( |$)")) | not)))
-                           | select(.part.state.status == "completed")
-                           | select((.part.state.metadata.metadata.exit? // 1) == 0)' \
-                  out/stream.ndjson >/dev/null 2>&1; then
-                  moved_by_fix=1
-                fi
+              if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ] && push_evidence; then
+                moved_by_fix=1
               fi
               retry_review_id="${REVIEW_ID:-none}"
               if [ "$RETRY_COUNT" -lt 1 ] \
