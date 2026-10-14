@@ -291,7 +291,13 @@ jobs:
             # Park the issue: remove dev-loop (the opt-in gate then skips future
             # events) and add needs-human as the informational marker. Resume =
             # re-adding dev-loop (labeled: dev-loop re-triggers the implementer).
-            gh issue edit "$ISSUE_NUMBER" --remove-label dev-loop --add-label needs-human >/dev/null
+            # The escalation path must itself fail open: an unguarded gh failure
+            # here would red-run the post-step after the agent already finished
+            # (losing the outcome) and silently drop the signal. Guard both so
+            # at least one reaches a human, with a visible trace when one
+            # fails (mirrors post-review.sh).
+            gh issue edit "$ISSUE_NUMBER" --remove-label dev-loop --add-label needs-human >/dev/null \
+              || echo "::warning::Could not park the issue (gh issue edit failed); relying on the escalation comment."
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @$REPO_OWNER dev-loop implementer escalation: $1
@@ -299,7 +305,8 @@ jobs:
           Issue: #${ISSUE_NUMBER}
           Run: ${RUN_URL}
           EOF
-            gh issue comment "$ISSUE_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+            gh issue comment "$ISSUE_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null \
+              || echo "::warning::Could not post the escalation comment (gh issue comment failed); the needs-human label marks the issue."
           }
 
           rc="${{ steps.opencode.outputs.rc }}"

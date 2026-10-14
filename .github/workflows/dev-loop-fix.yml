@@ -157,6 +157,29 @@ jobs:
           MOVED_BY_FIX_INPUT: ${{ inputs.moved_by_fix || '0' }}
         run: |
           set -eu
+          # Pre-agent escalation for essential-poll failures (mirrors the
+          # stale-review escalation below): parks the PR visibly instead of
+          # silently degrading a findings run to a no-findings one. Deliberately
+          # fail-closed like that block - if both signals fail here, set -e
+          # red-runs the gate rather than ending a green skipped run with no
+          # PR-visible signal (the post-step's escalate() is the guarded
+          # warning-and-continue variant: it runs after the agent, where a red
+          # run would lose the outcome).
+          escalate() {
+            # Every escalation leaves a run-log trace (the #119 diagnosis
+            # relied on exactly that); the marker comment carries the same
+            # text to the PR.
+            echo "::warning::dev-loop fixer escalation: $1"
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            cat > /tmp/dev-loop-escalation.md <<EOF
+          <!-- dev-loop-escalation -->
+          @$REPO_OWNER dev-loop fixer escalation: $1
+
+          PR: #${PR_NUMBER}
+          Run: ${RUN_URL}
+          EOF
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+          }
           # Conflict origin 2: a push to main can leave open ready dev-loop PRs
           # CONFLICTING. One scan per merge to main (docs/dev-loop.md): find all
           # conflicting candidates, dispatch each (conflict-only, no review
@@ -398,9 +421,26 @@ jobs:
             # transient gh api failure prints nothing) is null, and [.[]]
             # over null red-fails the gate under set -e; `// []` restores
             # the pre-slurp soft degradation to an empty review id - the
-            # no-findings path below.
-            review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-              | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") | test("\\S"))] | sort_by(.submitted_at) | last | select(. != null) | (.body | split("\n")) as $lines | select((($lines[0]) == "<!-- dev-loop-review -->" and ($lines | any(. == "Verdict: CHANGES_NEEDED"))) or (($lines[0]) != "<!-- dev-loop-review -->" and .state == "COMMENTED")) | .id // empty')"
+            # no-findings path below. The kill shape left is a TRUNCATED
+            # listing (jq parse error, the #119 class): retry the poll
+            # boundedly and escalate on persistent failure - an essential
+            # poll, because silently degrading a findings run to a
+            # no-findings run would strand the findings on a green skip.
+            review_id=""
+            resume_poll_failed="false"
+            for attempt in 1 2 3 4 5; do
+              if review_id="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+                | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.user.login == $owner) | select((.body // "") | test("\\S"))] | sort_by(.submitted_at) | last | select(. != null) | (.body | split("\n")) as $lines | select((($lines[0]) == "<!-- dev-loop-review -->" and ($lines | any(. == "Verdict: CHANGES_NEEDED"))) or (($lines[0]) != "<!-- dev-loop-review -->" and .state == "COMMENTED")) | .id // empty' 2>/dev/null)"; then
+                break
+              fi
+              resume_poll_failed="true"
+              [ "$attempt" = 5 ] || sleep 10
+            done
+            if [ "$resume_poll_failed" = "true" ]; then
+              escalate "could not resolve the latest findings review on PR #$PR_NUMBER (repeated API failures); no fixer run consumed any findings - re-run the workflow or remove the needs-human label to resume"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           # Defense in depth: a non-numeric review id must never reach the
           # reviews API as a literal - pulls/<N>/reviews/<garbage> is an HTTP
@@ -427,8 +467,11 @@ jobs:
             # handles a missing review (conflict and/or CI-failure task).
             mergeable=""
             for attempt in 1 2 3 4 5; do
-              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable)"
-              [ "$mergeable" != "UNKNOWN" ] && break
+              # 2>/dev/null || true: a hard gh failure must not red-run the
+              # gate under set -e (the #119 class) - retry it like UNKNOWN.
+              # An empty read is a failed poll, not a mergeability verdict.
+              mergeable="$(gh pr view "$PR_NUMBER" --json mergeable --jq .mergeable 2>/dev/null || true)"
+              [ -n "$mergeable" ] && [ "$mergeable" != "UNKNOWN" ] && break
               # mergeable is read after the loop, so sleep only when another
               # attempt follows - a trailing sleep after the final attempt
               # would wait for data nobody reads.
@@ -437,28 +480,42 @@ jobs:
             # Fail open like the reviewer's freshness poll: a transient gh
             # failure must not kill the gate, and an unreadable head must
             # not turn into a skip either - the dispatch may be the
-            # reviewer's red-CI one, and skipping would strand it. Proceed
-            # so the fixer can re-check CI itself.
+            # reviewer's red-CI one, and skipping would strand it. The
+            # same holds for an unreadable mergeability or check-runs
+            # state: the skip below fires only on known-good news, so the
+            # fixer can re-check everything live itself.
             head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
             ci_red="false"
+            ci_fetch_failed="false"
             if [ -n "$head_tip" ]; then
               ci_json="$(gh api "repos/${GH_REPO}/commits/${head_tip}/check-runs" 2>/dev/null || true)"
               # Exclude the dev-loop's own check runs (job names kept in sync
               # with the three dev-loop workflows): a failed Reviewer run on
-              # the same SHA is not a CI failure to fix.
-              ci_failed="$(printf '%s' "$ci_json" \
-                | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
-              [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
+              # the same SHA is not a CI failure to fix. A missing or
+              # unparseable fetch is an UNKNOWN CI state, never a green one -
+              # mark it failed so the skip below cannot fire on it.
+              if jq -e . <<<"$ci_json" >/dev/null 2>&1; then
+                ci_failed="$(printf '%s' "$ci_json" \
+                  | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
+                [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
+              else
+                ci_fetch_failed="true"
+              fi
             fi
-            if [ -n "$head_tip" ] && [ "$mergeable" != "CONFLICTING" ] && [ "$ci_red" != "true" ]; then
+            if [ -n "$head_tip" ] && [ -n "$mergeable" ] && [ "$mergeable" != "CONFLICTING" ] \
+              && [ "$ci_red" != "true" ] && [ "$ci_fetch_failed" != "true" ]; then
               echo "PR #$PR_NUMBER mergeable is '$mergeable' and CI is not red; nothing conflict- or CI-failure-related to do. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "$mergeable" = "CONFLICTING" ]; then
               echo "PR #$PR_NUMBER is CONFLICTING; treating this as a conflict-only run (plus CI failures if any)."
+            elif [ -z "$mergeable" ]; then
+              echo "::warning::Mergeability poll failed; mergeability unknown, proceeding so the fixer can re-check it itself (fail open)."
             elif [ -z "$head_tip" ]; then
               echo "::warning::Head-SHA poll failed; CI state unknown, proceeding so the fixer can re-check CI itself (fail open)."
+            elif [ "$ci_fetch_failed" = "true" ]; then
+              echo "::warning::Check-runs fetch failed on head $head_tip; CI state unknown, proceeding so the fixer can re-check CI itself (fail open)."
             else
               echo "PR #$PR_NUMBER has red CI checks on head $head_tip; treating this as a CI-failure run (plus conflicts if any)."
             fi
@@ -476,7 +533,25 @@ jobs:
             # stale-review branches below - three separate REST calls would
             # cost two extra requests per gated run and could observe
             # different snapshots of the same review between calls.
-            review_json="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id)"
+            # Essential poll: review_body/reviewed_sha/review_state all
+            # derive from this one object, and an empty or truncated read
+            # would parse as an empty body - "not a CHANGES_NEEDED review" -
+            # and skip green with the findings stranded. Retry boundedly
+            # (a failed or unparseable fetch re-polls), then escalate.
+            review_json=""
+            for attempt in 1 2 3 4 5; do
+              review_json="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews/$review_id 2>/dev/null || true)"
+              if [ -n "$review_json" ] && jq -e . <<<"$review_json" >/dev/null 2>&1; then
+                break
+              fi
+              review_json=""
+              [ "$attempt" = 5 ] || sleep 10
+            done
+            if [ -z "$review_json" ]; then
+              escalate "could not fetch review $review_id from the API (repeated transient failures); its findings were not consumed - re-run the workflow or remove the needs-human label to resume"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             review_body="$(jq -r '.body' <<<"$review_json")"
             if printf '%s' "$review_body" | head -1 | grep -q '^<!-- dev-loop-review -->$' \
               && ! printf '%s' "$review_body" | grep -q '^Verdict: CHANGES_NEEDED$'; then
@@ -629,12 +704,12 @@ jobs:
                 gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-notice.md >/dev/null \
                   || echo "::warning::Could not post the stale-review notice for review $review_id"
               else
-                # Unguarded on purpose (no || true), matching the post-step's
-                # escalate(): if both gh calls fail here the gate step must go
-                # red instead of ending a green skipped run with no PR-visible
-                # signal - this branch is the one place the gate promises an
-                # escalation for unconsumed human findings (set -e fails the
-                # step on a gh error).
+                # Unguarded on purpose (no || true), unlike the post-step's
+                # guarded escalate(): if both gh calls fail here the gate
+                # step must go red instead of ending a green skipped run
+                # with no PR-visible signal - this branch is the one place
+                # the gate promises an escalation for unconsumed human
+                # findings (set -e fails the step on a gh error).
                 gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
                 cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
@@ -650,7 +725,20 @@ jobs:
               exit 0
             fi
           fi
-          branch="$(gh pr view "$PR_NUMBER" --json headRefName | jq -r '.headRefName')"
+          # Essential poll: the fixer pushes to this branch (DEV_LOOP_BRANCH)
+          # and an empty read must never reach the agent. Retry boundedly,
+          # then escalate instead of degrading.
+          branch=""
+          for attempt in 1 2 3 4 5; do
+            branch="$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName 2>/dev/null || true)"
+            [ -n "$branch" ] && break
+            [ "$attempt" = 5 ] || sleep 10
+          done
+          if [ -z "$branch" ]; then
+            escalate "could not read the head branch of PR #$PR_NUMBER (repeated transient failures); the fixer cannot push without it - re-run the workflow or remove the needs-human label to resume"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "review_id=$review_id" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
@@ -850,7 +938,14 @@ jobs:
         run: |
           set -u
           escalate() {
-            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            # The escalation path must itself fail open: an unguarded gh
+            # failure here would red-run the post-step after the agent
+            # already finished (losing the outcome) and silently drop the
+            # signal. Guard both signals so at least one of them reaches a
+            # human, with a visible trace when one fails (mirrors
+            # post-review.sh).
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null \
+              || echo "::warning::Could not add the needs-human label (gh pr edit failed); relying on the escalation comment."
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @$REPO_OWNER dev-loop fixer escalation: $1
@@ -859,7 +954,8 @@ jobs:
           Review: ${REVIEW_ID}
           Run: ${RUN_URL}
           EOF
-            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null \
+              || echo "::warning::Could not post the escalation comment (gh pr comment failed); the needs-human label marks the PR."
           }
 
           rc="${{ steps.opencode.outputs.rc }}"
@@ -1002,9 +1098,17 @@ jobs:
               # retries with the same review_id=none sentinel: an empty
               # input would fall into the gate's resume resolution and
               # pull an outstanding CHANGES_NEEDED review in.
-              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+              # Same guard as the FIXED path above: a transient gh failure
+              # must not kill the post-step right before the retry dispatch,
+              # and an empty read must not count as a movement (it would
+              # push-attribute a non-movement). An unknown head leaves
+              # moved_by_fix=0 (unattributed), so the retry's stale-review
+              # branch stays fail-visible instead of silently skipping.
+              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
               moved_by_fix=0
-              if [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
+              if [ -z "$head_sha_now" ]; then
+                echo "::warning::Head-SHA poll failed before the retry dispatch; passing moved_by_fix=0 (unattributed) so a real movement fails visible in the retry."
+              elif [ "$head_sha_now" != "$HEAD_SHA_BEFORE" ]; then
                 # Fail-visible: a missing or unreadable stream is no
                 # evidence, so the movement stays unattributed (the retry's
                 # notice+chain branch), never a plain skip.
