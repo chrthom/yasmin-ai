@@ -550,8 +550,8 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             elif [ "${RETRY_INPUT:-0}" -ge 1 ] 2>/dev/null && [ "${MOVED_BY_FIX_INPUT:-0}" = "1" ]; then
-              # A workflow_dispatch retry (the post-step's auto-retry on an
-              # unparseable outcome) re-submits the SAME review id after the
+              # A workflow_dispatch retry (the post-step's auto-retry)
+              # re-submits the SAME review id after the
               # first attempt already consumed it. Skip ONLY on an
               # attributed movement (moved_by_fix=1): the dispatching
               # post-step observed the head move AND found a successful git
@@ -575,7 +575,7 @@ jobs:
               # branch below - never a silent drop.
               echo "Head SHA ($head_sha_before) moved past the reviewed SHA ($reviewed_sha) on a retry dispatch (retry=$RETRY_INPUT, moved_by_fix=$MOVED_BY_FIX_INPUT) whose first attempt pushed the fix for review $review_id. Skipping."
               cat > /tmp/dev-loop-consumed-notice.md <<EOF
-          dev-loop notice: human findings review ${review_id} was consumed by the fixer attempt whose push moved the head (${reviewed_sha} -> ${head_sha_before}); that attempt ended unparseable, so its fix may be partial, and the re-review of the moved head re-surfaces findings only if it independently finds them - re-submit the review on the current head if findings persist.
+          dev-loop notice: human findings review ${review_id} was consumed by the fixer attempt whose push moved the head (${reviewed_sha} -> ${head_sha_before}); that attempt ended without a parseable outcome, so its fix may be partial, and the re-review of the moved head re-surfaces findings only if it independently finds them - re-submit the review on the current head if findings persist.
 
           PR: #${PR_NUMBER}
           Review: ${review_id}
@@ -929,12 +929,18 @@ jobs:
                   moved_by_fix=1
                 fi
                 retry_review_id="${REVIEW_ID:-none}"
-                if [ "$RETRY_COUNT" -lt 1 ] \
-                  && gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1 -f moved_by_fix="$moved_by_fix"; then
+                if [ "$RETRY_COUNT" -ge 1 ]; then
+                  # This is already the retried run: the one auto-retry is
+                  # spent, so the failure recurs and escalates.
+                  escalate "opencode failed with a provider infra error (exit 1, no outcome line, retry exhausted; cost: \$$cost); see the opencode output artifact"
+                  exit 0
+                fi
+                if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id="$retry_review_id" -f retry=1 -f moved_by_fix="$moved_by_fix"; then
                   echo "opencode exit 1 with a provider infra signature (cost: \$$cost); re-dispatching the fixer once (retry=1, moved_by_fix=$moved_by_fix). Transcript artifact preserved for diagnosis."
                   exit 0
                 fi
-                escalate "opencode failed with a provider infra error (exit 1, no outcome line, retry unavailable; cost: \$$cost); see the opencode output artifact"
+                # The dispatch itself failed, so the retry never left.
+                escalate "opencode failed with a provider infra error (exit 1, no outcome line, retry unavailable - the re-dispatch failed; cost: \$$cost); see the opencode output artifact"
                 exit 0
               fi
               escalate "opencode failed (exit 1, no outcome line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
