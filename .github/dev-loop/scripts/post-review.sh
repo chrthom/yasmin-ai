@@ -13,7 +13,12 @@
 # out/opencode.stderr from the reviewer run.
 set -u
 escalate() {
-  gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+  # The escalation path must itself fail open: an unguarded gh failure here
+  # would silently drop a signal (no label, no comment) instead of the usual
+  # warning-and-continue style. Guard both signals so at least one of them
+  # reaches a human, with a visible trace when one fails.
+  gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null \
+    || echo "::warning::Could not add the needs-human label (gh pr edit failed); relying on the escalation comment."
   cat > /tmp/dev-loop-escalation.md <<EOF
 <!-- dev-loop-escalation -->
 @$REPO_OWNER dev-loop reviewer escalation: $1
@@ -21,7 +26,8 @@ escalate() {
 PR: #${PR_NUMBER}
 Run: ${RUN_URL}
 EOF
-  gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+  gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null \
+    || echo "::warning::Could not post the escalation comment (gh pr comment failed); the needs-human label marks the PR."
 }
 
 # OPENCODE_RC mirrors steps.opencode.outputs.rc from the workflow (an inline
@@ -100,8 +106,19 @@ esac
 verdict="${verdict_line#VERDICT: }"
 echo "Reviewer verdict: $verdict (cost: \$$cost)"
 
-current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
-if [ "$current_sha" != "$REVIEWED_SHA" ]; then
+# Fail open on a transient gh/API error here: an unguarded gh|jq poll leaves
+# current_sha empty on failure (observed on PR #119: the freshness poll exited
+# 5 mid-run), and an empty SHA reads as "moved" in the comparison below - the
+# review is never posted and the reviewer is re-dispatched on the same head.
+# An empty current_sha skips the stale-head re-dispatch and posts on the
+# reviewed SHA - the same head the agent actually reviewed - and warns, so
+# the fail-open leaves a trace in the run log like every other one (the
+# #119 diagnosis relied on exactly that trace).
+current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+if [ -z "$current_sha" ]; then
+  echo "::warning::Head-SHA freshness poll failed; proceeding on the reviewed SHA $REVIEWED_SHA (fail open)."
+fi
+if [ -n "$current_sha" ] && [ "$current_sha" != "$REVIEWED_SHA" ]; then
   echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
   if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
     escalate "failed to re-dispatch the reviewer after a stale head SHA ($REVIEWED_SHA -> $current_sha); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
@@ -137,8 +154,11 @@ if [ -n "$body_findings" ]; then
 $body_findings"
 fi
 # Delete ONLY the token user's own stale pending review before posting (it 422-blocks every POST, PR #106): only zero-comment AND empty-body, or marker-prefixed (provably a loop leftover) reviews; a third party's or the owner's human draft is never touched.
+# The lookup fails open like the freshness poll above: a transient gh failure
+# must not strand the post-step right before the review is posted (#119
+# class); an empty id simply skips the delete.
 pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
-  | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.state == "PENDING") | select(.user.login == $owner)] | first | .id // empty')"
+  | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.state == "PENDING") | select(.user.login == $owner)] | first | .id // empty' 2>/dev/null || true)"
 if [ -n "$pending_review_id" ]; then
   # Fail closed: an unknown comment count/body means maybe a human draft - never destroyed on query failure; a marker-prefixed body proves loop origin regardless.
   pending_comments="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id/comments" \

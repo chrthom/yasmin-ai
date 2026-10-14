@@ -152,6 +152,7 @@ Non-events by design:
 | reviewer    | `Verdict: CHANGES_NEEDED`                                                       | dispatch the fixer with the posted review's id (a direct chain: no GitHub event carries the review id; one of the chained dispatches enumerated in Non-events by design) |
 | reviewer    | `Verdict: NEEDS_HUMAN`                                                          | label `needs-human` + marker escalation comment `@$REPO_OWNER` (the `github.repository_owner`-derived mention every escalation template uses)                            |
 | reviewer    | head SHA moved since review start                                               | re-dispatch reviewer (stale review is not acted on)                                                                                                                      |
+| reviewer    | head-SHA freshness poll errors                                                  | post the review on the reviewed SHA + `::warning` (fail open; the stale-head protection is best-effort)                                                                  |
 | fixer       | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                                                                      |
 | fixer       | outcome `WALL:`/budget stop                                                     | label `needs-human` + escalation comment                                                                                                                                 |
 | implementer | outcome `finished`                                                              | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review                                                                 |
@@ -160,8 +161,10 @@ Non-events by design:
 The reviewer is never called twice for the same work: dispatches on the same PR serialize in
 the shared `dev-loop-pr-<N>` concurrency group, the head-SHA marker dedupe makes at most one
 review per commit, and a push landing mid-review is handled by the stale-head re-dispatch (the
-older verdict is never acted on). If the fixer and a conflict-only fixer run both push, those
-are distinct head SHAs — each legitimately gets its own review.
+older verdict is never acted on; the re-dispatch is best-effort — a failed freshness poll posts
+the review on the reviewed SHA with a warning instead, and the fixer's own head-moved gate still
+keeps that stale verdict from being fixed twice). If the fixer and a conflict-only fixer run both
+push, those are distinct head SHAs — each legitimately gets its own review.
 
 ## The fixer absorbs the merger
 

@@ -434,22 +434,31 @@ jobs:
               # would wait for data nobody reads.
               [ "$attempt" = 5 ] || sleep 10
             done
-            head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+            # Fail open like the reviewer's freshness poll: a transient gh
+            # failure must not kill the gate, and an unreadable head must
+            # not turn into a skip either - the dispatch may be the
+            # reviewer's red-CI one, and skipping would strand it. Proceed
+            # so the fixer can re-check CI itself.
+            head_tip="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
             ci_red="false"
-            ci_json="$(gh api "repos/${GH_REPO}/commits/${head_tip}/check-runs" 2>/dev/null || true)"
-            # Exclude the dev-loop's own check runs (job names kept in sync
-            # with the three dev-loop workflows): a failed Reviewer run on
-            # the same SHA is not a CI failure to fix.
-            ci_failed="$(printf '%s' "$ci_json" \
-              | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
-            [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
-            if [ "$mergeable" != "CONFLICTING" ] && [ "$ci_red" != "true" ]; then
+            if [ -n "$head_tip" ]; then
+              ci_json="$(gh api "repos/${GH_REPO}/commits/${head_tip}/check-runs" 2>/dev/null || true)"
+              # Exclude the dev-loop's own check runs (job names kept in sync
+              # with the three dev-loop workflows): a failed Reviewer run on
+              # the same SHA is not a CI failure to fix.
+              ci_failed="$(printf '%s' "$ci_json" \
+                | jq -r '[.check_runs[]? | select(.name != "Reviewer" and .name != "Fixer" and .name != "Implementer") | select(.status == "completed" and .conclusion == "failure")] | length' 2>/dev/null || echo 0)"
+              [ "${ci_failed:-0}" -gt 0 ] && ci_red="true"
+            fi
+            if [ -n "$head_tip" ] && [ "$mergeable" != "CONFLICTING" ] && [ "$ci_red" != "true" ]; then
               echo "PR #$PR_NUMBER mergeable is '$mergeable' and CI is not red; nothing conflict- or CI-failure-related to do. Skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "$mergeable" = "CONFLICTING" ]; then
               echo "PR #$PR_NUMBER is CONFLICTING; treating this as a conflict-only run (plus CI failures if any)."
+            elif [ -z "$head_tip" ]; then
+              echo "::warning::Head-SHA poll failed; CI state unknown, proceeding so the fixer can re-check CI itself (fail open)."
             else
               echo "PR #$PR_NUMBER has red CI checks on head $head_tip; treating this as a CI-failure run (plus conflicts if any)."
             fi
@@ -502,8 +511,13 @@ jobs:
           # SHA and the current head is a CI auto-format commit (message
           # "chore: auto-format", pushed by ci.yml straight to the PR branch),
           # no fix ran - the findings still stand and the fixer proceeds against
-          # the formatted head.
-          head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+          # the formatted head. An unreadable head (transient poll failure)
+          # skips the check too: fail open to a possibly redundant run rather
+          # than strand the review's findings.
+          head_sha_before="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+          if [ -z "$head_sha_before" ]; then
+            echo "::warning::Head-SHA poll failed; cannot verify whether a fix already ran, proceeding (fail open)."
+          fi
           reviewed_sha=""
           review_state=""
           if [ -n "$review_id" ]; then
@@ -515,7 +529,7 @@ jobs:
             reviewed_sha="$(jq -r '.commit_id' <<<"$review_json")"
             review_state="$(jq -r '.state' <<<"$review_json")"
           fi
-          if [ -n "$reviewed_sha" ] && [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
+          if [ -n "$reviewed_sha" ] && [ -n "$head_sha_before" ] && [ "$EVENT_NAME" != "pull_request" ] && [ "$head_sha_before" != "$reviewed_sha" ]; then
             git fetch origin "$reviewed_sha" "$head_sha_before" --quiet
             # Fail closed: if the range cannot be resolved (shallow checkout,
             # pruned history), the intervening commits are unknown - skip
@@ -966,7 +980,20 @@ jobs:
               ;;
             FIXED:*)
               echo "Fixer finished: $outcome_line (cost: \$$cost)"
-              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
+              # Fail open like the reviewer's freshness poll: a transient gh
+              # failure must not kill the post-step after the FIXED verdict,
+              # and an unreadable head must not read as a push (empty !=
+              # SHA), which would skip the reviewer chain and stall the
+              # loop on the legitimate no-op FIXED. Treat an unknown head
+              # (either side of the comparison) as unchanged and chain; a
+              # genuinely pushed fix is already covered by its own
+              # synchronize event, and the reviewer's per-head marker
+              # dedupe absorbs the duplicate dispatch.
+              head_sha_now="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+              if [ -z "$head_sha_now" ] || [ -z "$HEAD_SHA_BEFORE" ]; then
+                echo "::warning::Head-SHA poll failed after FIXED; chaining the reviewer as if the head were unchanged (fail open)."
+                head_sha_now="$HEAD_SHA_BEFORE"
+              fi
               if [ "$head_sha_now" = "$HEAD_SHA_BEFORE" ]; then
                 # FIXED with an unchanged head has two meanings: the fixer
                 # verified the findings are already resolved on this head (a
@@ -976,9 +1003,9 @@ jobs:
                 # exists, the reviewer's gate dedupes it; otherwise the human
                 # gets the real current verdict instead of a misleading
                 # "made no change" escalation.
-                echo "Fixer reported FIXED with an unchanged head ($head_sha_now); chaining the reviewer to re-review this head."
+                echo "Fixer reported FIXED with an unchanged head (${head_sha_now:-unknown}); chaining the reviewer to re-review this head."
                 if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
-                  escalate "failed to chain the reviewer after a no-op FIXED (unchanged head $head_sha_now); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
+                  escalate "failed to chain the reviewer after a no-op FIXED (unchanged head ${head_sha_now:-unknown}); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
                 fi
                 exit 0
               fi
