@@ -32,7 +32,9 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    the diff: `gh pr view <N> --comments`, `gh pr diff <N>`, plus the linked issue via
    `gh issue view`. Read earlier reviews whose body starts with `<!-- dev-loop-review -->`
    (`gh api repos/chrthom/yasmin-ai/pulls/<N>/reviews --paginate`) and check that their findings
-   were resolved instead of reporting already-resolved ones again.
+   were resolved instead of reporting already-resolved ones again. You never resolve review
+   threads yourself; the workflow post-step resolves threads from earlier marker reviews whose
+   findings your review no longer reports.
 
    Continuity across review rounds: you are one reviewer in a multi-round loop, not a
    blank-slate auditor. The fixer acts on your findings and pushes a new head; the next

@@ -402,7 +402,12 @@ jobs:
         if: always() && steps.gate.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: opencode-reviewer-output-${{ github.run_id }}-${{ github.run_attempt }}
+          # The PR number in the name associates the artifact with its dev-loop
+          # issue (via the linked PR) for the cost report workflow
+          # (docs/dev-loop.md): artifact names are the only artifact metadata
+          # that can be filtered without a download. Runs whose artifacts
+          # predate this naming scheme are not attributable and are skipped.
+          name: opencode-reviewer-output-pr-${{ steps.gate.outputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             out/stream.ndjson
             out/opencode.stderr
@@ -415,6 +420,9 @@ jobs:
           GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
           PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
           REVIEWED_SHA: ${{ steps.gate.outputs.head_sha }}
+          # The reviewer run's exit code - the one expression context the
+          # checked-in script below cannot reach on its own.
+          OPENCODE_RC: ${{ steps.opencode.outputs.rc }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RETRY_COUNT: ${{ inputs.retry || '0' }}
           REPOSITORY: ${{ github.repository }}
@@ -422,279 +430,12 @@ jobs:
           # identity the fixer gate trusts as REPO_OWNER.
           REPO_OWNER: ${{ github.repository_owner }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -u
-          escalate() {
-            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
-            cat > /tmp/dev-loop-escalation.md <<EOF
-          <!-- dev-loop-escalation -->
-          @$REPO_OWNER dev-loop reviewer escalation: $1
-
-          PR: #${PR_NUMBER}
-          Run: ${RUN_URL}
-          EOF
-            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
-          }
-
-          rc="${{ steps.opencode.outputs.rc }}"
-
-          if [ -z "$rc" ]; then
-            # opencode never ran: a pre-run step (npm ci, install, version check, render) failed.
-            if [ "$RUN_ATTEMPT" = "1" ]; then
-              echo "A step failed before the agent ran; leaving a red run for re-run failed jobs."
-              exit 1
-            fi
-            escalate "a workflow step failed before the agent ran (twice); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow) or remove the needs-human label"
-            exit 0
-          fi
-
-          # Cost = sum of the per-step cost fields in the event stream
-          # (opencode reports cost/tokens on every step_finish event). tokens
-          # uses the same cost-weighted sum as the watchdog cap, so the
-          # reported number matches what the cap enforced.
-          # Round to cents: every consumer prints $cost verbatim, and the raw
-          # sum has float artifacts (e.g. $0.16212848000000002).
-          cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' out/stream.ndjson 2>/dev/null || echo 0)"
-          stderr_tail="$(tail -1 out/opencode.stderr 2>/dev/null || true)"
-
-          if [ "$rc" = "99" ]; then
-            # The watchdog killed opencode (failure streak / step / token cap):
-            # the run misbehaved or blew the budget. Never retry, escalate.
-            escalate "reviewer killed by the watchdog (rc=99; failure streak / step cap ${MAX_TURNS} / token cap ${MAX_TOKENS}; cost: \$$cost) - see the opencode output artifact"
-            exit 0
-          fi
-
-          if [ "$rc" = "124" ]; then
-            # deadline hit (timeout(1)): never auto-retry, escalate.
-            escalate "reviewer stopped on the ${TIME_LIMIT_MIN} min deadline (rc=124, cost: \$$cost); see the opencode output artifact"
-            exit 0
-          fi
-
-          if [ "$rc" = "1" ]; then
-            # opencode exits 1 for config/infra failures AND for sessions that
-            # recorded (recovered) tool errors - v2.0.26 observed on the #98/#99
-            # loop: a failed websearch/webfetch (no provider key configured)
-            # marks the session errored even when the agent completed its work
-            # with a valid VERDICT line. The verdict is the ground truth: fall
-            # through to normal handling when the contract line parses, and
-            # escalate only when it does not.
-            contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
-              | grep -E '^(VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)|WALL:)' | tail -1 || true)"
-            if [ -z "$contract_line" ]; then
-              escalate "opencode failed (exit 1, no VERDICT line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
-              exit 0
-            fi
-            echo "opencode exited 1 but the final message carries $contract_line; treating the session as completed (tool errors were recovered)."
-            rc=0
-          fi
-
-          if [ "$rc" != "0" ]; then
-            escalate "unexpected opencode exit code $rc (cost: \$$cost, $stderr_tail); see the opencode output artifact"
-            exit 0
-          fi
-
-          # exit 0: the verdict lives in the final assistant message; the agent
-          # never posts the review itself - this step does, with the PAT.
-          # Assistant text = the stream's text events (all of them; the verdict
-          # contract lives in the final message, so the last VERDICT line wins).
-          final_msg="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null || true)"
-          outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
-
-          case "$outcome_line" in
-            WALL:*)
-              escalate "reviewer stopped early with ${outcome_line} (cost: \$$cost)"
-              exit 0
-              ;;
-          esac
-
-          verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | tail -1 | cut -d: -f1 || true)"
-          verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num:-0}p" || true)"
-          case "${verdict_line:-}" in
-            VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
-            *)
-              # A clean exit (rc=0) with no VERDICT line is usually a truncated
-              # run (agent stopped mid-investigation, opencode gave up silently)
-              # - transient, unlike a deterministic parse failure. Retry once
-              # via workflow_dispatch; the retry counter in the input prevents
-              # a loop. The retry run re-reviews the same head; no marker review
-              # was posted, so the reviewer gate's dedupe cannot block it.
-              if [ "$RETRY_COUNT" -lt 1 ] \
-                && gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER" -f retry=1; then
-                echo "Unparseable outcome with no VERDICT line (cost: \$$cost); re-dispatching the reviewer once (retry=1). Transcript artifact preserved for diagnosis."
-                exit 0
-              fi
-              escalate "unparseable outcome (exit 0, final message does not match the VERDICT contract; retry exhausted); transcript artifact preserved for diagnosis"
-              exit 0
-              ;;
-          esac
-          verdict="${verdict_line#VERDICT: }"
-          echo "Reviewer verdict: $verdict (cost: \$$cost)"
-
-          current_sha="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
-          if [ "$current_sha" != "$REVIEWED_SHA" ]; then
-            echo "Head SHA moved ($REVIEWED_SHA -> $current_sha) since the review started; not acting on the stale verdict, re-dispatching the reviewer."
-            if ! gh workflow run dev-loop-review.yml --ref main -f pr_number="$PR_NUMBER"; then
-              escalate "failed to re-dispatch the reviewer after a stale head SHA ($REVIEWED_SHA -> $current_sha); retry via workflow_dispatch (Actions -> Dev Loop Review -> Run workflow)"
-            fi
-            exit 0
-          fi
-
-          # Compose and post the marker review. The findings JSON object is
-          # the text after the VERDICT line in the final assistant message
-          # (fenced or bare); anything missing or unparseable degrades to [].
-          # KEEP IN SYNC with dev-loop-fix.yml: its gates match this exact body
-          # shape - the marker alone on line 1 and a bare `Verdict: <V>` line -
-          # and the reviewer's own head-SHA dedupe greps the marker line too.
-          findings_json="$(printf '%s\n' "$final_msg" \
-            | tail -n +"$(( ${verdict_num:-1} + 1 ))" \
-            | sed -n '/^{/,$p' \
-            | sed '/^```/d' \
-            | jq 'try (select(type == "object") | .findings) catch null' 2>/dev/null)"
-          [ -n "$findings_json" ] || findings_json='[]'
-          # Verdict and findings must fail together: the verdict rules say a
-          # non-CLEAN verdict always has at least one finding, so a non-CLEAN
-          # verdict with zero parsed findings is a parse failure, not a clean
-          # result - escalate instead of posting an empty findings review the
-          # fixer cannot act on.
-          if [ "$verdict" != "CLEAN" ] \
-            && [ "$(printf '%s' "$findings_json" | jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
-            escalate "unparseable outcome (exit 0, verdict $verdict but the findings JSON is missing or has zero findings); transcript artifact preserved for diagnosis"
-            exit 0
-          fi
-          # Hybrid posting: findings anchored to a diff line become inline
-          # comments; the rest (and every finding if inline posting fails)
-          # go into the review body as a markdown list.
-          body_findings="$(printf '%s' "$findings_json" \
-            | jq -r '.[] | select((.path // empty | length) == 0 or (.line // 0) == 0) \
-              | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring))' 2>/dev/null || true)"
-          body="<!-- dev-loop-review -->
-          Verdict: $verdict
-
-          dev-loop review of $REVIEWED_SHA (cost: \$$cost)."
-          if [ -n "$body_findings" ]; then
-            body="$body
-
-          $body_findings"
-          fi
-          # One pending review per user per PR: a stale pending review of the
-          # TOKEN USER from a previously failed post blocks every new POST with
-          # 422 (observed on PR #106). Delete it before posting - but ONLY the
-          # token user's own (the repo owner; the list-reviews endpoint returns
-          # every user's pending review and reviews are world-postable on this
-          # public repo, so a third party's draft must not be touched), and
-          # ONLY one provably not the owner's draft findings: zero draft
-          # comments AND an empty body, or a first-line
-          # <!-- dev-loop-review --> marker - an HTML comment that renders
-          # invisibly in the GitHub UI; the human findings channel is
-          # non-marker by definition, so a marker-prefixed pending review
-          # is a loop leftover (e.g. a misbehaving actor POSTing a
-          # body-carrying review) that must self-heal too, or it 422-blocks
-          # every future POST. Anything else may be the owner's findings
-          # review being drafted in the GitHub UI (or autosaved via the API
-          # with its body already set) - the body is the primary human
-          # findings payload - and is left alone (it 422-blocks the POST; the
-          # warning below makes that visible instead).
-          pending_review_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" --paginate \
-            | jq -rs --arg owner "$REPO_OWNER" '(add // []) | [.[] | select(.state == "PENDING") | select(.user.login == $owner)] | first | .id // empty')"
-          if [ -n "$pending_review_id" ]; then
-            # Fail closed: an unknown comment count or body means "maybe a
-            # draft" - the POST can still 422, which escalates visibly, but a
-            # human draft is never destroyed on a query failure. The marker
-            # check stays outside fail-closed: a marker-prefixed body proves
-            # loop origin even when the comment count is unknown.
-            pending_comments="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id/comments" \
-              --jq 'length' 2>/dev/null || echo unknown)"
-            pending_body="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" \
-              --jq '.body // ""' 2>/dev/null || echo unknown)"
-            if { [ "$pending_comments" = "0" ] && [ -z "$(printf '%s' "$pending_body" | tr -d '[:space:]')" ]; } \
-              || printf '%s' "$pending_body" | head -1 | grep -q '^<!-- dev-loop-review -->$'; then
-              echo "Deleting stale pending review $pending_review_id before posting (comment- and body-less, or marker-prefixed i.e. provably a loop leftover, not a human draft; it would 422-block the POST)."
-              gh api -X DELETE "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews/$pending_review_id" >/dev/null \
-                || echo "::warning::Could not delete pending review $pending_review_id; the POST may 422."
-            else
-              echo "::warning::Pending review $pending_review_id carries ${pending_comments} draft comment(s) or a non-marker draft body (likely the owner's review draft in the GitHub UI); NOT deleting it. If it is a loop leftover, delete it manually - it 422-blocks the review POST."
-            fi
-          fi
-          cat > /tmp/dev-loop-review.json <<EOF
-          {
-            "commit_id": "$REVIEWED_SHA",
-            "event": "COMMENT",
-            "body": $(printf '%s' "$body" | jq -Rs .),
-            "comments": $(printf '%s' "$findings_json" | jq '[.[] | select((.path // empty | length) > 0 and (.line // 0) > 0) | {path: .path, line: .line, side: "RIGHT", body: ("**[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + (.message // .body // (. | tostring)))}]' 2>/dev/null || echo '[]')
-          }
-          EOF
-          if ! jq -e . /tmp/dev-loop-review.json >/dev/null 2>&1; then
-            escalate "the review payload is not valid JSON (body/comments build failed); verdict was $verdict - see the run log"
-            exit 0
-          fi
-          review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>&1 || true)"
-          case "$review_post_id" in
-            ''|*[!0-9]*)
-              # gh emits the error object (not an id) on failure - never pass
-              # it on; log it in full for diagnosis.
-              echo "::warning::Inline review POST failed: $review_post_id"
-              review_post_id=""
-              ;;
-          esac
-          if [ -z "$review_post_id" ]; then
-            # GitHub rejects inline comments outside the diff: retry once with
-            # every finding in the body (PR #80 behavior) before escalating.
-            all_findings="$(printf '%s' "$findings_json" \
-              | jq -r '.[] | "- **[" + (.severity // "minor") + "]**" + (if .needs_human then " **[needs human]**" else "" end) + " " + ((.path // "?") + ":" + ((.line // 0) | tostring) + " ") + (.message // .body // (. | tostring))' 2>/dev/null || true)"
-            fallback_body="<!-- dev-loop-review -->
-          Verdict: $verdict
-
-          dev-loop review of $REVIEWED_SHA (cost: \$$cost).
-
-          $all_findings"
-            # -n (null input): without it jq emits the object once per input
-            # document, and a step with no stdin produces zero documents - an
-            # empty payload file that then fails the validation below (the
-            # PR #113 escalation; the fallback had never run before #108
-            # surfaced it).
-            jq -n --arg body "$fallback_body" --arg sha "$REVIEWED_SHA" \
-              '{commit_id: $sha, event: "COMMENT", body: $body, comments: []}' \
-              > /tmp/dev-loop-review.json
-            if ! jq -e . /tmp/dev-loop-review.json >/dev/null 2>&1; then
-              escalate "the fallback review payload is not valid JSON; verdict was $verdict - see the run log"
-              exit 0
-            fi
-            review_post_id="$(gh api "repos/${REPOSITORY}/pulls/$PR_NUMBER/reviews" -X POST --input /tmp/dev-loop-review.json --jq .id 2>&1 || true)"
-            case "$review_post_id" in
-              ''|*[!0-9]*)
-                escalate "the review post failed (inline and fallback both rejected: $review_post_id); verdict was $verdict - see the run log"
-                exit 0
-                ;;
-            esac
-          fi
-
-          case "$verdict" in
-            CLEAN)
-              echo "Verdict CLEAN: the PR stands ready for a human merge decision; no state change."
-              exit 0
-              ;;
-            CHANGES_NEEDED)
-              case "$review_post_id" in
-                ''|*[!0-9]*)
-                  # Unreachable with the hardened post above, but a non-numeric
-                  # id must never reach the fixer (PR #106: the 422 error JSON
-                  # was dispatched as a review id and crashed the fixer gate).
-                  escalate "internal error: review_post_id is not numeric ('$review_post_id'); the review stands - retry the fixer via workflow_dispatch"
-                  exit 0
-                  ;;
-              esac
-              echo "Verdict CHANGES_NEEDED: dispatching the fixer with the exact review id ($review_post_id)."
-              # Pass the posted review's id, not "latest": a second
-              # CHANGES_NEEDED review landing before the fixer's gate must
-              # not make the fixer act on the wrong review.
-              if ! gh workflow run dev-loop-fix.yml --ref main \
-                -f pr_number="$PR_NUMBER" -f review_id="$review_post_id"; then
-                escalate "failed to dispatch the fixer for this CHANGES_NEEDED review; the review stands - retry via workflow_dispatch (Actions -> Dev Loop Fix -> Run workflow)"
-              fi
-              exit 0
-              ;;
-            NEEDS_HUMAN)
-              escalate "review verdict NEEDS_HUMAN - at least one finding requires a human decision; see the review just posted"
-              exit 0
-              ;;
-          esac
+          RUN_ID: ${{ github.run_id }}
+        # The state machine lives in a checked-in script (the env: block above is
+        # its only bridge for GitHub expression contexts): GitHub caps a run:
+        # block scalar at 21,000 chars, and the inlined version of this script
+        # sat within ~3.3k of that cap - crossing it silently invalidates the
+        # whole workflow, and the loop's escalation machinery lives in this
+        # very file (observed live: the pre-condense merge commit on PR #119
+        # stalled the whole loop). Grow the script file, never the YAML scalar.
+        run: bash .github/dev-loop/scripts/post-review.sh
