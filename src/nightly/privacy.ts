@@ -14,6 +14,9 @@ const TRUNCATION_MARKER = '…[truncated]';
  * matching opener strips everything from the start of the content through the closer. Either case
  * means we can no longer be sure where the sensitive region was meant to end, so the ambiguous region
  * is dropped rather than risking a leak.
+ *
+ * @param content The verbose memory content, possibly containing sensitive markers.
+ * @returns The content with every sensitive block (and any ambiguous region) removed.
  */
 export function stripSensitive(content: string): string {
   if (!content.includes(SENSITIVE_OPEN) && !content.includes(SENSITIVE_CLOSE)) {
@@ -47,6 +50,10 @@ export function stripSensitive(content: string): string {
 
 /**
  * Checks whether content exceeds the given character cap
+ *
+ * @param content The text to check.
+ * @param maxChars The character cap.
+ * @returns true when the content is longer than the cap.
  */
 export function isOverCap(content: string, maxChars: number): boolean {
   return content.length > maxChars;
@@ -54,6 +61,10 @@ export function isOverCap(content: string, maxChars: number): boolean {
 
 /**
  * Truncates content to fit within maxChars (including the trailing "…[truncated]" marker)
+ *
+ * @param content The text to truncate.
+ * @param maxChars The character cap the result must fit within.
+ * @returns The (possibly truncated) text, always at most maxChars long.
  */
 export function truncateToCap(content: string, maxChars: number): string {
   if (content.length <= maxChars) {

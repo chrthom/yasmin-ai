@@ -357,6 +357,14 @@ describe('nightly pipeline integration', () => {
     expect(mockSetWatermark).toHaveBeenCalledTimes(1);
     expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
 
+    // Phase 1 persists the collected batch right away (the crash-recovery watermark for a resume):
+    // a fresh NON-empty run must record processedConversationIds + '1-collect' so a crash later in
+    // the run replays exactly this batch instead of re-collecting.
+    expect(mockUpdateJobLog).toHaveBeenCalledWith(1, {
+      processedConversationIds: ['conv-1', 'conv-2', 'conv-3'],
+      lastCompletedPhase: '1-collect'
+    });
+
     expect(mockInsertNextVersion).toHaveBeenCalledWith(
       'journals/alice/conv-1.md',
       'Journal about Alice',
@@ -637,6 +645,211 @@ describe('nightly pipeline integration', () => {
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
 
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 4b. Empty-batch short-circuit (issue #109)
+  // -------------------------------------------------------------------------
+  it('empty batch (fresh): skips phases 2-7 entirely -- no LLM calls, no Mistral writes, completed row + watermark', async () => {
+    // Default mockListConversations resolves to [] -- nothing to collect.
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(result.conversationsProcessed).toBe(0);
+    expect(result.jobId).toBe(1);
+
+    // The skip decision consults the outbox first -- with no conversations AND no undelivered
+    // notes there is genuinely nothing only the nightly job could do.
+    expect(mockGetIntradayNotesMaxId).toHaveBeenCalledTimes(1);
+    expect(mockGetUnconsolidatedNotes).toHaveBeenCalledTimes(1);
+
+    // No LLM calls at all: journal, integrate, review, revise, compact.
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockRunIntegrate).not.toHaveBeenCalled();
+    expect(mockRunReview).not.toHaveBeenCalled();
+    expect(mockReviseProposal).not.toHaveBeenCalled();
+    expect(mockRunCompact).not.toHaveBeenCalled();
+
+    // No Mistral writes or deletes, and no conversation reads either.
+    expect(mockGetConversationMessages).not.toHaveBeenCalled();
+    expect(mockReplaceDocument).not.toHaveBeenCalled();
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+    expect(mockDeleteConversation).not.toHaveBeenCalled();
+
+    // Nothing is archived and the eager cache is not rewritten.
+    expect(mockInsertNextVersion).not.toHaveBeenCalled();
+    expect(mockUpsertContextEntry).not.toHaveBeenCalled();
+
+    // The job log records exactly one write: the completed row with zero conversations (no
+    // empty processedConversationIds batch is persisted).
+    expect(mockUpdateJobLog).toHaveBeenCalledTimes(1);
+    expect(mockUpdateJobLog).toHaveBeenCalledWith(1, {
+      status: 'completed',
+      completedAt: expect.any(Date),
+      lastCompletedPhase: '1-collect',
+      conversationsProcessed: 0
+    });
+
+    // The watermark advances to the Phase-1 snapshot time, like any completed run.
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
+
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch (resumed): an orphan row whose effective batch is empty short-circuits the same way', async () => {
+    // Crash between createJobLog() and the processedConversationIds write: the orphan row exists
+    // but its batch was never recorded, so the run re-collects fresh -- and finds nothing.
+    const orphan: NightlyJobLog = {
+      id: 42,
+      startedAt: new Date('2026-07-05T22:00:00Z'),
+      completedAt: null,
+      status: 'running',
+      lastCompletedPhase: null,
+      processedConversationIds: [],
+      skippedConversationIds: [],
+      errorMessage: null,
+      conversationsProcessed: 0,
+      filesUpdated: 0,
+      filesCreated: 0
+    };
+    mockFindRunningJob.mockResolvedValueOnce(orphan);
+    // Default mockListConversations resolves to [] -- the effective batch stays empty.
+
+    const result = await runNightlyPipeline();
+
+    // The orphan's row is reused (no new job row created) and it is the one being completed.
+    expect(mockCreateJobLog).not.toHaveBeenCalled();
+    expect(result.jobId).toBe(42);
+    expect(result.status).toBe('completed');
+    expect(result.conversationsProcessed).toBe(0);
+
+    // Same skip shape as the fresh case: no LLM calls, no Mistral writes/deletes.
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockRunIntegrate).not.toHaveBeenCalled();
+    expect(mockRunReview).not.toHaveBeenCalled();
+    expect(mockRunCompact).not.toHaveBeenCalled();
+    expect(mockGetConversationMessages).not.toHaveBeenCalled();
+    expect(mockDeleteConversation).not.toHaveBeenCalled();
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+    expect(mockReplaceDocument).not.toHaveBeenCalled();
+
+    const completedUpdate = mockUpdateJobLog.mock.calls.find(call => call[1]?.status === 'completed');
+    expect(completedUpdate).toBeDefined();
+    expect(completedUpdate![1].conversationsProcessed).toBe(0);
+
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch + undelivered notes: does NOT skip -- the run consolidates the pending notes with zero conversations', async () => {
+    // Zero conversations, but the outbox still holds an undelivered note: the skip must not
+    // strand it, so the consolidation path (phases 3/4/6.5) keeps running.
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'consolidated the note', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+
+    // No conversation was journaled or deleted, but integrate saw the note as evidence...
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockRunIntegrate).toHaveBeenCalledTimes(1);
+    expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    expect(mockDeleteConversation).not.toHaveBeenCalled();
+
+    // ...and the outbox was emptied after the successful consolidation.
+    expect(mockClearIntradayNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(5);
+
+    expect(result.status).toBe('completed');
+    expect(result.conversationsProcessed).toBe(0);
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch + undelivered notes: review and revision ground in the notes, so the note survives into memory', async () => {
+    // The quiet-night loss guard: the reviewer's evidence base must include the undelivered notes.
+    // Without them a note-derived fact looks invented (the journals are empty on this path), gets
+    // rejected, and Phase 6.5 would still empty the outbox -- silently losing the note's content.
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
+    const notes = [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ];
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce(notes);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/zara.md',
+        content: 'Zara profile with the note fact',
+        isNew: true
+      });
+      return { finalText: 'staged the note fact', iterations: 1 };
+    });
+    // The first review rejects (as it would with empty journals), the revision re-grounds in the
+    // notes, the re-review approves.
+    mockRunReview
+      .mockResolvedValueOnce({ approved: false, reason: 'fact not grounded in the journals' })
+      .mockResolvedValueOnce({ approved: true, reason: 'grounded in the note' });
+
+    const result = await runNightlyPipeline();
+
+    // Every review call and the revision call carried the notes as evidence.
+    expect(mockRunReview).toHaveBeenCalledTimes(2);
+    expect(mockRunReview.mock.calls[0][6]).toEqual(notes);
+    expect(mockRunReview.mock.calls[1][6]).toEqual(notes);
+    expect(mockReviseProposal).toHaveBeenCalledTimes(1);
+    expect(mockReviseProposal.mock.calls[0][6]).toEqual(notes);
+
+    // The note-derived fact was archived, so emptying the outbox no longer loses it.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/zara.md',
+      'Zara profile with the note fact',
+      expect.any(Date)
+    );
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(5);
+
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch + failed notes read: skips (no LLM calls) and leaves the outbox untouched', async () => {
+    // The outbox state is unknown, but the skip performs no outbox writes -- pending notes are
+    // never lost, they stay for the next run. And with zero conversations there is no journal
+    // evidence, so running phases 2-7 could only stage spurious updates.
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockGetUnconsolidatedNotes.mockRejectedValueOnce(new Error('db down'));
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(mockRunIntegrate).not.toHaveBeenCalled();
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockClearIntradayNotes).not.toHaveBeenCalled();
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
   });
 
   // -------------------------------------------------------------------------
@@ -1240,6 +1453,7 @@ describe('nightly pipeline integration', () => {
       seeded.createdAt.toISOString(),
       expect.any(Array),
       0,
+      [],
       []
     );
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);

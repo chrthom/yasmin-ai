@@ -1,0 +1,477 @@
+name: Dev Loop Cost Report
+
+on:
+  issues:
+    # Only a closed-as-completed dev-loop issue gets a cost report
+    # (docs/dev-loop.md): not_planned (won't do) and duplicate closes are
+    # skipped by the job-level if below, before a runner is allocated; the
+    # gate re-checks the live issue state as defense in depth.
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to report on (manual backstop / retry)
+        required: true
+        type: string
+
+# Least privilege: the job token only lists and downloads artifacts
+# (actions: read); every issue read/write goes through DEV_LOOP_TOKEN.
+permissions:
+  actions: read
+
+concurrency:
+  group: dev-loop-cost-report-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Cost report
+    # Job-level event filter (docs/dev-loop.md): only a closed-as-completed
+    # dev-loop issue can produce a report - not_planned/duplicate closes and
+    # unlabeled issues skip before a runner is allocated. The gate below
+    # re-checks the live issue state as defense in depth and is the only
+    # gate on the workflow_dispatch backstop, so a manual retry can never
+    # post for a not_planned/duplicate close either.
+    if: >-
+      github.event_name != 'issues' ||
+      (github.event.issue.state_reason == 'completed' &&
+       contains(github.event.issue.labels.*.name, 'dev-loop'))
+    runs-on: ubuntu-latest
+    # Pure GitHub API aggregation (no agent run, no npm); minutes at most.
+    timeout-minutes: 15
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          WORK_DIR: ${{ runner.temp }}/dev-loop-cost
+        run: |
+          set -eu
+          mkdir -p "$WORK_DIR"
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "No issue number in event/input; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # workflow_dispatch accepts any string and `gh issue view` also
+          # resolves issue URLs (even cross-repo); a non-numeric input
+          # would corrupt the artifact-name regex and the comment POST
+          # below - reject everything but a plain issue number.
+          if ! printf '%s' "$ISSUE_NUMBER" | grep -Eq '^[0-9]+$'; then
+            echo "::warning::'$ISSUE_NUMBER' is not a plain issue number; refusing to produce a cost report."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `gh issue view` also resolves PR numbers (PRs share the issue
+          # number space), so a typo'd workflow_dispatch input pointing at
+          # a PR would pass the live-state gate below and post the report
+          # on the PR (the issue-comments API accepts PRs) - a number that
+          # resolves to a PR is refused outright. The automatic issues event
+          # always carries a real issue number, so this only guards the
+          # backstop's manual input. Like the live-state gate below, only
+          # a could-not-resolve/not-found failure proves "not a PR" and
+          # proceeds quietly; any other gh failure (rate limit, 5xx, network)
+          # is transient and must fail red with the backstop-retry hint
+          # instead of being mistaken for "not a PR".
+          if ! gh pr view "$ISSUE_NUMBER" --json number >/dev/null 2>"$WORK_DIR/pr-gate.err"; then
+            if ! grep -Eqi 'could not resolve|not found|http 404' "$WORK_DIR/pr-gate.err"; then
+              echo "::warning::Could not check whether #$ISSUE_NUMBER is a pull request; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
+              cat "$WORK_DIR/pr-gate.err" || true
+              exit 1
+            fi
+          else
+            echo "::warning::$ISSUE_NUMBER is a pull request, not an issue; refusing to produce a cost report."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Live-state gate: the issue must be closed as completed and carry
+          # the dev-loop label (docs/dev-loop.md opt-in). stateReason from
+          # `gh issue view` is upper case; the event payload's state_reason
+          # is lower case - normalize before comparing. Only a not-found
+          # failure skips quietly; any other failure (rate limit, 5xx) is
+          # transient, and the one-shot issue-close event must not be lost
+          # to a green run - the step fails so the red run points at the
+          # workflow_dispatch backstop retry.
+          if ! issue_json="$(gh issue view "$ISSUE_NUMBER" --json number,state,stateReason,labels 2>"$WORK_DIR/issue.err")"; then
+            if grep -Eqi 'could not resolve|not found|http 404' "$WORK_DIR/issue.err"; then
+              echo "Issue #$ISSUE_NUMBER not found; nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::Could not read issue #$ISSUE_NUMBER's live state; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
+            cat "$WORK_DIR/issue.err" || true
+            exit 1
+          fi
+          state="$(printf '%s' "$issue_json" | jq -r '.state')"
+          state_reason="$(printf '%s' "$issue_json" | jq -r '.stateReason // ""' | tr '[:upper:]' '[:lower:]')"
+          if [ "$state" != "CLOSED" ] || [ "$state_reason" != "completed" ]; then
+            echo "Issue #$ISSUE_NUMBER is $state (reason: ${state_reason:-none}); only closed-as-completed issues get a cost report. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s' "$issue_json" | jq -e 'any(.labels[]; .name == "dev-loop")' >/dev/null; then
+            echo "Issue #$ISSUE_NUMBER lacks the dev-loop label; the loop is opt-in. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The PRs that served this issue, resolved two ways for robustness:
+          # cross-referenced PRs whose live body still closes this issue
+          # (the implementer PR's Closes #<N> body reference) and the
+          # loop's branch convention vibe/issue-<N>-* (covers a PR that
+          # failed to reference the issue in its body).
+          if ! gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/timeline" --paginate > "$WORK_DIR/timeline.json" 2>"$WORK_DIR/timeline.err"; then
+            echo "::warning::Could not read the issue timeline; relying on the branch-convention PR scan alone."
+            cat "$WORK_DIR/timeline.err" || true
+            printf '[]' > "$WORK_DIR/timeline.json"
+          fi
+          # A cross-reference timeline event fires for ANY mention of the
+          # issue (comments, review bodies, edited-away text) and can
+          # originate in another repository, whose local PR numbers mean
+          # something different here - so only same-repo cross-references
+          # are considered, and a cross-referenced PR is only attributed
+          # when its live body still carries a closing reference -
+          # Closes|Fixes|Resolves #<N> or the issue-URL form GitHub also
+          # auto-closes on - otherwise unrelated PRs' reviewer/fixer
+          # costs would be double-counted across issues. A jq failure here
+          # (a malformed timeline.json) must not silently empty timeline_prs
+          # - the report would degrade to the branch-convention scan alone
+          # on a green run - so it warns like the branch-scan jq below.
+          if ! timeline_prs="$(jq -s --arg repo "${GH_REPO}" 'add // []
+            | [.[] | select(.event == "cross-referenced")
+                       | .source.issue
+                       | select(.pull_request != null)
+                       | select((.url // "") | startswith("https://api.github.com/repos/" + $repo + "/issues/"))
+                       | .number] | unique | .[]' "$WORK_DIR/timeline.json" 2>"$WORK_DIR/timeline-scan.err")"; then
+            echo "::warning::Could not scan the issue timeline for cross-referenced PRs; the report may undercount runs from closing-reference PRs."
+            cat "$WORK_DIR/timeline-scan.err" || true
+            timeline_prs=""
+          fi
+          closing_prs=""
+          # Closing-reference pattern (keyword + separator + this issue's
+          # number or issue URL). A negation word immediately before the
+          # keyword (not|no|never|won't/cannot|n't, e.g. "does not" or
+          # "cannot close #<N>") explicitly negates the close and must not
+          # attribute the PR;
+          # the n't form has no left word boundary on purpose - it is a
+          # suffix, so "doesn't close #<N>" must match too. Both greps work
+          # per line: a negated reference on one line does not void a
+          # genuine closing reference on another line of the same body.
+          # The URL form is host-pinned to github.com: GitHub only
+          # auto-closes on URLs that resolve to this repo's issue, so a
+          # look-alike URL on another host must not attribute the PR.
+          closing_re="(^|[^[:alpha:]])(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://(www\.)?github\.com/${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
+          negated_re="((^|[^[:alpha:]])(not|no|never|won'?t|cannot)|n'?t)[[:space:]]+(clos(e|es|ed)|fix(e[sd])?|resolv(e|es|ed))([[:space:]:]+|[[:space:]]*#[0-9]+[[:space:]]*,[[:space:]]*)(#${ISSUE_NUMBER}|https?://(www\.)?github\.com/${GH_REPO}/issues/${ISSUE_NUMBER})([^0-9]|$)"
+          for pr in $timeline_prs; do
+            if ! pr_body="$(gh pr view "$pr" --json body --jq '.body // ""' 2>"$WORK_DIR/pr-body-$pr.err")"; then
+              echo "::warning::Could not read PR #$pr's body; the cross-referenced PR is not attributed to this issue."
+              cat "$WORK_DIR/pr-body-$pr.err" || true
+              continue
+            fi
+            if [ -n "$(printf '%s\n' "$pr_body" | grep -Ei "$closing_re" | grep -Eiv "$negated_re")" ]; then
+              closing_prs+="${pr}"$'\n'
+            fi
+          done
+          # Branch-convention scan over the FULL PR list: `gh pr list` caps
+          # at --limit, so the raw pulls API is paginated to the end instead
+          # (--paginate emits one array per page; the add below flattens them
+          # like the timeline jq above).
+          if ! gh api "repos/${GH_REPO}/pulls?state=all&per_page=100" --paginate < /dev/null > "$WORK_DIR/prlist.raw.json" 2>"$WORK_DIR/prlist.err"; then
+            echo "::warning::Could not list the repository's PRs for the branch-convention scan; the report may undercount runs from branch-matched PRs."
+            cat "$WORK_DIR/prlist.err" || true
+            printf '[]' > "$WORK_DIR/prlist.raw.json"
+          fi
+          # (.head.ref // "") guards against null refs (a PR from a deleted
+          # fork carries head: null in state=all data): startswith() on null
+          # aborts the whole scan, and an empty branch_prs silently
+          # undercounts every branch-matched PR. Any other jq failure must
+          # surface as a warning with the backstop-retry hint, like the
+          # match jq in the collect step.
+          if ! branch_prs="$(jq -s --arg n "$ISSUE_NUMBER" 'add // []
+            | [.[] | select((.head.ref // "") | startswith("vibe/issue-" + $n + "-")) | .number] | .[]' "$WORK_DIR/prlist.raw.json" 2>"$WORK_DIR/branch-scan.err")"; then
+            echo "::warning::Could not scan the repository's PRs for the branch convention; the report may undercount runs from branch-matched PRs. Re-run the workflow_dispatch backstop to retry."
+            cat "$WORK_DIR/branch-scan.err" || true
+            branch_prs=""
+          fi
+          linked_prs="$(printf '%s\n%s\n' "$closing_prs" "$branch_prs" | sed '/^$/d' | sort -un)"
+          prs_json="$(printf '[%s]' "$(printf '%s\n' "$linked_prs" | sed '/^$/d' | paste -sd, -)")"
+          printf '%s' "$prs_json" > "$WORK_DIR/prs.json"
+          echo "Issue #$ISSUE_NUMBER is closed as completed with the dev-loop label; linked PRs: $prs_json"
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Collect run costs
+        id: collect
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          # Artifact listing/download uses the job token (actions: read) so
+          # the report does not depend on the fine-grained PAT's scopes; the
+          # inline GH_TOKEN="$GITHUB_TOKEN" overrides pin the artifact calls
+          # to the job token even if a GH_TOKEN ever appears at step level.
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.gate.outputs.issue_number }}
+          WORK_DIR: ${{ runner.temp }}/dev-loop-cost
+        run: |
+          set -u
+          prs="$(cat "$WORK_DIR/prs.json")"
+          # All opencode artifacts, matched by name: the role workflows record
+          # their association target in the artifact name (issue-<N> for the
+          # implementer, pr-<M> for reviewer/fixer runs of a linked PR) - the
+          # only artifact metadata that can be filtered without a download.
+          # Runs whose artifacts predate the naming scheme are not
+          # attributable and are skipped (docs/dev-loop.md).
+          if ! GH_TOKEN="$GITHUB_TOKEN" gh api "repos/${GH_REPO}/actions/artifacts" --paginate < /dev/null > "$WORK_DIR/artifacts.raw.json" 2>"$WORK_DIR/artifacts.err"; then
+            # The report cannot be built without the artifact list, so the
+            # step fails red like the gate/Post transient failures - the
+            # one-shot issue-close event must not be lost to a green run.
+            echo "::warning::Could not list the run artifacts; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
+            cat "$WORK_DIR/artifacts.err" || true
+            exit 1
+          fi
+          jq -s '[.[].artifacts[]?]' "$WORK_DIR/artifacts.raw.json" > "$WORK_DIR/artifacts.json"
+          # With no linked PRs the reviewer/fixer branch is dropped from the
+          # pattern entirely: an empty pr alternation would degenerate into
+          # matching crashed-run artifacts whose pr number was never echoed
+          # (opencode-reviewer-output-pr--<run_id>-<attempt>).
+          if ! jq -r --argjson prs "$prs" --arg issue "$ISSUE_NUMBER" '
+            ($prs | length) as $npr
+            | .[] | select(.name | test(
+                ("^opencode-implementer-output-issue-" + $issue + "-[0-9]+-[0-9]+$")
+                + (if $npr > 0
+                   then "|^opencode-(reviewer|fixer)-output-pr-("
+                        + ($prs | map(tostring) | join("|"))
+                        + ")-[0-9]+-[0-9]+$"
+                   else "" end)
+              )) | [.id, .name, (.expired | tostring)] | @tsv' "$WORK_DIR/artifacts.json" > "$WORK_DIR/matched.tsv" 2>"$WORK_DIR/match.err"; then
+            # Same failure treatment as the artifact listing above: with no
+            # matched artifacts the report would silently vanish into a
+            # green run, so fail red and point at the backstop retry.
+            echo "::warning::Artifact name matching failed; no cost report was produced. Re-run the workflow_dispatch backstop to retry."
+            cat "$WORK_DIR/match.err" || true
+            exit 1
+          fi
+          matched="$(grep -c . "$WORK_DIR/matched.tsv" || true)"
+          echo "Matched $matched attributable dev-loop run artifact(s) for issue #$ISSUE_NUMBER."
+          : > "$WORK_DIR/runs.jsonl"
+          unavailable=0
+          while IFS=$'\t' read -r art_id art_name art_expired; do
+            if [ -z "$art_id" ]; then
+              continue
+            fi
+            role="$(printf '%s' "$art_name" | sed -E 's/^opencode-([a-z]+)-output-.*/\1/')"
+            run_id="$(printf '%s' "$art_name" | sed -E 's/^opencode-[a-z]+-output-(issue-[0-9]+|pr-[0-9]+)-([0-9]+)-[0-9]+$/\2/')"
+            if [ "$art_expired" = "true" ]; then
+              echo "Artifact $art_name has expired; its run cannot be counted."
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            dl="$WORK_DIR/artifacts/$art_name"
+            mkdir -p "$dl"
+            if ! GH_TOKEN="$GITHUB_TOKEN" gh api "repos/${GH_REPO}/actions/artifacts/${art_id}/zip" < /dev/null > "$dl/artifact.zip" 2>"$dl/download.err" \
+              || ! unzip -o -q "$dl/artifact.zip" -d "$dl"; then
+              echo "::warning::Could not download or extract artifact $art_name."
+              cat "$dl/download.err" || true
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            if [ ! -f "$dl/stream.ndjson" ]; then
+              echo "::warning::Artifact $art_name carries no stream.ndjson; skipping the run."
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            # Same aggregation as the role post-steps: cost = sum of the
+            # per-step cost fields, tokens = the cost-weighted sum the
+            # MAX_TOKENS watchdog cap enforces. Round the per-run cost to
+            # cents so the reported per-run numbers have no float artifacts.
+            # A hard-killed run can leave a truncated final line in
+            # stream.ndjson, which fails jq -s: a parse failure means the
+            # run's data is unusable, so - like a missing stream.ndjson
+            # above - the run is counted as unavailable instead of being
+            # silently zeroed into the totals.
+            cost="$(jq -s '[.[].part.cost // 0] | add // 0 | (.*100 | round) / 100' "$dl/stream.ndjson" 2>"$dl/parse.err" || true)"
+            tokens="$(jq -s '[.[].part.tokens // empty
+              | (.input // 0) + (.output // 0) + (.cache.write // 0) + (0.1 * (.cache.read // 0))] | add // 0' "$dl/stream.ndjson" 2>>"$dl/parse.err" || true)"
+            if [ -z "$cost" ] || [ -z "$tokens" ]; then
+              echo "::warning::Artifact $art_name carries an unparseable stream.ndjson; skipping the run."
+              cat "$dl/parse.err" || true
+              unavailable=$((unavailable + 1))
+              continue
+            fi
+            printf '{"role":"%s","run_id":"%s","cost":%s,"tokens":%s}\n' "$role" "$run_id" "$cost" "$tokens" >> "$WORK_DIR/runs.jsonl"
+          done < "$WORK_DIR/matched.tsv"
+          runs_found=false
+          if [ -s "$WORK_DIR/runs.jsonl" ]; then
+            runs_found=true
+          elif [ "$unavailable" -gt 0 ]; then
+            echo "All $unavailable matched artifact(s) for issue #$ISSUE_NUMBER were unavailable; the report degrades to a no-data note."
+          else
+            echo "No attributable dev-loop run artifacts for issue #$ISSUE_NUMBER; nothing to report."
+          fi
+          echo "runs_found=$runs_found" >> "$GITHUB_OUTPUT"
+          echo "unavailable=$unavailable" >> "$GITHUB_OUTPUT"
+
+      - name: Post cost report comment
+        # Also runs in the all-artifacts-unavailable case (runs_found=false
+        # with unavailable>0): the no-data note below carries the
+        # unavailable count the docs promise instead of losing it to a
+        # comment-less green run.
+        if: >-
+          steps.gate.outputs.skip != 'true' &&
+          (steps.collect.outputs.runs_found == 'true' ||
+          steps.collect.outputs.unavailable != '0')
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.gate.outputs.issue_number }}
+          UNAVAILABLE: ${{ steps.collect.outputs.unavailable }}
+          RUNS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs
+          WORK_DIR: ${{ runner.temp }}/dev-loop-cost
+        run: |
+          set -u
+          # Per-role and grand totals from the collected runs. The sums are
+          # float arithmetic over per-run cents/tokens; the display rounding
+          # below removes the float artifacts (same approach as the role
+          # post-steps).
+          jq -s '{
+            runs: length,
+            cost: (map(.cost) | add // 0),
+            tokens: (map(.tokens) | add // 0),
+            roles: (group_by(.role) | map({
+              role: .[0].role,
+              runs: length,
+              cost: (map(.cost) | add // 0),
+              tokens: (map(.tokens) | add // 0)
+            }))
+          }' "$WORK_DIR/runs.jsonl" > "$WORK_DIR/agg.json"
+          total_runs="$(jq -r '.runs' "$WORK_DIR/agg.json")"
+          total_cost="$(jq -r '.cost' "$WORK_DIR/agg.json")"
+          total_tokens="$(jq -r '.tokens' "$WORK_DIR/agg.json")"
+          # 'across 1 runs' would read wrong; singularize the count word.
+          runs_word="runs"
+          if [ "$total_runs" = "1" ]; then
+            runs_word="run"
+          fi
+
+          # Display helpers: money as $X.YZ, cost-weighted tokens in M/k
+          # notation (the budgets table in docs/dev-loop.md uses the same).
+          fmt_cost() {
+            LC_ALL=C printf '$%.2f' "$1"
+          }
+          fmt_tokens() {
+            # M from 999500 on: values just below 1M would otherwise round up
+            # to an odd '1000k' in the k branch (e.g. 999999 -> '1000k').
+            if [ "$(jq -n --argjson t "$1" '$t >= 999500' 2>/dev/null)" = "true" ]; then
+              LC_ALL=C printf '%.2fM' "$(jq -n --argjson t "$1" '$t / 1000000' 2>/dev/null)"
+            elif [ "$(jq -n --argjson t "$1" '$t >= 1000' 2>/dev/null)" = "true" ]; then
+              LC_ALL=C printf '%dk' "$(jq -n --argjson t "$1" '($t / 1000) | round | floor' 2>/dev/null)"
+            else
+              LC_ALL=C printf '%d' "$(jq -n --argjson t "$1" '$t | round | floor' 2>/dev/null)"
+            fi
+          }
+
+          # Markdown table rows are appended to files (printf keeps the
+          # per-row newline); the heredoc below embeds each file's contents
+          # on a line of its own.
+          : > "$WORK_DIR/role_rows.md"
+          summary_roles=""
+          for role in implementer reviewer fixer; do
+            agg="$(jq -c --arg role "$role" '.roles[] | select(.role == $role)' "$WORK_DIR/agg.json" 2>/dev/null || true)"
+            if [ -z "$agg" ]; then
+              continue
+            fi
+            role_cost="$(printf '%s' "$agg" | jq -r '.cost')"
+            role_tokens="$(printf '%s' "$agg" | jq -r '.tokens')"
+            role_runs="$(printf '%s' "$agg" | jq -r '.runs')"
+            printf '| %s | %s | %s | %s |\n' "$role" "$role_runs" "$(fmt_cost "$role_cost")" "$(fmt_tokens "$role_tokens")" >> "$WORK_DIR/role_rows.md"
+            if [ -n "$summary_roles" ]; then
+              summary_roles="${summary_roles}, "
+            fi
+            summary_roles="${summary_roles}${role}: $(fmt_cost "$role_cost") / $(fmt_tokens "$role_tokens") tokens"
+          done
+
+          : > "$WORK_DIR/run_rows.md"
+          while IFS= read -r line; do
+            if [ -z "$line" ]; then
+              continue
+            fi
+            run_id="$(printf '%s' "$line" | jq -r '.run_id')"
+            role="$(printf '%s' "$line" | jq -r '.role')"
+            cost="$(printf '%s' "$line" | jq -r '.cost')"
+            tokens="$(printf '%s' "$line" | jq -r '.tokens')"
+            printf '| [#%s](%s/%s) | %s | %s | %s |\n' "$run_id" "$RUNS_URL" "$run_id" "$role" "$(fmt_cost "$cost")" "$(fmt_tokens "$tokens")" >> "$WORK_DIR/run_rows.md"
+          done < "$WORK_DIR/runs.jsonl"
+
+          note=""
+          if [ "$UNAVAILABLE" -gt 0 ]; then
+            note="$(printf '\n\n%s further matched artifact(s) were unavailable (expired, failed to download, or unparseable); the totals undercount those runs.' "$UNAVAILABLE")"
+          fi
+
+          cat > "$WORK_DIR/body.md" <<EOF
+          <!-- dev-loop-cost-report -->
+          **Dev-loop cost report for issue #${ISSUE_NUMBER}**
+
+          **Dev-loop total: $(fmt_cost "$total_cost") across ${total_runs} ${runs_word}** (${summary_roles}) - cost-weighted tokens: $(fmt_tokens "$total_tokens").
+
+          | Role | Runs | Cost | Cost-weighted tokens |
+          | --- | --- | --- | --- |
+          $(cat "$WORK_DIR/role_rows.md")
+          | **Total** | **${total_runs}** | **$(fmt_cost "$total_cost")** | **$(fmt_tokens "$total_tokens")** |
+
+          <details><summary>Per run</summary>
+
+          | Run | Role | Cost | Cost-weighted tokens |
+          | --- | --- | --- | --- |
+          $(cat "$WORK_DIR/run_rows.md")
+          </details>
+
+          Cost is the sum of the per-step costs in each run's \`stream.ndjson\` artifact (per-run rounded to cents); tokens are cost-weighted (input + output + cache.write + 0.1 × cache.read), the same semantics as the loop's token caps.${note}
+          EOF
+          # All-artifacts-unavailable case (collect's runs_found=false with
+          # unavailable>0): no run data remains, so the zero-total body
+          # built above is replaced wholesale by a no-data note carrying
+          # the unavailable count - posting nothing would silently lose
+          # the documented undercount note. The marker dedupe below lets a
+          # successful backstop re-run replace this with real totals.
+          if [ ! -s "$WORK_DIR/runs.jsonl" ]; then
+            {
+              printf '<!-- dev-loop-cost-report -->\n'
+              printf '**Dev-loop cost report for issue #%s**\n\n' "$ISSUE_NUMBER"
+              printf 'All %s matched artifact(s) were unavailable (expired, failed to download, or unparseable); no run data remains, so no totals are reported. Re-run the workflow_dispatch backstop to retry.\n' "$UNAVAILABLE"
+            } > "$WORK_DIR/body.md"
+          fi
+          jq -n --arg body "$(cat "$WORK_DIR/body.md")" '{body: $body}' > "$WORK_DIR/payload.json"
+
+          # Marker dedupe (docs/dev-loop.md): at most one cost report comment
+          # per issue - a re-run (close event replay, manual backstop) edits
+          # the existing comment instead of double-posting. Listing and jq
+          # scan are guarded separately (a pipeline would hide a gh failure
+          # behind jq's success): if either fails, existing_id is unknown and
+          # a POST could break the one-comment invariant, so the step skips
+          # posting and leaves the retry to the workflow_dispatch backstop.
+          if ! gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments" --paginate > "$WORK_DIR/comments.json" 2>"$WORK_DIR/comments.err"; then
+            echo "::warning::Could not list the issue comments to dedupe the cost report; no comment was posted. Re-run the workflow_dispatch backstop to retry."
+            cat "$WORK_DIR/comments.err" || true
+            exit 1
+          fi
+          if ! existing_id="$(jq -s 'add // [] | map(select(.body | startswith("<!-- dev-loop-cost-report -->"))) | first | .id // empty' "$WORK_DIR/comments.json" 2>"$WORK_DIR/comments-jq.err")"; then
+            echo "::warning::Could not scan the issue comments for an existing cost report; no comment was posted. Re-run the workflow_dispatch backstop to retry."
+            cat "$WORK_DIR/comments-jq.err" || true
+            exit 1
+          fi
+          # The post/edit gets the same failure treatment as the dedupe
+          # calls above: warn with the backstop-retry hint, surface gh's
+          # stderr, and fail the step so the red run points at the retry.
+          if [ -n "$existing_id" ]; then
+            echo "A cost report comment already exists (id $existing_id); editing it instead of double-posting."
+            if ! gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing_id}" --input "$WORK_DIR/payload.json" >/dev/null 2>"$WORK_DIR/post.err"; then
+              echo "::warning::Could not post the cost report comment; no comment was posted. Re-run the workflow_dispatch backstop to retry."
+              cat "$WORK_DIR/post.err" || true
+              exit 1
+            fi
+          else
+            if ! gh api "repos/${GH_REPO}/issues/${ISSUE_NUMBER}/comments" -X POST --input "$WORK_DIR/payload.json" >/dev/null 2>"$WORK_DIR/post.err"; then
+              echo "::warning::Could not post the cost report comment; no comment was posted. Re-run the workflow_dispatch backstop to retry."
+              cat "$WORK_DIR/post.err" || true
+              exit 1
+            fi
+          fi

@@ -14,11 +14,13 @@ import { extractContentText } from './mistral/content';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 import { capitalizePreserveRest } from './strings';
 
+/** One content part of a Mistral conversation response output. */
 interface MistralConversationResponseOutputPart {
   type: string;
   text: string;
 }
 
+/** A tool call the agent requested (nested message.tool_calls shape). */
 interface MistralToolCall {
   id: string;
   type: string;
@@ -28,23 +30,34 @@ interface MistralToolCall {
   };
 }
 
+/** One output entry of a Mistral conversation response: an assistant message or a tool-call block. */
 interface MistralConversationResponseOutput {
   content: string | MistralConversationResponseOutputPart[];
   type: string;
   tool_calls?: MistralToolCall[];
 }
 
+/** Response of POST /v1/conversations -- an initial send or a tool-result send. */
 interface MistralConversationResponse {
   id?: string;
   conversation_id?: string;
   outputs: MistralConversationResponseOutput[];
 }
 
-// A stale conversation (HTTP 400/404) that must poison the cache and respawn once in a fresh
-// conversation; thrown by postToConversation and handled by processRequestInternal's catch so the
-// poison + cache-delete + respawn logic exists exactly once.
+/**
+ * A stale conversation (HTTP 400/404) that must poison the cache and respawn once in a fresh
+ * conversation; thrown by postToConversation and handled by processRequestInternal's catch so the
+ * poison + cache-delete + respawn logic exists exactly once.
+ */
 class RespawnRequestedException extends Error {
   public readonly failedConversationId: string | undefined;
+
+  /**
+   * Stores the stale conversation id (undefined after a failed initial send) for the respawn path.
+   *
+   * @param failedConversationId The conversation that turned out to be stale (undefined on a
+   *   failed initial send, which has no id yet).
+   */
   constructor(failedConversationId: string | undefined) {
     super('Stale Mistral conversation, a respawn in a fresh conversation is required');
     this.name = 'RespawnRequestedException';
@@ -52,10 +65,12 @@ class RespawnRequestedException extends Error {
   }
 }
 
+/** Builds the Authorization header for the Mistral API. */
 function authorizationHeader(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+/** Conversation metadata as returned by GET /v1/conversations. */
 interface MistralConversationMeta {
   name: string;
   id: string;
@@ -63,6 +78,7 @@ interface MistralConversationMeta {
   agent_id: string;
 }
 
+/** The per-user cached conversation state. */
 interface CachedConversation {
   conversationId: string;
   expiresAt: number;
@@ -70,6 +86,12 @@ interface CachedConversation {
   turnCount: number;
 }
 
+/**
+ * Core LLM integration for the live chat: manages each user's Mistral conversation lifecycle
+ * (cache, TTL, turn budget with handoff, poison + respawn on stale conversations), injects the
+ * context/notes/handoff blocks into the prompt, and runs the sequential Tool Calling loop.
+ * Read-only for memory -- the nightly job is the sole writer of context_entries.
+ */
 export class ChatAgent {
   private apiKey: string;
   private agentId: string;
@@ -85,6 +107,12 @@ export class ChatAgent {
   private maxTurnsPerSession = config.mistral.maxTurnsPerSession;
   private chatRequestTimeoutMs = config.mistral.requestTimeoutMs;
 
+  /**
+   * Stores the Mistral API key and the live conversation agent's id.
+   *
+   * @param apiKey The Mistral API key.
+   * @param agentId The Mistral Studio agent id of the live conversation agent.
+   */
   constructor(apiKey: string, agentId: string) {
     this.apiKey = apiKey;
     this.agentId = agentId;
@@ -236,11 +264,9 @@ export class ChatAgent {
   private async postToConversation(
     conversationId: string | undefined,
     body: unknown,
-    // A failed tool-result send may leave the conversation broken even on a non-stale status
-    // (e.g. a persistent 5xx after retries), so the tool path respawns on any typed API error,
-    // while the initial send only respawns on the stale 400/404 statuses.
-    // true  -> non-stale typed API errors (e.g. a persistent 5xx after retries) also trigger a respawn
-    // false -> only stale 400/404 responses trigger a respawn; other errors just fail the turn
+    // respawnOnAnyError: true -> non-stale typed API errors (e.g. a persistent 5xx) also trigger a
+    // respawn (the tool path; a failed tool-result send can leave the conversation broken), false ->
+    // only stale 400/404 responses trigger a respawn; other errors just fail the turn.
     respawnOnAnyError: boolean = false
   ): Promise<MistralConversationResponse> {
     const url = conversationId ? `${conversationsUrl()}/${conversationId}` : conversationsUrl();
@@ -266,9 +292,8 @@ export class ChatAgent {
           return <MistralConversationResponse>await response.json();
         },
         // safeRetry heuristic: a typed 429/5xx response PROBABLY means the server rejected the
-        // request without committing it -- but that is not airtight (a proxy 502 after an
-        // upstream commit, or a post-commit serialization crash, would duplicate the message).
-        // The small duplication window is accepted in exchange for surviving transient 5xx.
+        // request without committing it (not airtight -- a post-commit crash would duplicate the
+        // message); the small duplication window is accepted to survive transient 5xx.
         { safeRetry: true }
       );
     } catch (error) {
@@ -285,6 +310,15 @@ export class ChatAgent {
     }
   }
 
+  /**
+   * Returns the user's active conversation id: from cache while fresh, otherwise the newest
+   * conversation from the Mistral list API that matches the username, the live agent id, the TTL
+   * window, and is not poisoned.
+   *
+   * @param username The sender's username.
+   * @returns The conversation id, or undefined when no active conversation matches.
+   * @throws Error when listing the conversations fails.
+   */
   private async getActiveConversationId(username: string): Promise<string | undefined> {
     // Check cache first
     const cached = this.conversationCache.get(username);
@@ -294,9 +328,9 @@ export class ChatAgent {
     }
 
     try {
-      // A GET is idempotent, so ambiguous network-style failures (timeout, socket reset)
-      // may be retried as well -- no safeRetry restriction needed. It keeps fetchWithTimeout's
-      // default ceiling (a lightweight list call) while the POSTs use chatRequestTimeoutMs.
+      // A GET is idempotent, so ambiguous network-style failures (timeout, socket reset) are
+      // retried as well; it keeps fetchWithTimeout's default ceiling (lightweight list call)
+      // while the POSTs use chatRequestTimeoutMs.
       const response = await withRetry(() =>
         fetchWithTimeout(conversationsUrl(), {
           method: 'get',
@@ -344,6 +378,18 @@ export class ChatAgent {
     }
   }
 
+  /**
+   * Processes one user turn: resolves the conversation, injects context/notes/handoff blocks,
+   * runs the agent turn plus its sequential tool-calling loop, and returns the final outputs.
+   * Turns of the same user are serialized through a queue so concurrent requests cannot
+   * interleave writes to the same conversation.
+   *
+   * @param userText The user's message text.
+   * @param username The sender's username.
+   * @param shortAnswer Whether to append the short-answer constraint to the prompt.
+   * @returns The agent's final outputs for this turn.
+   * @throws Error when the turn fails after the one allowed respawn.
+   */
   processRequest(
     userText: string,
     username: string,
@@ -358,16 +404,31 @@ export class ChatAgent {
     return run;
   }
 
+  /**
+   * Internal turn processing shared by processRequest and the respawn path: enforces the turn
+   * budget (fresh conversation + handoff), injects context/notes/handoff into the prompt, runs
+   * the tool loop, and handles a stale conversation by poisoning + clearing the cache and
+   * respawning exactly once (isRespawn guards against looping).
+   *
+   * @param userText The user's message text.
+   * @param username The sender's username.
+   * @param shortAnswer Whether to append the short-answer constraint to the prompt.
+   * @param isRespawn true when this is the single retry in a fresh conversation.
+   * @param handoffFrom The replaced conversation whose handoff block seeds the fresh conversation.
+   * @param claimedNotesBlock Notes block already claimed for this input; a respawn reuses it
+   *   because claiming again would silently drop the claimed notes.
+   * @param claimedNoteIds Ids of the notes claimed for this input; released if the request fails
+   *   (they were never shown to the user).
+   * @returns The agent's final outputs for this turn.
+   * @throws Error when the turn fails non-recoverably (after the one allowed respawn).
+   */
   private async processRequestInternal(
     userText: string,
     username: string,
     shortAnswer: boolean = false,
     isRespawn: boolean = false,
     handoffFrom?: string,
-    // Notes already claimed for this input; a respawn passes them through because claiming again
-    // would silently drop them (claimed notes are no longer returned as undelivered).
     claimedNotesBlock?: string,
-    // Ids of the notes claimed for this input; released if the request fails (they were never shown).
     claimedNoteIds: number[] = []
   ): Promise<MistralConversationResponseOutput[]> {
     // Declared outside the try so the shared respawn handling in the catch block can pass the
@@ -613,10 +674,9 @@ export class ChatAgent {
       this.scheduleHandoff(username, cached);
       return responseOutputs;
     } catch (error) {
-      // A stale conversation (HTTP 400/404, from postToConversation): poison it, clear the
-      // cache, and respawn once so the user's message isn't dropped (isRespawn guards against
-      // looping). Without a respawn the turn is dropped, so the notes were never shown -- their
-      // claims are released like any other non-recoverable failure.
+      // A stale conversation (HTTP 400/404, from postToConversation): poison it, clear the cache,
+      // and respawn once so the user's message isn't dropped (isRespawn guards against looping).
+      // The respawn owns the claimed notes; any other failure releases them (never shown).
       if (error instanceof RespawnRequestedException) {
         const failedConversationId = error.failedConversationId;
         if (failedConversationId) {
@@ -652,8 +712,14 @@ export class ChatAgent {
     }
   }
 
-  // Once the turn that exhausts the budget is answered, prepare the handoff in the background so the next
-  // turn (which starts the fresh conversation) does not have to wait for the summary.
+  /**
+   * Prepares the next handoff in the background once the turn that exhausts the budget is
+   * answered, so the next turn (which starts the fresh conversation) does not have to wait
+   * for the summary.
+   *
+   * @param username The sender's username.
+   * @param cached The user's cached conversation state.
+   */
   private scheduleHandoff(username: string, cached: CachedConversation): void {
     if (!cached.conversationId || cached.turnCount < this.maxTurnsPerSession) {
       return;
@@ -667,7 +733,13 @@ export class ChatAgent {
     });
   }
 
-  // Waits (bounded) for the background summary; if it is not ready, goes with the last turns only.
+  /**
+   * Waits (bounded) for the background summary; if it is not ready, goes with the last turns only.
+   *
+   * @param username The sender's username (for the pending-handoff lookup).
+   * @param fromConversationId The replaced conversation the handoff is being built from.
+   * @returns The handoff block, or undefined when nothing could be built in time.
+   */
   private async resolveHandoff(username: string, fromConversationId: string): Promise<string | undefined> {
     const pending = this.pendingHandoffs.get(username);
     this.pendingHandoffs.delete(username);
@@ -677,6 +749,13 @@ export class ChatAgent {
     return block ?? (await buildHandoff(fromConversationId, { withSummary: false }));
   }
 
+  /**
+   * Marks a conversation as poisoned for this user so getActiveConversationId never resolves
+   * to it again (it stays out of every future listing match until process restart).
+   *
+   * @param username The sender's username.
+   * @param conversationId The stale conversation to poison.
+   */
   private markConversationPoisoned(username: string, conversationId: string): void {
     let poisoned = this.poisonedConversations.get(username);
     if (!poisoned) {
@@ -687,6 +766,13 @@ export class ChatAgent {
     console.log(`INFO Marked conversation ${conversationId} as poisoned for ${username}`);
   }
 
+  /**
+   * Extracts the assistant's answer text from the outputs: only message.output entries count,
+   * and their text parts are joined and trimmed.
+   *
+   * @param outputs The raw conversation outputs of a turn.
+   * @returns The joined answer text, or an empty string when no message.output was found.
+   */
   convertMultiPart(outputs: MistralConversationResponseOutput[]): string {
     const messageOutputs = outputs.filter(o => o.type == 'message.output');
     if (messageOutputs.length === 0) {
