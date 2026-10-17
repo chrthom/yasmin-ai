@@ -22,7 +22,7 @@ const NUM_FIELD_RES: Record<string, RegExp> = {
   valence: /^valence:\s*(-?\d+(?:\.\d+)?)\s*$/m,
   energy: /^energy:\s*(-?\d+(?:\.\d+)?)\s*$/m,
   halfLifeDays: /^halfLifeDays:\s*(\d+(?:\.\d+)?)\s*$/m,
-  updatedAt: /^updatedAt:\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?)\s*$/m
+  updatedAt: /^updatedAt:\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?)\s*$/m
 };
 
 /**
@@ -145,7 +145,14 @@ export async function decayMoodFile(now: Date = new Date()): Promise<boolean> {
     return false;
   }
 
-  const updatedContent = renderMoodHeader(decayed) + '\n\n' + stripMoodHeader(current.content);
+  // Once decay fully neutralizes the state the narrative describes a mood that no longer exists:
+  // drop it here so the reason fades WITH the numbers instead of lingering forever in the
+  // compacted profile and the RAG library. The versioned archive keeps every earlier version,
+  // so no history is lost.
+  const fullyFaded = decayed.valence === 0 && decayed.energy === 0;
+  const updatedContent = fullyFaded
+    ? renderMoodHeader(decayed)
+    : renderMoodHeader(decayed) + '\n\n' + stripMoodHeader(current.content);
 
   try {
     await insertNextVersion(MOOD_FILE_PATH, updatedContent, now);

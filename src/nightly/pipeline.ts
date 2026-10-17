@@ -702,6 +702,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             // [PRIVACY:SENSITIVE] passage in the mood reason must never survive this fold-in.
             if (mood) {
               const moodNarrative = stripSensitive(stripMoodHeader(moodRow.content));
+              // An empty narrative means the mood fully faded: decay drops the reason together
+              // with the numbers, so a stale reason can never outlive its mood in the eager
+              // profile (nor in the library -- the same blanked file is uploaded in Phase 5).
               if (moodNarrative.length > 0) {
                 const header =
                   '\n\n## My current mood\nvalence: ' +

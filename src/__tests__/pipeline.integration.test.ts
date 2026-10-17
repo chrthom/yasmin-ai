@@ -1077,10 +1077,10 @@ describe('nightly pipeline integration', () => {
   // 9b. Mood decay + fold-in (issue #48)
   // -------------------------------------------------------------------------
 
-  it('mood: deterministic decay applies without an agent update and is folded into Profile of Yasmin', async () => {
+  it('mood: deterministic decay applies without an agent update; a fully faded mood drops its narrative', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
-    // A mood from ~3 days before the run (updatedAt far in the past), half-life 1 day:
-    // valence/energy must be decayed exponentially by code before compaction.
+    // A mood whose updatedAt is ~290 one-day half-lives before the run date: code must decay
+    // it to zero with no agent update, and the stale reason must fade WITH the numbers.
     await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin. Ich mag lange Gespraeche.');
     await archive.seed(
       'self-reflection/mood.md',
@@ -1090,24 +1090,25 @@ describe('nightly pipeline integration', () => {
 
     await runNightlyPipeline();
 
-    // The decayed archive version persists with the narrative kept...
+    // The decayed archive version persists with the narrative dropped...
     const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
     expect(moodRow).not.toBeNull();
     const moodContent = moodRow!.content;
     const decayedMood = parseMood(moodContent);
     expect(decayedMood).not.toBeNull();
-    // ~6.5 years of half-lives: the decayed valence must be fully neutralized (0), and the
-    // assertion must not accidentally match the seeded 0.8 (a toContain('valence: 0') would).
+    // 2026-01-01 is ~290 one-day half-lives before the run date -- far past the ~6.3 half-lives
+    // it takes 0.8 to fall under the 0.01 decay epsilon -- so the decayed valence must be fully
+    // neutralized (0), and the assertion must not accidentally match the seeded 0.8 (a
+    // toContain('valence: 0') would).
     expect(decayedMood!.valence).toBe(0);
     expect(decayedMood!.energy).toBe(0);
-    expect(moodContent).toContain('Christopher hat mich heute heftig kritisiert.');
+    expect(moodContent).not.toContain('Christopher hat mich heute heftig kritisiert.');
 
-    // ...and the yasmin compaction source carries the current-mood fold-in.
-    expect(mockRunCompact).toHaveBeenCalledWith(
-      'yasmin',
-      undefined,
-      expect.stringContaining('My current mood')
-    );
+    // ...so the yasmin compaction source carries no stale current-mood section: the reason
+    // cannot outlive its mood in the eager profile.
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall).toBeDefined();
+    expect(yasminCall![2]).not.toContain('My current mood');
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
@@ -1129,10 +1130,13 @@ describe('nightly pipeline integration', () => {
   it('mood: a [PRIVACY:SENSITIVE] passage in the mood narrative never reaches the compactor', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    // updatedAt 12h ago with a 1-day half-life: the mood decays (~0.57/0.42) but is NOT fully
+    // faded, so the narrative survives decay and the fold-in below actually has text to strip.
     await archive.seed(
       'self-reflection/mood.md',
-      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\n' +
-        'Ich bin today frustriert.\n[PRIVACY:SENSITIVE]\nGeheimes: ich hatte einen Streit mit R.\n[/PRIVACY:SENSITIVE]'
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: ' +
+        new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString() +
+        '\n\nIch bin today frustriert.\n[PRIVACY:SENSITIVE]\nGeheimes: ich hatte einen Streit mit R.\n[/PRIVACY:SENSITIVE]'
     );
     await runNightlyPipeline();
     const compactSource = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin')[2];
@@ -1193,7 +1197,8 @@ describe('nightly pipeline integration', () => {
     expect(moodRow!.version).toBe(seeded.version);
   });
 
-  // -------------------------------------------------------------------------  // 9b. Topics layer wiring
+  // -------------------------------------------------------------------------
+  // 9c. Topics layer wiring
   // -------------------------------------------------------------------------
 
   it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {

@@ -68,7 +68,8 @@ src/
 │   │                  #   stage_update)
 │   ├── privacy.ts     # [PRIVACY:SENSITIVE] stripping + eager-cache compaction size cap
 │   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
-│   │                  #   and the archive stamp that overrides the agent's updatedAt
+│   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
+│   │                  #   overrides the agent's updatedAt
 │   └── mapping.ts     # Table-driven mapping between verbose file paths and context_entries titles
 ├── services/
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
@@ -83,7 +84,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory
+                            #   pipeline.integration, context.model, bootstrap-memory, mood
 ```
 
 ### Data Flow
