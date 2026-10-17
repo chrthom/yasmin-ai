@@ -25,6 +25,9 @@ const NUM_FIELD_RES: Record<string, RegExp> = {
   updatedAt: /^updatedAt:\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?)\s*$/m
 };
 
+/**
+ * Clamps a value into [min, max] -- mood fields stay on their fixed scale.
+ */
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -87,6 +90,10 @@ export function renderMoodHeader(mood: MoodState): string {
 export function applyDecay(mood: MoodState, now: Date): MoodState {
   const elapsedDays = Math.max(0, (now.getTime() - mood.updatedAt.getTime()) / (24 * 60 * 60 * 1000));
   const factor = Math.pow(0.5, elapsedDays / mood.halfLifeDays);
+  /**
+   * Applies the elapsed-time decay factor to a single mood value, snapping
+   * near-zero results to exactly zero (the mood fully faded on that axis).
+   */
   const decay = (value: number): number => {
     const next = value * factor;
     return Math.abs(next) < DECAY_EPSILON ? 0 : clamp(next, -1, 1);
