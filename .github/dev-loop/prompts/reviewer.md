@@ -91,7 +91,7 @@ VERDICT: CLEAN|CHANGES_NEEDED|NEEDS_HUMAN
 ```
 ```
 
-The `VERDICT:` line must be the first line of the message, followed by the one-line summary and
+The `VERDICT:` line must be the first line of the message, plain and unpunctuated exactly as in thetemplate above (`VERDICT: CHANGES_NEEDED`, never bold/italic/code-wrapped like `**VERDICT:...**`— a decorated line fails the loop's parser), followed by the one-line summary and
 then the JSON object (fenced or bare — either is fine, but it must parse with `jq`). Every
 finding needs `path` (repo-relative), `line` (a line inside the PR diff, `side: RIGHT`), one of
 the four severities, and a `message` with the finding and the suggested fix. Findings that cannot

@@ -62,8 +62,10 @@ fi
 
 if [ "$rc" = "1" ]; then
   # Exit 1 covers config/infra failures AND recovered tool errors; the VERDICT line is ground truth.
+  # The agents sometimes wrap the contract line in markdown emphasis (observed on PR #57:
+  # '**VERDICT: CHANGES_NEEDED**'); tolerate decoration instead of escalating a valid verdict.
   contract_line="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null \
-    | grep -E '^(VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)|WALL:)' | tail -1 || true)"
+    | grep -E '^[[:space:]`*_]*VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)|^[[:space:]`*_]*WALL:' | tail -1 || true)"
   if [ -z "$contract_line" ]; then
     escalate "opencode failed (exit 1, no VERDICT line; cost: \$$cost, $stderr_tail); retry via workflow_dispatch if the stderr indicates a transient failure; see the opencode output artifact"
     exit 0
@@ -81,6 +83,7 @@ fi
 final_msg="$(jq -r 'select(.type == "text") | .part.text' out/stream.ndjson 2>/dev/null || true)"
 outcome_line="$(printf '%s\n' "$final_msg" | awk 'NF { line = $0 } END { if (line) print line }')"
 
+outcome_line="$(printf '%s\n' "$outcome_line" | sed -E 's/^[[:space:]`*_]+//; s/[[:space:]`*_]+$//')"
 case "$outcome_line" in
   WALL:*)
     escalate "reviewer stopped early with ${outcome_line} (cost: \$$cost)"
@@ -88,10 +91,18 @@ case "$outcome_line" in
     ;;
 esac
 
-verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)$' | tail -1 | cut -d: -f1 || true)"
-verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num:-0}p" || true)"
-case "${verdict_line:-}" in
-  VERDICT:\ CLEAN|VERDICT:\ CHANGES_NEEDED|VERDICT:\ NEEDS_HUMAN) ;;
+# Last VERDICT line wins; markdown emphasis around the line (PR #57:
+# '**VERDICT: CHANGES_NEEDED**') is stripped before the shape check, and the
+# verdict value is extracted from the stripped line so the case below never
+# matches on the decorated form.
+verdict_num="$(printf '%s\n' "$final_msg" | grep -nE '^[[:space:]`*_]*VERDICT: (CLEAN|CHANGES_NEEDED|NEEDS_HUMAN)[[:space:]`*_]*$' | tail -1 | cut -d: -f1 || true)"
+verdict_line=""
+if [ -n "${verdict_num:-}" ]; then
+  verdict_line="$(printf '%s\n' "$final_msg" | sed -n "${verdict_num}p" || true)"
+fi
+verdict="$(printf '%s\n' "${verdict_line:-}" | sed -E 's/^[[:space:]`*_]*VERDICT:[[:space:]]*//; s/[[:space:]`*_]*$//')"
+case "$verdict" in
+  CLEAN|CHANGES_NEEDED|NEEDS_HUMAN) ;;
   *)
     # rc=0 without a VERDICT line is usually a truncated run - retry once via workflow_dispatch (RETRY_COUNT prevents loops; no marker posted, so dedupe cannot block).
     if [ "$RETRY_COUNT" -lt 1 ] \
@@ -103,7 +114,6 @@ case "${verdict_line:-}" in
     exit 0
     ;;
 esac
-verdict="${verdict_line#VERDICT: }"
 echo "Reviewer verdict: $verdict (cost: \$$cost)"
 
 # Fail open on a transient gh/API error here: an unguarded gh|jq poll leaves
