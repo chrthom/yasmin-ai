@@ -219,7 +219,7 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 
 **Phase 2 — Journal.** For each conversation: `getConversationMessages` → `askAgent(nightly, journalPrompt(messages))` → structured journal. Write to `memory_archive` (`journals/<user>/<conv_id>.md`, version 1) **and** upload to Mistral. On failure: retry (backoff); still failing → add to `skipped_conversation_ids`, continue (a skipped conversation is **not** deleted in Phase 7, so it retries next night). Cap journal length; oversized → summarize-again with a tighter instruction.
 
-**Phase 3 — Integrate.** One `askAgent(nightly, integrationPrompt, tools)` tool loop (`maxIterations` 15). Tools (§7): reads come from `memory_archive`; the AI **stages** proposed verbose updates via `stage_update`. Returns the staged list. No real store is written yet.
+**Phase 3 — Integrate.** One `askAgent(nightly, integrationPrompt, tools)` tool loop (`maxIterations` 25). Tools (§7): reads come from `memory_archive`; the AI **stages** proposed verbose updates via `stage_update`. Returns the staged list. No real store is written yet.
 
 **Phase 4 — Review + Archive.** For each staged update: `askAgent(nightly, reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals))` → per-file verdict (structured JSON). Rejected files → quarantined (kept at current version, logged), **not** batch-aborted. Accepted files: in one transaction, insert new `memory_archive` versions (skip if `content_hash` unchanged → no churn). Commit **before** any Mistral write.
 
@@ -276,7 +276,7 @@ stage_update(path, content, isNew); // append to in-run staged list  ← the ONL
 
 | Verbose path                 | Eager title         | Transform                                                                                                                                                                                                    |
 | ---------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `people/<name>.md`           | `Profile of <Name>` | LLM-compact to the 7-section template (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions); strip `[PRIVACY:SENSITIVE]`; cap 2 KB |
+| `people/<name>.md`           | `Profile of <Name>` | LLM-compact to the 8-section template (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's View, Yasmin's Intentions); strip `[PRIVACY:SENSITIVE]`; cap 2 KB |
 | `self-reflection/profile.md` | `Profile of Yasmin` | compact (first-person)                                                                                                                                                                                       |
 | `general/family.md`          | `Family notes`      | compact                                                                                                                                                                                                      |
 
@@ -316,7 +316,7 @@ nightly: {
   tz:            process.env['MEMORY_TZ'] || 'Europe/Berlin',
   maxRetries:    parseInt(process.env['NIGHTLY_MAX_RETRIES'] || '3'),
   lockStaleMs:   2 * 60 * 60 * 1000,
-  maxIterations: 15,
+  maxIterations: 25,
   archiveKeepVersions: 10,
   eagerMaxChars: 10000,
 }
@@ -410,12 +410,30 @@ Run once against a scratch library before go-live:
 
 ---
 
+## 13.5 Yasmin's inner life (issue #48)
+
+Three layers by rate of change -- deliberately folded into existing files, no new tables:
+
+| Layer | Location | Cadence |
+| --- | --- | --- |
+| Mood / daily state | `self-reflection/mood.md` | daily, with deterministic exponential decay (half-life set per update by the agent; a heated argument ~3 days, a compliment ~1) |
+| Opinions | `Yasmin's View` section in `people/<name>.md`; opinions about things in `self-reflection/profile.md` ("Who I am") | weekly (implicit) |
+| Traits + values | `self-reflection/profile.md`, "Who I am" | slow, crystallization: a trait requires the 2nd-3rd observed occurrence, annotated with tendency (growing/stable/declining) and evidence count |
+
+- **Mood decay is code, not agent work** (`src/nightly/mood.ts`): `decayMoodFile()` runs nightly before Phase 5 (so the decayed version syncs to the library in the same run), exponentially fading valence/energy toward 0 with the mood's own half-life even when the agent staged no update. The file starts with a machine-readable header (`valence/energy/halfLifeDays/updatedAt`) that `parseMood` reads back; the agent-supplied `updatedAt` is overwritten with the archive stamp at commit time, so a hallucinated date can never skew decay. Mood is compacted into `Profile of Yasmin` (eager) by folding the current mood into the yasmin compaction source -- sensitive-stripped like the profile itself, and skipped entirely when the header is unparsable. Once decay fully neutralizes the state (valence and energy both 0), `decayMoodFile()` drops the narrative too, so a stale reason cannot outlive its mood in the eager profile or the library; the versioned archive keeps every earlier version, so no history is lost.
+- **Opinions are eager**: `Yasmin's View` lives inside the person profile (like `Yasmin's Intentions`), so the opinion is present as soon as the person appears in a chat -- no RAG hop. Phrased as Yasmin's assessment with a tendency (improving/worsening/stable), never a fact; a first impression is marked tentative.
+- **Goals**: `Yasmin's Intentions` entries carry status (open/done) + target date; a due-and-unanswered goal becomes a proactive topic in the same profile's Open Topics.
+- **Reviewer extensions** (per file type): opinion != fact with a confidence level; traits need >= 2 pieces of evidence; a mood update requires today's evidence; a first opinion is always tentative.
+- **maxIterations** raised 15 -> 25 (config `NIGHTLY_MAX_ITERATIONS`); compaction priority is a soft ordering in the compactor prompt ("mood, active goals, and personality before everything else").
+
+---
+
 ## 14. Decisions (finalized 2026-07-06)
 
 | Topic                  | Decision                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Read source (Phase 3)  | **`memory_archive`** (local, exact) — no runtime dependency on the Mistral read API. MariaDB is the durable content source; Mistral is a derived search projection.                                                                                                                                                                                                                                                   |
-| Compression (Phase 6)  | **LLM compaction** by the nightly agent to the 7-section template; 2000-char cap; deterministic truncate fallback.                                                                                                                                                                                                                                                                                                    |
+| Compression (Phase 6)  | **LLM compaction** by the nightly agent to the 8-section template; 2000-char cap; deterministic truncate fallback.                                                                                                                                                                                                                                                                                                    |
 | Sensitive in library   | **Revised:** stripped before Phase 5's upload too, not just the eager cache -- `[PRIVACY:SENSITIVE]` content never leaves local storage (`memory_archive` keeps it for versioning/audit only). Data minimization won over the original "keep in library + answer-time prompt enforcement" design, which relied entirely on the live agent's prompt discipline to gate a marker the RAG layer could otherwise surface. |
 | Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions). **`Session with X` retired.**                                                                                                                                                                                              |
 | Journals               | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings.                                                                                                                                                                                                                                                                                 |

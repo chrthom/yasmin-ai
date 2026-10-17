@@ -67,6 +67,9 @@ src/
 │   ├── tools.ts       # Nightly agent's tool set (list/get_long_term_file, read_todays_journals,
 │   │                  #   stage_update)
 │   ├── privacy.ts     # [PRIVACY:SENSITIVE] stripping + eager-cache compaction size cap
+│   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
+│   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
+│   │                  #   overrides the agent's updatedAt
 │   └── mapping.ts     # Table-driven mapping between verbose file paths and context_entries titles
 ├── services/
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
@@ -81,7 +84,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory
+                            #   pipeline.integration, context.model, bootstrap-memory, mood
 ```
 
 ### Data Flow
@@ -158,7 +161,7 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 - **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory (see above); on a restart it prepends the handoff block built by `src/handoff.ts`.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
-- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files and `general/topic-index.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
+- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `mood.ts` implements Yasmin's daily mood layer (`self-reflection/mood.md`): the machine-readable header, deterministic exponential decay toward neutral (run nightly before the upload phase, no agent call), the archive stamp that overrides the agent-supplied `updatedAt`, and the privacy-guarded fold-in of the current mood into the compacted `Profile of Yasmin`; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files, `general/topic-index.md`, and `self-reflection/mood.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
 

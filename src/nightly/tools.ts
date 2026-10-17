@@ -13,7 +13,7 @@ export interface StagedUpdate {
  * can't slip files outside the expected memory store into the archive and upload.
  */
 const VALID_STAGE_PATH_RE =
-  /^(people\/[a-z0-9_-]+\.md|self-reflection\/profile\.md|general\/family\.md|general\/topic-index\.md)$/i;
+  /^(people\/[a-z0-9_-]+\.md|self-reflection\/profile\.md|self-reflection\/mood\.md|general\/family\.md|general\/topic-index\.md)$/i;
 const TOPICS_PATH_PREFIX = 'topics/';
 
 /**
@@ -182,7 +182,8 @@ export function stage_update(path: string, content: string, isNew: boolean): Sta
       success: false,
       error:
         `invalid path "${String(path)}"; expected people/<name>.md, ` +
-        'self-reflection/profile.md, general/family.md, general/topic-index.md, or topics/<topic>.md'
+        'self-reflection/profile.md, self-reflection/mood.md, general/family.md, ' +
+        'general/topic-index.md, or topics/<topic>.md'
     };
   } else {
     // The path regex is case-insensitive, so a non-canonical casing like 'General/Topic-Index.md'
