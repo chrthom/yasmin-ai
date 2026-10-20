@@ -273,6 +273,38 @@ export interface ReviewVerdict {
 
 const CODE_FENCE_RE = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
 
+/**
+ * Per-file-type reviewer extensions: opinion ≠ fact, traits need minimum evidence, mood needs
+ * today's evidence. Kept in one place so the review and the integration prompts stay consistent.
+ */
+function perFileTypeReviewerRules(path: string): string {
+  if (path.startsWith('people/')) {
+    return (
+      "Additional criteria for people/<name>.md: a statement in Yasmin's View is an opinion and must " +
+      "never read as a fact -- it must be marked as Yasmin's interpretation with a confidence level, and " +
+      "a first opinion is always tentative. A trait claim needs evidence, and a goal that today's " +
+      'journals show completed must be marked done or removed, not kept open. Reject if the section ' +
+      "structure (including Yasmin's View) is missing or reordered.\n"
+    );
+  }
+  if (path === 'self-reflection/profile.md') {
+    return (
+      'Additional criteria for self-reflection/profile.md: a trait requires at least 2 pieces of ' +
+      'evidence (an observed occurrence count or corroboration across nights); reject a trait declared ' +
+      "from a single occurrence. An opinion about a thing must be marked as Yasmin's interpretation " +
+      'with a confidence level, never asserted as fact.\n'
+    );
+  }
+  if (path === 'self-reflection/mood.md') {
+    return (
+      "Additional criteria for self-reflection/mood.md: a mood update requires TODAY's evidence in the " +
+      'journals -- reject any mood change fabricated out of nothing. The machine-readable header ' +
+      '(valence/energy/halfLifeDays/updatedAt, one field per line) must be present and parsable.\n'
+    );
+  }
+  return '';
+}
+
 /** Strips a leading/trailing markdown code fence (```json ... ```), since models sometimes add one anyway */
 function stripCodeFence(text: string): string {
   const match = CODE_FENCE_RE.exec(text.trim());
@@ -417,6 +449,7 @@ export function reviewPrompt(
     existingTopicsBlock,
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE),
     groundingRule,
+    perFileTypeReviewerRules: perFileTypeReviewerRules(update.path),
     runDate: formatRunDate(new Date()),
     lastTouched:
       lastTouchedAt === null

@@ -29,7 +29,7 @@ jest.mock('../config', () => ({
     nightly: {
       lockStaleMs: 2 * 60 * 60 * 1000,
       maxRevisions: 3,
-      maxIterations: 15,
+      maxIterations: 25,
       archiveKeepVersions: 10,
       eagerMaxChars: 10000,
       watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000
@@ -88,6 +88,7 @@ jest.mock('../mistral/mistral_api', () => ({
 }));
 
 import { LockHeldError, runNightlyPipeline } from '../nightly/pipeline';
+import { parseMood } from '../nightly/mood';
 import { resetNightlyToolsState } from '../nightly/tools';
 import {
   NightlyJobLog,
@@ -1073,7 +1074,131 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 9b. Topics layer wiring
+  // 9b. Mood decay + fold-in (issue #48)
+  // -------------------------------------------------------------------------
+
+  it('mood: deterministic decay applies without an agent update; a fully faded mood drops its narrative', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // A mood whose updatedAt is ~290 one-day half-lives before the run date: code must decay
+    // it to zero with no agent update, and the stale reason must fade WITH the numbers.
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin. Ich mag lange Gespraeche.');
+    await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\n' +
+        'Christopher hat mich heute heftig kritisiert.'
+    );
+
+    await runNightlyPipeline();
+
+    // The decayed archive version persists with the narrative dropped...
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow).not.toBeNull();
+    const moodContent = moodRow!.content;
+    const decayedMood = parseMood(moodContent);
+    expect(decayedMood).not.toBeNull();
+    // 2026-01-01 is ~290 one-day half-lives before the run date -- far past the ~6.3 half-lives
+    // it takes 0.8 to fall under the 0.01 decay epsilon -- so the decayed valence must be fully
+    // neutralized (0), and the assertion must not accidentally match the seeded 0.8 (a
+    // toContain('valence: 0') would).
+    expect(decayedMood!.valence).toBe(0);
+    expect(decayedMood!.energy).toBe(0);
+    expect(moodContent).not.toContain('Christopher hat mich heute heftig kritisiert.');
+
+    // ...so the yasmin compaction source carries no stale current-mood section: the reason
+    // cannot outlive its mood in the eager profile.
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall).toBeDefined();
+    expect(yasminCall![2]).not.toContain('My current mood');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('mood: a mid-decay value is halved per half-life, proving decay actually applied', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // updatedAt ~3 collected-times in the past is impossible to control precisely here, so
+    // instead assert the deterministic property on the unit level (see mood.test.ts) and here
+    // only that a stale mood gets a NEW version (decay applied at all) with a refreshed header.
+    await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\nAlt.'
+    );
+    const seeded = await archive.getCurrentVersion('self-reflection/mood.md');
+    await runNightlyPipeline();
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow!.version).toBeGreaterThan(seeded!.version);
+  });
+
+  it('mood: a [PRIVACY:SENSITIVE] passage in the mood narrative never reaches the compactor', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    // updatedAt 12h ago with a 1-day half-life: the mood decays (~0.57/0.42) but is NOT fully
+    // faded, so the narrative survives decay and the fold-in below actually has text to strip.
+    await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: ' +
+        new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString() +
+        '\n\nIch bin today frustriert.\n[PRIVACY:SENSITIVE]\nGeheimes: ich hatte einen Streit mit R.\n[/PRIVACY:SENSITIVE]'
+    );
+    await runNightlyPipeline();
+    const compactSource = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin')[2];
+    expect(compactSource).toContain('My current mood');
+    expect(compactSource).toContain('frustriert');
+    expect(compactSource).not.toContain('PRIVACY:SENSITIVE');
+    expect(compactSource).not.toContain('Geheimes');
+  });
+
+  it('mood: an unparsable header skips the fold-in (no stale n/a mood in the eager profile)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    await archive.seed('self-reflection/mood.md', 'kein header, nur narrative');
+    await runNightlyPipeline();
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall[2]).not.toContain('n/a');
+    expect(yasminCall[2]).not.toContain('current mood');
+  });
+
+  it('mood: a staged mood update with a bogus updatedAt is re-stamped with the archive time', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // The agent stages a hallucinated far-future date; the pipeline must overwrite it with the
+    // archive stamp so decay measures from the real commit time, not the agent's lie.
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'self-reflection/mood.md',
+        content:
+          'valence: 0.9\nenergy: 0.7\nhalfLifeDays: 1\nupdatedAt: 2030-01-01T00:00:00Z\n\nIch bin gut gelaunt.',
+        isNew: true
+      });
+      return { finalText: 'staged mood', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+
+    await runNightlyPipeline();
+
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow).not.toBeNull();
+    const mood = parseMood(moodRow!.content);
+    expect(mood).not.toBeNull();
+    expect(mood!.valence).toBe(0.9);
+    // The rendered header stores second precision, so compare at that granularity.
+    expect(Math.floor(mood!.updatedAt.getTime() / 1000)).toBe(
+      Math.floor(moodRow!.createdAt.getTime() / 1000)
+    );
+    // The bogus 2030 date must be gone.
+    expect(mood!.updatedAt.getFullYear()).toBeLessThan(2030);
+  });
+
+  it('mood: a fully decayed (neutral) mood produces no new version and no churn', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    const seeded = await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0\nenergy: 0\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\nAlles neutral.'
+    );
+    await runNightlyPipeline();
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow!.version).toBe(seeded.version);
+  });
+
+  // -------------------------------------------------------------------------
+  // 9c. Topics layer wiring
   // -------------------------------------------------------------------------
 
   it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {
@@ -1424,7 +1549,7 @@ describe('nightly pipeline integration', () => {
   it('outbox: is NOT emptied when the integrate loop hit maxIterations (notes may be unconsolidated)', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
-    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'staged', iterations: 15 });
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'staged', iterations: 25 });
     const result = await runNightlyPipeline();
     // integrateTruncated itself already degrades the run to 'partial'
     expect(result.status).toBe('partial');

@@ -33,7 +33,8 @@ describe('nightly prompt templates', () => {
         selfProfileVoiceRule: loadTemplate('self_profile_voice_rule.txt'),
         groundingRule: renderPrompt('review_grounding_relaxed.txt', {
           synthesisKind: 'recurring-topic and character conclusions drawn from the interactions'
-        })
+        }),
+        perFileTypeReviewerRules: ''
       }),
       renderPrompt('revise_prompt.txt', {
         path: selfUpdate.path,

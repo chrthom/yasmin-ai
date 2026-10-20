@@ -51,6 +51,7 @@ import {
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { pathToTitle } from './mapping';
 import { personNameFromTitle, sanitizeForPath } from '../strings';
+import { decayMoodFile, MOOD_FILE_PATH, parseMood, stampMoodUpdatedAt, stripMoodHeader } from './mood';
 import {
   deleteConversation,
   deleteDocument,
@@ -460,8 +461,16 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           await deleteConversation(revisionConversationId);
         }
 
+        let contentToArchive = proposal;
+        if (verdict.approved && update.path === MOOD_FILE_PATH) {
+          // The agent-supplied updatedAt inside the mood header is untrusted text: a wrong or
+          // hallucinated date would silently skew (or freeze) every later decay, so the archive
+          // stamp -- the moment this run collected today's conversations -- wins. The narrative and
+          // the numeric mood fields stay as staged.
+          contentToArchive = stampMoodUpdatedAt(contentToArchive, collectedAt);
+        }
         if (verdict.approved) {
-          const { created } = await insertNextVersion(update.path, proposal, collectedAt);
+          const { created } = await insertNextVersion(update.path, contentToArchive, collectedAt);
           // Classify create-vs-update from whether an archived version already existed, not from
           // the AI-supplied isNew flag, which is never cross-checked against real archive state.
           if (created && currentContent === null) {
@@ -508,6 +517,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       filesUpdated: filesUpdatedFromReview,
       filesCreated: filesCreatedFromReview
     });
+    // Mood decay is deterministic code, not agent work: an existing mood fades exponentially
+    // toward neutral with its own half-life every night, even when the agent staged no mood
+    // update (no mood signal today). It runs BEFORE Phase 5 so the decayed version is synced to
+    // the Mistral library in the SAME run, and Phase 6's compacted Profile of Yasmin reflects
+    // the already-decayed state.
+    await decayMoodFile(collectedAt).catch(error =>
+      console.error('ERROR Failed to decay self-reflection/mood.md: ' + error)
+    );
 
     // -----------------------------------------------------------------------
     // Phase 5 -- Upload
@@ -666,7 +683,43 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
       try {
         const stripped = stripSensitive(row.content);
-        let compacted = await runCompact(kind, personName, stripped);
+        // Yasmin's eager profile also carries her current mood (valence, energy, reason), so the
+        // daily state is present in every turn without a RAG hop. The mood file itself has no
+        // eager entry of its own -- pathToTitle maps it to null, so only this fold-in brings it
+        // into the cache.
+        let compactSource = stripped;
+        if (kind === 'yasmin') {
+          const moodRow = await getCurrentVersion(MOOD_FILE_PATH);
+          if (moodRow) {
+            const mood = parseMood(moodRow.content);
+            if (!mood) {
+              // Without a parsable header decay is skipped forever, so folding in stale numbers
+              // (or "n/a") would silently freeze a broken mood file into the eager profile.
+              console.warn('WARN ' + MOOD_FILE_PATH + ' has no parsable mood header; skipping mood fold-in');
+            }
+            // The mood narrative gets the same sensitive-strip as the profile itself: it flows into
+            // the compacted Profile of Yasmin, which is eagerly loaded for every sender, so a
+            // [PRIVACY:SENSITIVE] passage in the mood reason must never survive this fold-in.
+            if (mood) {
+              const moodNarrative = stripSensitive(stripMoodHeader(moodRow.content));
+              // An empty narrative means the mood fully faded: decay drops the reason together
+              // with the numbers, so a stale reason can never outlive its mood in the eager
+              // profile (nor in the library -- the same blanked file is uploaded in Phase 5).
+              if (moodNarrative.length > 0) {
+                const header =
+                  '\n\n## My current mood\nvalence: ' +
+                  mood.valence +
+                  ', energy: ' +
+                  mood.energy +
+                  ', half-life: ' +
+                  mood.halfLifeDays +
+                  ' days\n\n';
+                compactSource = stripped + header + moodNarrative;
+              }
+            }
+          }
+        }
+        let compacted = await runCompact(kind, personName, compactSource);
 
         if (compacted.trim().length === 0) {
           // An empty source file simply has nothing to compact -- log and move on rather than

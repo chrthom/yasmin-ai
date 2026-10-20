@@ -30,7 +30,7 @@ function buildSection(heading: string, body: string): string {
 }
 
 /**
- * Builds the 7-section person profile template from the existing 'Profile of <name>' and
+ * Builds the 8-section person profile template from the existing 'Profile of <name>' and
  * (optional) 'Session with <name>' content, matching reflection.ts's exact section headings. The
  * two sections with no equivalent in the old 2-column data (Ideas/Interests/Goals, Communication
  * Style) start empty; the nightly pipeline fills them in as it observes real signal over time.
@@ -43,6 +43,7 @@ function buildPersonProfile(coreFacts: string, sessionContent: string): string {
     buildSection('## Recent Happenings', ''),
     buildSection('## Open Topics', sessionContent),
     buildSection('## Communication Style', ''),
+    buildSection("## Yasmin's View", ''),
     buildSection("## Yasmin's Intentions", '')
   ].join('\n\n');
 }

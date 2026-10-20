@@ -88,6 +88,8 @@ describe('bootstrapMemory', () => {
         '\n' +
         '## Communication Style\n' +
         '\n' +
+        "## Yasmin's View\n" +
+        '\n' +
         "## Yasmin's Intentions"
     );
 
@@ -118,6 +120,8 @@ describe('bootstrapMemory', () => {
         '\n' +
         '## Communication Style\n' +
         '\n' +
+        "## Yasmin's View\n" +
+        '\n' +
         "## Yasmin's Intentions"
     );
     expect(content).not.toMatch(/none|n\/a|empty/i);
@@ -132,7 +136,9 @@ describe('bootstrapMemory', () => {
     await bootstrapMemory();
 
     const [, content] = mockInsertNextVersion.mock.calls[0];
-    expect(content).toContain("## Open Topics\n\n## Communication Style\n\n## Yasmin's Intentions");
+    expect(content).toContain(
+      "## Open Topics\n\n## Communication Style\n\n## Yasmin's View\n\n## Yasmin's Intentions"
+    );
   });
 
   it('seeds Profile of Yasmin verbatim to self-reflection/profile.md', async () => {
