@@ -1,9 +1,22 @@
 import * as process from 'node:process';
 
+/**
+ * Reads an optional env var, falling back to the given default when it is unset or empty.
+ *
+ * @param key The environment variable name.
+ * @param fallback The value to use when the variable is unset or empty.
+ * @returns The variable's value or the fallback.
+ */
 const optionalEnv = (key: string, fallback: string): string => process.env[key] || fallback;
 
-// Lazy getters throw on access instead of the compile-time-only `!`, so importing config without
-// validateEnv() can never silently yield undefined.
+/**
+ * Reads a required env var. Implemented as a lazy getter (not the compile-time-only `!`) so
+ * importing config without validateEnv() can never silently yield undefined.
+ *
+ * @param key The environment variable name.
+ * @returns The variable's value.
+ * @throws Error when the variable is unset or empty.
+ */
 const requiredEnv = (key: string): string => {
   const value = process.env[key];
   if (!value) {
@@ -12,7 +25,15 @@ const requiredEnv = (key: string): string => {
   return value;
 };
 
-/** Parses an env var as an integer, clamped to [min, max]; absent or unparseable values use the default. */
+/**
+ * Parses an env var as an integer, clamped to [min, max]; absent or unparseable values use the default.
+ *
+ * @param key The environment variable name.
+ * @param defaultValue The value to use when the variable is absent or unparseable.
+ * @param min Lower clamp bound (inclusive).
+ * @param max Upper clamp bound (inclusive).
+ * @returns The parsed, clamped integer value.
+ */
 function parseClampedEnvInt(key: string, defaultValue: number, min: number, max: number): number {
   const raw = process.env[key];
   if (raw === undefined || raw.trim() === '') {
@@ -25,6 +46,10 @@ function parseClampedEnvInt(key: string, defaultValue: number, min: number, max:
   return Math.min(Math.max(parsed, min), max);
 }
 
+/**
+ * Central application configuration. Env-backed values are either read eagerly with a fallback
+ * here or through lazy getters that throw on access (see requiredEnv).
+ */
 export const config = {
   server: {
     port: process.env['PORT'] || 5000
@@ -138,13 +163,19 @@ export const config = {
   }
 } as const;
 
+/** Options for {@link validateEnv}, deciding which extra variables a process role requires. */
 export interface ValidateEnvOptions {
-  // Set by entrypoints that talk to the database (nightly run, manage-context, bootstrap-memory).
+  /** Set by entrypoints that talk to the database (nightly run, manage-context, bootstrap-memory). */
   requireDb?: boolean;
 }
 
-// Called explicitly by each entrypoint; never guesses the process role from argv.
-// USE_REAL_DB=true always implies the database variables as well.
+/**
+ * Validates that every required env var is set, printing each missing one and exiting the
+ * process otherwise. Called explicitly by each entrypoint; never guesses the process role
+ * from argv. USE_REAL_DB=true always implies the database variables as well.
+ *
+ * @param options Set requireDb to also enforce DB_PASSWORD.
+ */
 export function validateEnv(options: ValidateEnvOptions = {}): void {
   const required = [
     'MISTRAL_API_KEY',

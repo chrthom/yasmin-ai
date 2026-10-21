@@ -51,7 +51,6 @@ src/
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
-│   ├── db_proxy.ts     # Database proxy loaded with mock background entries
 │   └── models/
 │       ├── context.model.ts         # Context model query methods
 │       ├── intraday_notes.model.ts  # Cross-person note outbox (intraday_notes): staging, fetch-for-delivery,
@@ -74,7 +73,8 @@ src/
 │   │                  #   reflection with Yasmin's conversation persona (journals/dreams/<date>.md
 │   │                  #   + append-only self-reflection/dreams.md)
 │   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
-│   │                  #   and the archive stamp that overrides the agent's updatedAt
+│   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
+│   │                  #   overrides the agent's updatedAt
 │   └── mapping.ts     # Table-driven mapping between verbose file paths and context_entries titles
 ├── services/
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
@@ -89,7 +89,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory
+                            #   pipeline.integration, context.model, bootstrap-memory, mood
 ```
 
 ### Data Flow
@@ -135,7 +135,7 @@ release-claim lifecycle (`claimNoteDelivery` / `releaseNoteDelivery` in
 request and the claim is rolled back if that request fails, so a failed delivery does not lose the
 note. The privacy barrier lives only in the live agent's prompt: never relay anything
 confidential or `[PRIVACY:SENSITIVE]`-related. Deployment checklist: `docs/intraday_notes_deployment.md`. The nightly job feeds still-undelivered notes to
-the integrate agent as evidence and then empties the outbox (only after phases 3+4 succeeded, and
+the integrate agent and into the review/revision evidence as well, and then empties the outbox (only after phases 3+4 succeeded, and
 only up to the snapshot's max id, so concurrently inserted notes survive for the next run).
 
 #### Conversation restarts and the handoff
@@ -165,7 +165,6 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 
 - **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory (see above); on a restart it prepends the handoff block built by `src/handoff.ts`.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
-- **`DbProxy`** (`src/database/db_proxy.ts`): Relational database proxy, pre-populated with standard prose Markdown backgrounds.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
 - **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `mood.ts` implements Yasmin's daily mood layer (`self-reflection/mood.md`): the machine-readable header, deterministic exponential decay toward neutral (run nightly before the upload phase, no agent call), the archive stamp that overrides the agent-supplied `updatedAt`, and the privacy-guarded fold-in of the current mood into the compacted `Profile of Yasmin`; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files, `general/topic-index.md`, and `self-reflection/mood.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
 
@@ -181,6 +180,16 @@ consolidates the day's Synology conversations into long-term memory after the fa
 At a high level, each run:
 
 1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
+   If the collected batch is empty — fresh **or** resumed — and the `intraday_notes` outbox holds no undelivered
+   notes, the run **short-circuits** right there: it records a `completed` job row with `conversationsProcessed: 0`,
+   advances the watermark, releases the lock, and skips phases 2-7 entirely (no LLM calls, no Mistral writes or
+   deletes). A non-empty outbox keeps the consolidation path running even with zero conversations, so undelivered
+   notes are never stranded by the skip. The skip also fires when the outbox state is unknown because reading it
+   failed (`getUnconsolidatedNotes` threw): the skip performs no outbox writes, so any pending notes stay in the
+   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (phase 6.5), so
+   already-delivered notes can linger across consecutive quiet nights; they are inert (delivery and consolidation
+   only ever look at rows with `delivered_at IS NULL`) and are cleared by the next non-skipped run's bounded
+   delete.
 2. **Journals** each conversation into a per-conversation markdown summary.
 3. **Integrates** today's journals into proposed updates to a small set of verbose long-term memory files
    (`people/<name>.md`, `self-reflection/profile.md`, `general/family.md`, `topics/<topic>.md`, `general/topic-index.md`), using a dedicated nightly Mistral
@@ -287,3 +296,16 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - Unix line endings
 - TypeScript strict mode
 - Prefer arrow functions
+
+### Comment convention
+
+- **Unit comments**: every function, class, and arrow-function constant gets a TSDoc block
+  (`/** ... */`) directly above it, interfaces and types too when they carry a behavior contract.
+  One concise sentence about what the unit does, elaboration only if needed, plus `@param`,
+  `@returns` and `@throws` as applicable. Trivial private helpers still get a one-line block.
+- **Inline comments**: brief, single-purpose `//` hints explaining _why_ something non-obvious is
+  done. No multi-paragraph essays: anything longer than ~3 lines belongs in the unit comment (or the
+  referenced design doc) instead.
+- Enforcement: `jsdoc/require-jsdoc` (eslint-plugin-jsdoc) fails `npm run lint` on any undocumented
+  function/class in `src/` and `scripts/`. Test files in `src/__tests__/` are exempt; comment test
+  scaffolding only where behavior is genuinely non-obvious.

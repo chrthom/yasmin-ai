@@ -52,6 +52,14 @@ describe('mood', () => {
       expect(mood!.updatedAt).toEqual(new Date('2026-10-01T00:00:00Z'));
     });
 
+    it('accepts an updatedAt with an explicit UTC offset (an agent-staged date must not go unparsable)', () => {
+      const mood = parseMood(
+        'valence: 0.5\nenergy: 0.5\nhalfLifeDays: 1\nupdatedAt: 2026-10-05T22:00:00+02:00'
+      );
+      expect(mood).not.toBeNull();
+      expect(mood!.updatedAt).toEqual(new Date('2026-10-05T20:00:00Z'));
+    });
+
     it('clamps out-of-range values and floors the half-life', () => {
       const mood = parseMood('valence: 5\nenergy: -9\nhalfLifeDays: 0\nupdatedAt: 2026-10-01');
       expect(mood!.valence).toBe(1);
@@ -128,6 +136,26 @@ describe('mood', () => {
       expect(content).toContain('Today was a heated argument with Christopher.');
     });
 
+    it('drops the narrative once decay fully neutralizes the state (the reason fades with the mood)', async () => {
+      mockGetCurrentVersion.mockResolvedValue({
+        content: moodFile(0.8, 0.6, 1, UPDATED_AT),
+        filePath: MOOD_FILE_PATH
+      });
+      mockInsertNextVersion.mockResolvedValue({ created: true });
+
+      // 14 one-day half-lives: both axes snap to 0, so the stale reason must not survive.
+      const now = new Date('2026-10-15T22:00:00Z');
+      const changed = await decayMoodFile(now);
+
+      expect(changed).toBe(true);
+      expect(mockInsertNextVersion).toHaveBeenCalledWith(MOOD_FILE_PATH, expect.any(String), now);
+      const content = mockInsertNextVersion.mock.calls[0][1];
+      const mood = parseMood(content);
+      expect(mood).toEqual({ valence: 0, energy: 0, halfLifeDays: 1, updatedAt: now });
+      // Only the header remains -- the eager fold-in and the library upload see no stale reason.
+      expect(stripMoodHeader(content)).toBe('');
+    });
+
     it('writes nothing when decay applies without a significant change (deterministic decay without an agent update)', async () => {
       mockGetCurrentVersion.mockResolvedValue({
         content: moodFile(0, 0, 2, UPDATED_AT)
@@ -159,6 +187,16 @@ describe('mood', () => {
       const mood = parseMood(stamped);
       expect(mood!.updatedAt).toEqual(stamp);
       expect(mood!.valence).toBe(0.8);
+      expect(stamped).toContain('Reason.');
+    });
+
+    it('re-stamps an agent-staged offset updatedAt (the stamp must never silently no-op)', () => {
+      const staged =
+        'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: 2026-10-05T22:00:00+02:00\n\nReason.';
+      const stamp = new Date('2026-10-17T04:00:00Z');
+      const stamped = stampMoodUpdatedAt(staged, stamp);
+      const mood = parseMood(stamped);
+      expect(mood!.updatedAt).toEqual(stamp);
       expect(stamped).toContain('Reason.');
     });
 

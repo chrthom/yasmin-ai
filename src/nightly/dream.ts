@@ -27,6 +27,7 @@ export function dreamDateStr(now: Date): string {
     month: '2-digit',
     day: '2-digit'
   }).formatToParts(now);
+  /** Picks the formatted value for a single calendar-part type out of the Intl parts array. */
   const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}`;
 }

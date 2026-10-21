@@ -22,9 +22,12 @@ const NUM_FIELD_RES: Record<string, RegExp> = {
   valence: /^valence:\s*(-?\d+(?:\.\d+)?)\s*$/m,
   energy: /^energy:\s*(-?\d+(?:\.\d+)?)\s*$/m,
   halfLifeDays: /^halfLifeDays:\s*(\d+(?:\.\d+)?)\s*$/m,
-  updatedAt: /^updatedAt:\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?)\s*$/m
+  updatedAt: /^updatedAt:\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?)\s*$/m
 };
 
+/**
+ * Clamps a value into [min, max] -- mood fields stay on their fixed scale.
+ */
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -87,6 +90,10 @@ export function renderMoodHeader(mood: MoodState): string {
 export function applyDecay(mood: MoodState, now: Date): MoodState {
   const elapsedDays = Math.max(0, (now.getTime() - mood.updatedAt.getTime()) / (24 * 60 * 60 * 1000));
   const factor = Math.pow(0.5, elapsedDays / mood.halfLifeDays);
+  /**
+   * Applies the elapsed-time decay factor to a single mood value, snapping
+   * near-zero results to exactly zero (the mood fully faded on that axis).
+   */
   const decay = (value: number): number => {
     const next = value * factor;
     return Math.abs(next) < DECAY_EPSILON ? 0 : clamp(next, -1, 1);
@@ -138,7 +145,14 @@ export async function decayMoodFile(now: Date = new Date()): Promise<boolean> {
     return false;
   }
 
-  const updatedContent = renderMoodHeader(decayed) + '\n\n' + stripMoodHeader(current.content);
+  // Once decay fully neutralizes the state the narrative describes a mood that no longer exists:
+  // drop it here so the reason fades WITH the numbers instead of lingering forever in the
+  // compacted profile and the RAG library. The versioned archive keeps every earlier version,
+  // so no history is lost.
+  const fullyFaded = decayed.valence === 0 && decayed.energy === 0;
+  const updatedContent = fullyFaded
+    ? renderMoodHeader(decayed)
+    : renderMoodHeader(decayed) + '\n\n' + stripMoodHeader(current.content);
 
   try {
     await insertNextVersion(MOOD_FILE_PATH, updatedContent, now);

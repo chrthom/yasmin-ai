@@ -23,6 +23,8 @@ getDatabasePool();
 
 const chatIncomingBaseURL = config.synology.chatIncomingUrl;
 
+// Shared singletons: the agent is stateful (conversation caches), so there must be exactly one
+// per process; the client is effectively stateless but is shared for consistency.
 export const chatAgent = new ChatAgent(config.mistral.apiKey, config.mistral.agentId);
 export const synologyClient = new SynologyClient(chatIncomingBaseURL, config.synology.tokens.bot);
 
