@@ -221,7 +221,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     }
 
     // -----------------------------------------------------------------------
-    // Pending-notes snapshot (evidence for Phase 3, bound for Phase 6.5)
+    // Pending-notes snapshot (evidence for Phase 3, bound for Phase 8)
     // -----------------------------------------------------------------------
     // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
     // evidence so a message that never reached its recipient still survives in long-term
@@ -230,7 +230,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // the empty-batch short-circuit below needs the outbox state to decide whether the run
     // really has nothing to do.
     let undeliveredNotes: IntradayNote[] = [];
-    // Watermark of the consolidation snapshot: phase 6.5 may only delete notes up to this id,
+    // Watermark of the consolidation snapshot: phase 8 may only delete notes up to this id,
     // never a note the live agent staged after the snapshot while the pipeline was running.
     // Taking the snapshot this early is the safe direction for that bound -- a note staged
     // later during the run is neither consolidated nor deleted, so it simply survives for the
@@ -248,14 +248,14 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         );
       }
     } catch (error) {
-      // The notes themselves were never consolidated here, so phase 6.5 must NOT delete them;
+      // The notes themselves were never consolidated here, so phase 8 must NOT delete them;
       // they stay in the outbox and are included again tomorrow.
       console.error('ERROR Failed to load undelivered pending notes; continuing without them: ' + error);
       notesConsolidated = false;
     }
 
     // -----------------------------------------------------------------------
-    // Empty-batch short-circuit (skip Phases 2-7 when there is nothing to do)
+    // Empty-batch short-circuit (skip Phases 2-9 when there is nothing to do)
     // -----------------------------------------------------------------------
     // Applies to BOTH collect paths: a fresh run that found no conversations AND a resumed run
     // whose effective batch is empty (the resumed branch always replays a non-empty id list,
@@ -283,7 +283,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       console.log(
         'INFO Nothing to process (no conversations, ' +
           (notesConsolidated ? 'no undelivered notes' : 'outbox state unknown (read failed)') +
-          '); skipping phases 2-7'
+          '); skipping phases 2-9'
       );
       return {
         jobId,
@@ -414,7 +414,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // The undelivered pending notes snapshot (taken right after Phase 1) rides along as review and
     // revision evidence for the same reason it rides along in Phase 3: on a quiet night with zero
     // conversations the journals are empty, so without the notes here the reviewer would reject a
-    // note-derived fact as invented -- and Phase 6.5 would still empty the outbox afterwards,
+    // note-derived fact as invented -- and Phase 8 would still empty the outbox afterwards,
     // silently losing the note's content from long-term memory.
     for (const update of orderedUpdates) {
       try {
@@ -577,7 +577,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
           // the live agent retrieving the dream from its library would have no way to tell the
           // dream's absurd, recombined events from things that actually happened -- the system
           // prompt tells it library content is "YOUR MEMORY".
-          const dateStr = dreamPath.slice('journals/dreams/'.length, -'.md'.length);
+          const dateStr = dreamDateFromPath(dreamPath)!;
           const archivedDream =
             'TRAUM -- nicht wirklich passiert. Am ' +
             dateStr +
@@ -739,7 +739,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       allCurrentVersions = await listCurrentVersions();
     } catch (error) {
       // Same resumability rationale as Phase 6: leave the eager cache untouched this run and mark
-      // 'partial' so phase 6 re-runs next invocation.
+      // 'partial' so phase 7 re-runs next invocation.
       console.error(
         'ERROR Phase 7 failed to load current versions; leaving the eager cache untouched: ' + error
       );
@@ -765,7 +765,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         if (name === null) {
           // Unreachable today -- people/ paths always map to "Profile of <name>" titles -- but
           // treat it like any other per-row failure rather than compacting against a wrong name.
-          console.error('ERROR Phase 6 could not derive a person name from title "' + title + '"');
+          console.error('ERROR Phase 7 could not derive a person name from title "' + title + '"');
           anyEagerFailed = true;
           continue;
         }

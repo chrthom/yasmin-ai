@@ -73,8 +73,6 @@ Only rely on important, relevant information, not every detail you know.
 
 ---
 
----
-
 ## PASSING MESSAGES TO OTHER PEOPLE
 
 - share_note: Pass a short message to another family member. It is delivered to them automatically with their next message, in real time. Use it when:

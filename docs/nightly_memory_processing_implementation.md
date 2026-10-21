@@ -67,7 +67,8 @@ Safety net (also permanent behavior): **Phase 7 never overwrites a `context_entr
 1. **Library** — the `memory` library already exists in the production workspace. Obtain its **library id** and put it in `MISTRAL_LIBRARY_ID` (§10). _Do not_ reuse the temporary test id from earlier spikes.
 2. **Conversation agent** (`AGENT_ID_CONVERSATION`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/conversation/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (done at cutover, §13 — after the nightly job is verified; the privacy block turned out to be unnecessary because the live agent never sees stripped text).
 3. **Nightly agent** — create a new agent `yasmin-nightly` with the memory-processor system prompt (§6.3). Library wiring **optional** (only for cross-file discovery; see v3 §1.2). Put its id in `AGENT_ID_NIGHTLY`.
-4. **API key** — issue a **production** key with access to the library + both agents; set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
+4. **Dream agent (optional)** — create the agent `yasmin-dream` with the dream system prompt (`mistral_config/dream/system_prompt.txt`; see §6.1 Phase 5) and put its id in `AGENT_ID_DREAM`. Without it the nightly job still dreams, but falls back to the structured `yasmin-nightly` agent with a creative prompt instead of the dedicated narrative one.
+5. **API key** — issue a **production** key with access to the library + all agents (dream agent included); set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
 
 ### 2.4 Environment / deployment
 
@@ -82,6 +83,7 @@ Safety net (also permanent behavior): **Phase 7 never overwrites a `context_entr
 - [ ] `MISTRAL_LIBRARY_ID` = production `memory` id; prod key can read it
 - [ ] Conversation agent: library attached + privacy prompt updated
 - [ ] `yasmin-nightly` agent created; `AGENT_ID_NIGHTLY` set
+- [ ] (optional) `yasmin-dream` agent created from `mistral_config/dream/system_prompt.txt`; `AGENT_ID_DREAM` set (unset → dream generation falls back to the nightly agent with a creative prompt)
 - [ ] Bootstrap migration run; `memory_archive` seeded; library populated
 - [ ] App (re)started so the scheduler arms itself; dry-run reviewed
 
@@ -215,7 +217,7 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 
 ### 6.1 Phases
 
-**Phase 1 — Collect.** Acquire lock (§6.2). Watermark = last successful `completed_at` (fallback 24 h if none/corrupt; guard against future timestamps from clock skew). `listConversations(sinceWatermark)`; persist ids to `processed_conversation_ids`. Empty (fresh **or** resumed, and no undelivered pending `intraday_notes`) → mark `completed` with `conversations_processed: 0`, advance the watermark, release, exit — phases 2-7 are skipped entirely (no LLM calls, no Mistral writes/deletes). A non-empty pending-notes outbox keeps the run going even with zero conversations, so undelivered notes are always consolidated rather than stranded by the skip; the outbox snapshot is therefore taken right after collect; a failed outbox read also skips, leaving any pending notes untouched for the next run.
+**Phase 1 — Collect.** Acquire lock (§6.2). Watermark = last successful `completed_at` (fallback 24 h if none/corrupt; guard against future timestamps from clock skew). `listConversations(sinceWatermark)`; persist ids to `processed_conversation_ids`. Empty (fresh **or** resumed, and no undelivered pending `intraday_notes`) → mark `completed` with `conversations_processed: 0`, advance the watermark, release, exit — phases 2-9 are skipped entirely (no LLM calls, no Mistral writes/deletes). A non-empty pending-notes outbox keeps the run going even with zero conversations, so undelivered notes are always consolidated rather than stranded by the skip; the outbox snapshot is therefore taken right after collect; a failed outbox read also skips, leaving any pending notes untouched for the next run.
 
 **Phase 2 — Journal.** For each conversation: `getConversationMessages` → `askAgent(nightly, journalPrompt(messages))` → structured journal. Write to `memory_archive` (`journals/<user>/<conv_id>.md`, version 1) **and** upload to Mistral. On failure: retry (backoff); still failing → add to `skipped_conversation_ids`, continue (a skipped conversation is **not** deleted in Phase 9, so it retries next night). Cap journal length; oversized → summarize-again with a tighter instruction.
 

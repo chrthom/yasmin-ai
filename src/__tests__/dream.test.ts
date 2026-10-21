@@ -70,12 +70,12 @@ describe('nightly/dream', () => {
   });
 
   describe('dreamFilePath', () => {
-    it('builds a dated path under journals/dreams/', () => {
-      const path = dreamFilePath(new Date('2026-10-09T23:30:00Z'));
-      expect(path).toMatch(/^journals\/dreams\/\d{4}-\d{2}-\d{2}\.md$/);
-      expect(dreamFilePath(new Date('2026-10-09T23:30:00Z'))).toBe(
-        dreamFilePath(new Date('2026-10-09T22:00:00Z'))
-      );
+    it('builds a dated path under journals/dreams/ in the nightly timezone', () => {
+      // 23:30Z is already the next day in Europe/Berlin -- asserting the concrete paths (not just
+      // two instants mapping to the same path) pins the timezone conversion: a broken UTC-only
+      // implementation would produce 2026-10-09 here and fail.
+      expect(dreamFilePath(new Date('2026-10-09T23:30:00Z'))).toBe('journals/dreams/2026-10-10.md');
+      expect(dreamFilePath(new Date('2026-10-09T22:00:00Z'))).toBe('journals/dreams/2026-10-10.md');
     });
   });
 
@@ -235,6 +235,9 @@ describe('nightly/dream', () => {
       expect(dreamDateFromPath('journals/dreams/2026-10-09.md')).toBe('2026-10-09');
       expect(dreamDateFromPath('journals/alice/conv-1.md')).toBeNull();
       expect(dreamDateFromPath('people/alice.md')).toBeNull();
+      // A user whose name sanitizes to 'dreams' would file journals under journals/dreams/ --
+      // non-date stems must not be misclassified as dreams.
+      expect(dreamDateFromPath('journals/dreams/conv-123.md')).toBeNull();
     });
 
     it('finds the NEWEST dream lacking a reflection entry', () => {

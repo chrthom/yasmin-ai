@@ -213,12 +213,16 @@ export function hasReflectionForDate(currentContent: string | null, dateStr: str
   return currentContent !== null && currentContent.includes(dreamReflectionHeader(dateStr));
 }
 
-/** Extracts the date string from a journals/dreams/<date>.md path, or null for other paths */
+/** Extracts the date string from a journals/dreams/<date>.md path, or null for other paths and non-date stems */
 export function dreamDateFromPath(filePath: string): string | null {
   if (!filePath.startsWith(DREAMS_DIR) || !filePath.endsWith('.md')) {
     return null;
   }
-  return filePath.slice(DREAMS_DIR.length, -'.md'.length);
+  const stem = filePath.slice(DREAMS_DIR.length, -'.md'.length);
+  // Journal paths are journals/<sanitizeForPath(name)>/<convId>.md, so a chat user whose name
+  // sanitizes to 'dreams' would file journals under journals/dreams/ -- only date-shaped stems
+  // are dreams, everything else must not be misclassified as one.
+  return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
 }
 
 /**

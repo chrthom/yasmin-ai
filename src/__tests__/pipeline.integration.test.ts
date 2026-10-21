@@ -5,7 +5,7 @@
 //   these tests assert pipeline.ts's ORCHESTRATION logic, not reflection.ts's prompt wording.
 // - '../database/models/memory_archive.model' is backed by a small in-memory fake (MemoryArchiveFake)
 //   that mirrors the real module's hash-based no-churn versioning, so multi-call interactions (the
-//   journal loop reading back what it just wrote, phase 4's review + archive, phase 5/6 reconcile) are
+//   journal loop reading back what it just wrote, phase 4's review + archive, phase 6/7 reconcile) are
 //   genuinely exercised rather than hand-chained with mockResolvedValueOnce.
 // - '../database/models/nightly_job.model' and '../database/models/context.model' are coarse per-call
 //   jest.fn mocks -- their own real behavior is covered by dedicated model unit tests already.
@@ -503,7 +503,7 @@ describe('nightly pipeline integration', () => {
   it('change detection: an identical staged update is a no-op, not an error or a counted change', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     const seeded = await archive.seed('people/alice.md', 'Existing alice content');
-    // Mark the seeded row as already synced -- otherwise Phase 5 would re-upload it regardless of
+    // Mark the seeded row as already synced -- otherwise Phase 6 would re-upload it regardless of
     // whether Phase 4 detected a content change, and this test couldn't tell the two apart.
     await archive.markSynced(seeded.id, 'doc-existing-alice');
 
@@ -741,7 +741,7 @@ describe('nightly pipeline integration', () => {
       expect.any(Date)
     );
 
-    // Both conversations are still cleaned up in Phase 7 regardless of which path journaled them.
+    // Both conversations are still cleaned up in Phase 9 regardless of which path journaled them.
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
 
@@ -751,7 +751,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // 4b. Empty-batch short-circuit (issue #109)
   // -------------------------------------------------------------------------
-  it('empty batch (fresh): skips phases 2-7 entirely -- no LLM calls, no Mistral writes, completed row + watermark', async () => {
+  it('empty batch (fresh): skips phases 2-9 entirely -- no LLM calls, no Mistral writes, completed row + watermark', async () => {
     // Default mockListConversations resolves to [] -- nothing to collect.
     const result = await runNightlyPipeline();
 
@@ -845,7 +845,7 @@ describe('nightly pipeline integration', () => {
 
   it('empty batch + undelivered notes: does NOT skip -- the run consolidates the pending notes with zero conversations', async () => {
     // Zero conversations, but the outbox still holds an undelivered note: the skip must not
-    // strand it, so the consolidation path (phases 3/4/6.5) keeps running.
+    // strand it, so the consolidation path (phases 3/4/8) keeps running.
     mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
     mockGetUnconsolidatedNotes.mockResolvedValueOnce([
       {
@@ -887,7 +887,7 @@ describe('nightly pipeline integration', () => {
   it('empty batch + undelivered notes: review and revision ground in the notes, so the note survives into memory', async () => {
     // The quiet-night loss guard: the reviewer's evidence base must include the undelivered notes.
     // Without them a note-derived fact looks invented (the journals are empty on this path), gets
-    // rejected, and Phase 6.5 would still empty the outbox -- silently losing the note's content.
+    // rejected, and Phase 8 would still empty the outbox -- silently losing the note's content.
     mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
     const notes = [
       {
@@ -938,7 +938,7 @@ describe('nightly pipeline integration', () => {
   it('empty batch + failed notes read: skips (no LLM calls) and leaves the outbox untouched', async () => {
     // The outbox state is unknown, but the skip performs no outbox writes -- pending notes are
     // never lost, they stay for the next run. And with zero conversations there is no journal
-    // evidence, so running phases 2-7 could only stage spurious updates.
+    // evidence, so running phases 2-9 could only stage spurious updates.
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     mockGetUnconsolidatedNotes.mockRejectedValueOnce(new Error('db down'));
 
@@ -1119,7 +1119,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // 8b. Unguarded phase read failures stay resumable ('partial'), not 'failed'
   // -------------------------------------------------------------------------
-  it('Phase 5 listUnsynced failure: run resolves as partial and skips the upload instead of throwing', async () => {
+  it('Phase 6 listUnsynced failure: run resolves as partial and skips the upload instead of throwing', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockListUnsynced.mockImplementationOnce(async () => {
       throw new Error('db boom listing unsynced');
@@ -1133,10 +1133,15 @@ describe('nightly pipeline integration', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('Phase 6 listCurrentVersions failure: run resolves as partial and leaves the eager cache untouched', async () => {
+  it('Phase 7 listCurrentVersions failure: run resolves as partial and leaves the eager cache untouched', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
-    // Phase 5 reconcile uses the first call (ok); Phase 6 uses the second (throws).
+    // listCurrentVersions is called in order by the topics barrier load, the dream phase's two
+    // listings, Phase 6's upload reconcile, and Phase 7's eager listing -- the first four stay
+    // healthy, the fifth throws.
     mockListCurrentVersions
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [])
       .mockImplementationOnce(async () => [])
       .mockImplementationOnce(async () => {
         throw new Error('db boom listing current versions');
@@ -1145,7 +1150,7 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
 
     expect(result.status).toBe('partial');
-    // Phase 6 -- which upserts the mapped profile/family titles -- must NOT have run, so the eager
+    // Phase 7 -- which upserts the mapped profile/family titles -- must NOT have run, so the eager
     // cache is untouched.
     expect(mockUpsertContextEntry).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
@@ -1426,7 +1431,7 @@ describe('nightly pipeline integration', () => {
 
   it('topics load failure: run is partial, topics/ proposals skipped before review, advisory index archived as staged', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
-    // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
+    // Phase 4's barrier load throws; every later listCurrentVersions call (Phases 5-7) stays healthy.
     mockListCurrentVersions
       .mockRejectedValueOnce(new Error('db boom listing current versions'))
       .mockImplementation(archive.listCurrentVersions);
@@ -1463,9 +1468,9 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 10. Phase 6 privacy wiring
+  // 10. Phase 7 privacy wiring
   // -------------------------------------------------------------------------
-  it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
+  it('Phase 7 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -1485,9 +1490,9 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 11. Phase 6 empty-compaction guard
+  // 11. Phase 7 empty-compaction guard
   // -------------------------------------------------------------------------
-  it('Phase 6 skips the eager-cache upsert when compaction produces empty output, but does not fail the run', async () => {
+  it('Phase 7 skips the eager-cache upsert when compaction produces empty output, but does not fail the run', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -1506,9 +1511,9 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 12. Phase 5 privacy wiring
+  // 12. Phase 6 privacy wiring
   // -------------------------------------------------------------------------
-  it('Phase 5 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
+  it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -1579,7 +1584,7 @@ describe('nightly pipeline integration', () => {
     expect(reflectionInsert).toBeDefined();
     expect(reflectionInsert![1]).toContain('## Traum vom');
     expect(reflectionInsert![1]).toContain('Ich fuhle mich davon beruhrt.');
-    // Phase 5: the dream + reflection are uploaded to the RAG library like any archive file.
+    // Phase 6: the dream + reflection are uploaded to the RAG library like any archive file.
     // The RAG copy MUST carry the dream marker, so the live agent can never mistake dream
     // content for things that really happened.
     expect(mockReplaceDocument).toHaveBeenCalledWith(dreamPath, archivedDream, undefined);
@@ -1671,10 +1676,19 @@ describe('nightly pipeline integration', () => {
       }
     ]);
     mockRunDream.mockResolvedValueOnce('Ein Traum.');
-    const dreamPath = dreamFilePath(new Date());
-    const dateStr = dreamPath.slice('journals/dreams/'.length, -'.md'.length);
-    await archive.seed('self-reflection/dreams.md', '## Traum vom ' + dateStr + '\n\nBereits reflektiert.');
-    await runNightlyPipeline();
+    // The seeded header and the pipeline's internal collectedAt must derive from ONE instant: a
+    // real-clock dreamFilePath(new Date()) here could straddle a UTC-date rollover before the
+    // pipeline's own new Date() (the same flake class the sibling resume test pins via
+    // orphan.startedAt), making the seeded header match the wrong date.
+    jest.useFakeTimers({ now: new Date('2026-10-09T12:00:00Z') });
+    try {
+      const dreamPath = dreamFilePath(new Date());
+      const dateStr = dreamPath.slice('journals/dreams/'.length, -'.md'.length);
+      await archive.seed('self-reflection/dreams.md', '## Traum vom ' + dateStr + '\n\nBereits reflektiert.');
+      await runNightlyPipeline();
+    } finally {
+      jest.useRealTimers();
+    }
     expect(mockRunDreamReflection).not.toHaveBeenCalled();
     const reflectionContent = await archive.getCurrentVersion('self-reflection/dreams.md');
     expect(reflectionContent?.content).not.toContain('Ich fuhle mich davon beruhrt.');

@@ -182,11 +182,11 @@ At a high level, each run:
 1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
    If the collected batch is empty — fresh **or** resumed — and the `intraday_notes` outbox holds no undelivered
    notes, the run **short-circuits** right there: it records a `completed` job row with `conversationsProcessed: 0`,
-   advances the watermark, releases the lock, and skips phases 2-7 entirely (no LLM calls, no Mistral writes or
+   advances the watermark, releases the lock, and skips phases 2-9 entirely (no LLM calls, no Mistral writes or
    deletes). A non-empty outbox keeps the consolidation path running even with zero conversations, so undelivered
    notes are never stranded by the skip. The skip also fires when the outbox state is unknown because reading it
    failed (`getUnconsolidatedNotes` threw): the skip performs no outbox writes, so any pending notes stay in the
-   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (phase 6.5), so
+   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (Phase 8), so
    already-delivered notes can linger across consecutive quiet nights; they are inert (delivery and consolidation
    only ever look at rows with `delivered_at IS NULL`) and are cleared by the next non-skipped run's bounded
    delete.
