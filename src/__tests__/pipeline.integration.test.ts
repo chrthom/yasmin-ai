@@ -5,7 +5,7 @@
 //   these tests assert pipeline.ts's ORCHESTRATION logic, not reflection.ts's prompt wording.
 // - '../database/models/memory_archive.model' is backed by a small in-memory fake (MemoryArchiveFake)
 //   that mirrors the real module's hash-based no-churn versioning, so multi-call interactions (the
-//   journal loop reading back what it just wrote, phase 4's review + archive, phase 5/6 reconcile) are
+//   journal loop reading back what it just wrote, phase 4's review + archive, phase 6/7 reconcile) are
 //   genuinely exercised rather than hand-chained with mockResolvedValueOnce.
 // - '../database/models/nightly_job.model' and '../database/models/context.model' are coarse per-call
 //   jest.fn mocks -- their own real behavior is covered by dedicated model unit tests already.
@@ -75,6 +75,55 @@ jest.mock('../nightly/reflection', () => ({
   runCompact: jest.fn()
 }));
 
+jest.mock('../nightly/dream', () => ({
+  DREAM_REFLECTION_PATH: 'self-reflection/dreams.md',
+  appendDreamReflection: jest.fn(
+    (current: string | null, dateStr: string, reflection: string) =>
+      (current === null ? '' : current + '\n\n') + '## Traum vom ' + dateStr + '\n\n' + reflection
+  ),
+  dreamFilePath: jest.fn((now: Date) => {
+    const y = now.getUTCFullYear();
+    const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(now.getUTCDate()).padStart(2, '0');
+    return `journals/dreams/${y}-${m}-${d}.md`;
+  }),
+  dreamDateFromPath: jest.fn((filePath: string) => {
+    const prefix = 'journals/dreams/';
+    if (!filePath.startsWith(prefix) || !filePath.endsWith('.md')) {
+      return null;
+    }
+    // Mirrors the real module's date-shape guard so a regression of that guard is visible here.
+    const stem = filePath.slice(prefix.length, -'.md'.length);
+    return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
+  }),
+  hasReflectionForDate: jest.fn(
+    (current: string | null, dateStr: string) =>
+      current !== null && current.includes('## Traum vom ' + dateStr)
+  ),
+  findUnreflectedDream: jest.fn((currentVersions: any[], reflectionContent: string | null) => {
+    const prefix = 'journals/dreams/';
+    const dreams = currentVersions
+      .filter(
+        (row: any) =>
+          row.filePath.startsWith(prefix) &&
+          row.filePath.endsWith('.md') &&
+          /^\d{4}-\d{2}-\d{2}$/.test(row.filePath.slice(prefix.length, -'.md'.length))
+      )
+      .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+    for (const dream of dreams) {
+      const dateStr = dream.filePath.slice(prefix.length, -'.md'.length);
+      if (reflectionContent === null || !reflectionContent.includes('## Traum vom ' + dateStr)) {
+        return dream;
+      }
+    }
+    return null;
+  }),
+  findLastDreamAt: jest.fn(),
+  runDream: jest.fn(),
+  runDreamReflection: jest.fn(),
+  selectDreamSources: jest.fn(),
+  shouldDreamTonight: jest.fn()
+}));
 jest.mock('../mistral/mistral_api', () => ({
   listConversations: jest.fn(),
   getConversationMessages: jest.fn(),
@@ -124,6 +173,18 @@ import {
   reviseProposal
 } from '../nightly/reflection';
 import {
+  appendDreamReflection,
+  dreamDateFromPath,
+  dreamFilePath,
+  findLastDreamAt,
+  findUnreflectedDream,
+  hasReflectionForDate,
+  runDream,
+  runDreamReflection,
+  selectDreamSources,
+  shouldDreamTonight
+} from '../nightly/dream';
+import {
   deleteConversation,
   deleteDocument,
   getConversationMessages,
@@ -168,6 +229,11 @@ const mockDeleteConversation = deleteConversation as jest.Mock;
 const mockListDocuments = listDocuments as jest.Mock;
 const mockReplaceDocument = replaceDocument as jest.Mock;
 const mockDeleteDocument = deleteDocument as jest.Mock;
+const mockFindLastDreamAt = findLastDreamAt as jest.Mock;
+const mockRunDream = runDream as jest.Mock;
+const mockRunDreamReflection = runDreamReflection as jest.Mock;
+const mockSelectDreamSources = selectDreamSources as jest.Mock;
+const mockShouldDreamTonight = shouldDreamTonight as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // In-memory fake for memory_archive.model, mirroring its real hash-based no-churn versioning
@@ -310,6 +376,54 @@ describe('nightly pipeline integration', () => {
       conversationId: undefined
     }));
     mockRunCompact.mockResolvedValue('compacted');
+    // Default: no dream tonight (cadence) -- individual dream tests opt back in explicitly.
+    mockFindLastDreamAt.mockReturnValue(new Date(Date.now() - 1 * 24 * 60 * 60 * 1000));
+    mockShouldDreamTonight.mockReturnValue(false);
+    mockSelectDreamSources.mockReturnValue([]);
+    mockRunDream.mockResolvedValue('Ein seltsamer Traum.');
+    mockRunDreamReflection.mockResolvedValue('Ich fuhle mich davon beruhrt.');
+    (appendDreamReflection as jest.Mock).mockImplementation(
+      (current: string | null, dateStr: string, reflection: string) =>
+        (current === null ? '' : current + '\n\n') + '## Traum vom ' + dateStr + '\n\n' + reflection
+    );
+    (dreamFilePath as jest.Mock).mockImplementation((now: Date) => {
+      const y = now.getUTCFullYear();
+      const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(now.getUTCDate()).padStart(2, '0');
+      return `journals/dreams/${y}-${m}-${d}.md`;
+    });
+    (hasReflectionForDate as jest.Mock).mockImplementation(
+      (current: string | null, dateStr: string) =>
+        current !== null && current.includes('## Traum vom ' + dateStr)
+    );
+    (dreamDateFromPath as jest.Mock).mockImplementation((filePath: string) => {
+      const prefix = 'journals/dreams/';
+      if (!filePath.startsWith(prefix) || !filePath.endsWith('.md')) {
+        return null;
+      }
+      const stem = filePath.slice(prefix.length, -'.md'.length);
+      return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
+    });
+    (findUnreflectedDream as jest.Mock).mockImplementation(
+      (currentVersions: any[], reflectionContent: string | null) => {
+        const prefix = 'journals/dreams/';
+        const dreams = currentVersions
+          .filter(
+            (row: any) =>
+              row.filePath.startsWith(prefix) &&
+              row.filePath.endsWith('.md') &&
+              /^\d{4}-\d{2}-\d{2}$/.test(row.filePath.slice(prefix.length, -'.md'.length))
+          )
+          .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+        for (const dream of dreams) {
+          const dateStr = dream.filePath.slice(prefix.length, -'.md'.length);
+          if (reflectionContent === null || !reflectionContent.includes('## Traum vom ' + dateStr)) {
+            return dream;
+          }
+        }
+        return null;
+      }
+    );
   });
 
   it('deletes the nightly agent integrate conversation, and a failed delete does not abort the run', async () => {
@@ -402,7 +516,7 @@ describe('nightly pipeline integration', () => {
   it('change detection: an identical staged update is a no-op, not an error or a counted change', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     const seeded = await archive.seed('people/alice.md', 'Existing alice content');
-    // Mark the seeded row as already synced -- otherwise Phase 5 would re-upload it regardless of
+    // Mark the seeded row as already synced -- otherwise Phase 6 would re-upload it regardless of
     // whether Phase 4 detected a content change, and this test couldn't tell the two apart.
     await archive.markSynced(seeded.id, 'doc-existing-alice');
 
@@ -640,7 +754,7 @@ describe('nightly pipeline integration', () => {
       expect.any(Date)
     );
 
-    // Both conversations are still cleaned up in Phase 7 regardless of which path journaled them.
+    // Both conversations are still cleaned up in Phase 9 regardless of which path journaled them.
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-9');
     expect(mockDeleteConversation).toHaveBeenCalledWith('conv-10');
 
@@ -650,7 +764,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // 4b. Empty-batch short-circuit (issue #109)
   // -------------------------------------------------------------------------
-  it('empty batch (fresh): skips phases 2-7 entirely -- no LLM calls, no Mistral writes, completed row + watermark', async () => {
+  it('empty batch (fresh): skips phases 2-9 entirely -- no LLM calls, no Mistral writes, completed row + watermark', async () => {
     // Default mockListConversations resolves to [] -- nothing to collect.
     const result = await runNightlyPipeline();
 
@@ -744,7 +858,7 @@ describe('nightly pipeline integration', () => {
 
   it('empty batch + undelivered notes: does NOT skip -- the run consolidates the pending notes with zero conversations', async () => {
     // Zero conversations, but the outbox still holds an undelivered note: the skip must not
-    // strand it, so the consolidation path (phases 3/4/6.5) keeps running.
+    // strand it, so the consolidation path (phases 3/4/8) keeps running.
     mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
     mockGetUnconsolidatedNotes.mockResolvedValueOnce([
       {
@@ -786,7 +900,7 @@ describe('nightly pipeline integration', () => {
   it('empty batch + undelivered notes: review and revision ground in the notes, so the note survives into memory', async () => {
     // The quiet-night loss guard: the reviewer's evidence base must include the undelivered notes.
     // Without them a note-derived fact looks invented (the journals are empty on this path), gets
-    // rejected, and Phase 6.5 would still empty the outbox -- silently losing the note's content.
+    // rejected, and Phase 8 would still empty the outbox -- silently losing the note's content.
     mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
     const notes = [
       {
@@ -837,7 +951,7 @@ describe('nightly pipeline integration', () => {
   it('empty batch + failed notes read: skips (no LLM calls) and leaves the outbox untouched', async () => {
     // The outbox state is unknown, but the skip performs no outbox writes -- pending notes are
     // never lost, they stay for the next run. And with zero conversations there is no journal
-    // evidence, so running phases 2-7 could only stage spurious updates.
+    // evidence, so running phases 2-9 could only stage spurious updates.
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     mockGetUnconsolidatedNotes.mockRejectedValueOnce(new Error('db down'));
 
@@ -1018,7 +1132,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // 8b. Unguarded phase read failures stay resumable ('partial'), not 'failed'
   // -------------------------------------------------------------------------
-  it('Phase 5 listUnsynced failure: run resolves as partial and skips the upload instead of throwing', async () => {
+  it('Phase 6 listUnsynced failure: run resolves as partial and skips the upload instead of throwing', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockListUnsynced.mockImplementationOnce(async () => {
       throw new Error('db boom listing unsynced');
@@ -1032,10 +1146,15 @@ describe('nightly pipeline integration', () => {
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
-  it('Phase 6 listCurrentVersions failure: run resolves as partial and leaves the eager cache untouched', async () => {
+  it('Phase 7 listCurrentVersions failure: run resolves as partial and leaves the eager cache untouched', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
-    // Phase 5 reconcile uses the first call (ok); Phase 6 uses the second (throws).
+    // listCurrentVersions is called in order by the topics barrier load, the dream phase's two
+    // listings, Phase 6's upload reconcile, and Phase 7's eager listing -- the first four stay
+    // healthy, the fifth throws.
     mockListCurrentVersions
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [])
+      .mockImplementationOnce(async () => [])
       .mockImplementationOnce(async () => [])
       .mockImplementationOnce(async () => {
         throw new Error('db boom listing current versions');
@@ -1044,7 +1163,7 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
 
     expect(result.status).toBe('partial');
-    // Phase 6 -- which upserts the mapped profile/family titles -- must NOT have run, so the eager
+    // Phase 7 -- which upserts the mapped profile/family titles -- must NOT have run, so the eager
     // cache is untouched.
     expect(mockUpsertContextEntry).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
@@ -1325,7 +1444,7 @@ describe('nightly pipeline integration', () => {
 
   it('topics load failure: run is partial, topics/ proposals skipped before review, advisory index archived as staged', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
-    // Phase 4's barrier load throws; every later listCurrentVersions call (Phase 5/6) stays healthy.
+    // Phase 4's barrier load throws; every later listCurrentVersions call (Phases 5-7) stays healthy.
     mockListCurrentVersions
       .mockRejectedValueOnce(new Error('db boom listing current versions'))
       .mockImplementation(archive.listCurrentVersions);
@@ -1362,9 +1481,9 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 10. Phase 6 privacy wiring
+  // 10. Phase 7 privacy wiring
   // -------------------------------------------------------------------------
-  it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
+  it('Phase 7 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -1384,9 +1503,9 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 11. Phase 6 empty-compaction guard
+  // 11. Phase 7 empty-compaction guard
   // -------------------------------------------------------------------------
-  it('Phase 6 skips the eager-cache upsert when compaction produces empty output, but does not fail the run', async () => {
+  it('Phase 7 skips the eager-cache upsert when compaction produces empty output, but does not fail the run', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -1405,9 +1524,9 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 12. Phase 5 privacy wiring
+  // 12. Phase 6 privacy wiring
   // -------------------------------------------------------------------------
-  it('Phase 5 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
+  it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     await archive.seed(
       'people/bob.md',
@@ -1425,6 +1544,296 @@ describe('nightly pipeline integration', () => {
 
     const archived = await archive.getCurrentVersion('people/bob.md');
     expect(archived?.content).toContain('secretly hates broccoli');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 13. Dream phase (4.5)
+  // -------------------------------------------------------------------------
+  it('dream: generates + archives the dream, appends the dated reflection, uploads both', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(true);
+    mockSelectDreamSources.mockReturnValue([
+      {
+        id: 1,
+        filePath: 'journals/alice/conv-1.md',
+        content: 'journal A',
+        contentHash: 'a',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      },
+      {
+        id: 2,
+        filePath: 'journals/bob/conv-2.md',
+        content: 'journal B',
+        contentHash: 'b',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      }
+    ]);
+    mockRunDream.mockResolvedValueOnce('Ein seltsamer Traum vom Meer.');
+    const result = await runNightlyPipeline();
+    expect(result.dreamGenerated).toBe(true);
+    const dreamPath = mockInsertNextVersion.mock.calls.find(call =>
+      call[0].startsWith('journals/dreams/')
+    )![0];
+    const reflectionPath = 'self-reflection/dreams.md';
+    const dateStr = dreamPath.slice('journals/dreams/'.length, -'.md'.length);
+    const archivedDream =
+      'TRAUM -- nicht wirklich passiert. Am ' +
+      dateStr +
+      ' hatte Yasmin diesen Traum (nur ein Traum, erfunden aus alten Tagebucheintragen):\n\n' +
+      'Ein seltsamer Traum vom Meer.';
+    // Stage 1: dream archived under journals/dreams/<date>.md, WITH the unambiguous dream header
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(dreamPath, archivedDream, expect.any(Date));
+    // Stage 2: reflection appended (dated) to self-reflection/dreams.md. The reflection runs
+    // on the ARCHIVED dream (header included), exactly as findUnreflectedDream returns it.
+    expect(mockRunDreamReflection).toHaveBeenCalledWith(archivedDream);
+    const reflectionInsert = mockInsertNextVersion.mock.calls.find(call => call[0] === reflectionPath);
+    expect(reflectionInsert).toBeDefined();
+    expect(reflectionInsert![1]).toContain('## Traum vom');
+    expect(reflectionInsert![1]).toContain('Ich fuhle mich davon beruhrt.');
+    // Phase 6: the dream + reflection are uploaded to the RAG library like any archive file.
+    // The RAG copy MUST carry the dream marker, so the live agent can never mistake dream
+    // content for things that really happened.
+    expect(mockReplaceDocument).toHaveBeenCalledWith(dreamPath, archivedDream, undefined);
+    expect(result.status).toBe('completed');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dream: cadence skips the dream (no runDream call, no reflection, run completes)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(false);
+    const result = await runNightlyPipeline();
+    expect(mockRunDream).not.toHaveBeenCalled();
+    expect(mockRunDreamReflection).not.toHaveBeenCalled();
+    expect(mockInsertNextVersion.mock.calls.some(call => call[0].startsWith('journals/dreams/'))).toBe(false);
+    expect(result.dreamGenerated).toBe(false);
+    expect(result.status).toBe('completed');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dream: too few old journals (fewer than 2 sources) skips the dream without failing the run', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(true);
+    mockSelectDreamSources.mockReturnValue([]);
+    const result = await runNightlyPipeline();
+    expect(mockRunDream).not.toHaveBeenCalled();
+    expect(result.status).toBe('completed');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dream resume: crash after dream generation -- the dream is kept, only the reflection is caught up, no double dream', async () => {
+    // The pipeline uses collectedAt = orphan.startedAt for the dream path, so the seeded dream MUST
+    // be built from the SAME instant -- using `new Date()` here would drift across a UTC-date
+    // boundary whenever the test runs near midnight (the original timezone flake).
+    const orphanStartedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const orphan: NightlyJobLog = {
+      id: 78,
+      startedAt: orphanStartedAt,
+      completedAt: null,
+      status: 'running',
+      lastCompletedPhase: '4-archive',
+      processedConversationIds: ['conv-9'],
+      skippedConversationIds: [],
+      errorMessage: null,
+      conversationsProcessed: 0,
+      filesUpdated: 0,
+      filesCreated: 0
+    };
+    mockFindRunningJob.mockResolvedValueOnce(orphan);
+    mockListConversations.mockResolvedValueOnce([conversation('conv-9', 'Alice')]);
+    // The crashed run had already durably archived the dream for its collection date.
+    const dreamPath = dreamFilePath(orphanStartedAt);
+    await archive.seed(dreamPath, 'Der Traum aus der letzten Nacht.');
+    const result = await runNightlyPipeline();
+    expect(result.dreamGenerated).toBe(true);
+    // No second dream for a date that already has one.
+    expect(mockRunDream).not.toHaveBeenCalled();
+    // The reflection that the crash swallowed is caught up.
+    expect(mockRunDreamReflection).toHaveBeenCalledWith('Der Traum aus der letzten Nacht.');
+    const reflectionInsert = mockInsertNextVersion.mock.calls.find(
+      call => call[0] === 'self-reflection/dreams.md'
+    );
+    expect(reflectionInsert).toBeDefined();
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dream resume: an existing dated reflection is never duplicated', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(true);
+    mockSelectDreamSources.mockReturnValue([
+      {
+        id: 1,
+        filePath: 'journals/alice/conv-1.md',
+        content: 'journal A',
+        contentHash: 'a',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      },
+      {
+        id: 2,
+        filePath: 'journals/bob/conv-2.md',
+        content: 'journal B',
+        contentHash: 'b',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      }
+    ]);
+    mockRunDream.mockResolvedValueOnce('Ein Traum.');
+    // The seeded header and the pipeline's internal collectedAt must derive from ONE instant: a
+    // real-clock dreamFilePath(new Date()) here could straddle a UTC-date rollover before the
+    // pipeline's own new Date() (the same flake class the sibling resume test pins via
+    // orphan.startedAt), making the seeded header match the wrong date.
+    jest.useFakeTimers({ now: new Date('2026-10-09T12:00:00Z') });
+    try {
+      const dreamPath = dreamFilePath(new Date());
+      const dateStr = dreamPath.slice('journals/dreams/'.length, -'.md'.length);
+      await archive.seed('self-reflection/dreams.md', '## Traum vom ' + dateStr + '\n\nBereits reflektiert.');
+      await runNightlyPipeline();
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(mockRunDreamReflection).not.toHaveBeenCalled();
+    const reflectionContent = await archive.getCurrentVersion('self-reflection/dreams.md');
+    expect(reflectionContent?.content).not.toContain('Ich fuhle mich davon beruhrt.');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dream: a failed stage-2 reflection keeps the dream, marks the run partial, and is retried by a later run', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(true);
+    mockSelectDreamSources.mockReturnValue([
+      {
+        id: 1,
+        filePath: 'journals/alice/conv-1.md',
+        content: 'journal A',
+        contentHash: 'a',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      },
+      {
+        id: 2,
+        filePath: 'journals/bob/conv-2.md',
+        content: 'journal B',
+        contentHash: 'b',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      }
+    ]);
+    mockRunDream.mockResolvedValueOnce('Ein Traum vom Meer.');
+    mockRunDreamReflection.mockRejectedValueOnce(new Error('persona agent down'));
+    const result = await runNightlyPipeline();
+    // The dream itself is durably kept (with its dream-marker header) ...
+    const dreamPath = mockInsertNextVersion.mock.calls.find(call =>
+      call[0].startsWith('journals/dreams/')
+    )![0];
+    const kept = await archive.getCurrentVersion(dreamPath);
+    expect(kept?.content).toContain('TRAUM -- nicht wirklich passiert');
+    expect(kept?.content).toContain('Ein Traum vom Meer.');
+    // ... the run ends partial ...
+    expect(result.status).toBe('partial');
+    expect(mockSetWatermark).not.toHaveBeenCalled();
+
+    // A LATER run (fresh job, new date, no cadence dream) must catch up the missing reflection:
+    // 'partial' runs are not resumed, so this catch-up is the only retry stage 2 ever gets. The
+    // later run needs at least one conversation, otherwise the pipeline exits at Phase 1 before
+    // the dream phase ever runs.
+    mockListConversations.mockResolvedValueOnce([conversation('conv-2', 'Bob')]);
+    mockShouldDreamTonight.mockReturnValue(false);
+    mockRunDreamReflection.mockResolvedValueOnce('Nachtraglich reflektiert.');
+    const result2 = await runNightlyPipeline();
+    expect(mockRunDream).toHaveBeenCalledTimes(1); // no new dream in the later run
+    const keptContent = kept?.content ?? '';
+    expect(mockRunDreamReflection).toHaveBeenCalledWith(keptContent); // archived dream incl. header
+    const reflectionInsert = mockInsertNextVersion.mock.calls.find(
+      call => call[0] === 'self-reflection/dreams.md'
+    );
+    expect(reflectionInsert).toBeDefined();
+    expect(reflectionInsert![1]).toContain('Nachtraglich reflektiert.');
+    expect(result2.status).toBe('completed');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(2);
+  });
+
+  it('dream: a failed dream generation marks the run partial without aborting it', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(true);
+    mockSelectDreamSources.mockReturnValue([
+      {
+        id: 1,
+        filePath: 'journals/alice/conv-1.md',
+        content: 'journal A',
+        contentHash: 'a',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      },
+      {
+        id: 2,
+        filePath: 'journals/bob/conv-2.md',
+        content: 'journal B',
+        contentHash: 'b',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      }
+    ]);
+    mockRunDream.mockRejectedValueOnce(new Error('dream agent down'));
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('partial');
+    // The rest of the run still completed: conversations were journaled and cleaned up.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'journals/alice/conv-1.md',
+      'journal text',
+      expect.any(Date)
+    );
+    expect(mockDeleteConversation).toHaveBeenCalledWith('conv-1');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dream privacy: the dream agent never sees sensitive journal content in its prompt', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    mockShouldDreamTonight.mockReturnValue(true);
+    mockSelectDreamSources.mockReturnValue([
+      {
+        id: 1,
+        filePath: 'journals/alice/conv-1.md',
+        content: "Alice's day.\n[PRIVACY:SENSITIVE]\nAlice secretly cried.\n[/PRIVACY:SENSITIVE]",
+        contentHash: 'a',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      },
+      {
+        id: 2,
+        filePath: 'journals/bob/conv-2.md',
+        content: 'journal B',
+        contentHash: 'b',
+        version: 1,
+        mistralDocId: null,
+        syncedAt: null,
+        createdAt: new Date()
+      }
+    ]);
+    await runNightlyPipeline();
+    expect(mockRunDream).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ filePath: 'journals/alice/conv-1.md' })])
+    );
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
