@@ -481,7 +481,7 @@ row listing the abandoned conversation ids) so the permanent loss stays auditabl
 
 ## Appendix C — Feedback triage (`feedback_v3_concept.md`)
 
-**Adopted:** retry/backoff (§5), `processing_lock` schema (§4), upload tracking via `synced_at` + orphan reconcile (§6.5), `skipped` status (§4), compression rules + cap (§8.1), pagination (§5), timezone (§10), log/version pruning (§6 P7), Phase-1 fallback/clock-skew guard (§6.1), lock timeout (§6.2), response validation (§5), read-from-archive to remove `text_content` runtime dependency (§1), example rows (§4), code references throughout, path↔title mapping table (§8.2).
+**Adopted:** retry/backoff (§5), `processing_lock` schema (§4), upload tracking via `synced_at` + orphan reconcile (§6.1 Phase 6), `skipped` status (§4), compression rules + cap (§8.1), pagination (§5), timezone (§10), log/version pruning (§6 P7), Phase-1 fallback/clock-skew guard (§6.1), lock timeout (§6.2), response validation (§5), read-from-archive to remove `text_content` runtime dependency (§1), example rows (§4), code references throughout, path↔title mapping table (§8.2).
 **Adopted-partial:** "single point of failure" in `stage_update` — kept as intentional per-run atomicity (§7); journal size limits — cap + re-summarize (§6.1 P2).
 **Deferred (future):** broader PII detection (§9), soft-delete of conversations (journal is the record; skipped convs already survive), systemd restart policy (§11 optional).
 **Rejected as out-of-scope for a single-family deployment (§0):** encryption-at-rest / secrets manager, row-level security, `audit_log` (versioning covers it), circuit breaker / DLQ / transactional-outbox, Prometheus, chaos/load testing at 10k, parallelized summarization, `LONGTEXT`, hash-collision/version-overflow handling.

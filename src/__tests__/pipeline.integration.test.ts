@@ -92,7 +92,9 @@ jest.mock('../nightly/dream', () => ({
     if (!filePath.startsWith(prefix) || !filePath.endsWith('.md')) {
       return null;
     }
-    return filePath.slice(prefix.length, -'.md'.length);
+    // Mirrors the real module's date-shape guard so a regression of that guard is visible here.
+    const stem = filePath.slice(prefix.length, -'.md'.length);
+    return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
   }),
   hasReflectionForDate: jest.fn(
     (current: string | null, dateStr: string) =>
@@ -101,7 +103,12 @@ jest.mock('../nightly/dream', () => ({
   findUnreflectedDream: jest.fn((currentVersions: any[], reflectionContent: string | null) => {
     const prefix = 'journals/dreams/';
     const dreams = currentVersions
-      .filter((row: any) => row.filePath.startsWith(prefix) && row.filePath.endsWith('.md'))
+      .filter(
+        (row: any) =>
+          row.filePath.startsWith(prefix) &&
+          row.filePath.endsWith('.md') &&
+          /^\d{4}-\d{2}-\d{2}$/.test(row.filePath.slice(prefix.length, -'.md'.length))
+      )
       .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
     for (const dream of dreams) {
       const dateStr = dream.filePath.slice(prefix.length, -'.md'.length);
@@ -394,13 +401,19 @@ describe('nightly pipeline integration', () => {
       if (!filePath.startsWith(prefix) || !filePath.endsWith('.md')) {
         return null;
       }
-      return filePath.slice(prefix.length, -'.md'.length);
+      const stem = filePath.slice(prefix.length, -'.md'.length);
+      return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
     });
     (findUnreflectedDream as jest.Mock).mockImplementation(
       (currentVersions: any[], reflectionContent: string | null) => {
         const prefix = 'journals/dreams/';
         const dreams = currentVersions
-          .filter((row: any) => row.filePath.startsWith(prefix) && row.filePath.endsWith('.md'))
+          .filter(
+            (row: any) =>
+              row.filePath.startsWith(prefix) &&
+              row.filePath.endsWith('.md') &&
+              /^\d{4}-\d{2}-\d{2}$/.test(row.filePath.slice(prefix.length, -'.md'.length))
+          )
           .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
         for (const dream of dreams) {
           const dateStr = dream.filePath.slice(prefix.length, -'.md'.length);

@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { askAgent } from '../mistral/mistral_api';
+import { askAgent, deleteConversation } from '../mistral/mistral_api';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { MemoryArchiveRow } from '../database/models/memory_archive.model';
 
@@ -85,8 +85,11 @@ export function shouldDreamTonight(lastDreamAt: Date | null, rand: () => number)
 
 /** The most recent dream's createdAt among the current archive versions, or null if there is none */
 export function findLastDreamAt(currentVersions: MemoryArchiveRow[]): Date | null {
+  // dreamDateFromPath (not a bare DREAMS_DIR prefix check): a chat user whose name sanitizes to
+  // 'dreams' would file journals under journals/dreams/, and such a journal must not count as the
+  // last dream and skew the cadence.
   const dreamDates = currentVersions
-    .filter(row => row.filePath.startsWith(DREAMS_DIR))
+    .filter(row => dreamDateFromPath(row.filePath) !== null)
     .map(row => row.createdAt.getTime());
   return dreamDates.length === 0 ? null : new Date(Math.max(...dreamDates));
 }
@@ -141,6 +144,9 @@ export async function runDream(sources: MemoryArchiveRow[]): Promise<string> {
     inputs: [{ role: 'user', content: dreamPrompt(strippedSources) }],
     store: false
   });
+  // store:false should already prevent persistence; delete anyway so nothing can accumulate, for
+  // consistency with the other one-shot agents (handoff summarizer, stage-2 reflection).
+  await deleteConversation(result.conversationId).catch(() => undefined);
 
   let text = stripSensitive(result.outputText.trim());
   if (text.length === 0) {
@@ -178,13 +184,20 @@ export function dreamReflectionPrompt(dream: string): string {
   );
 }
 
-/** Runs the Stage-2 reflection call with the live conversation agent (Yasmin's persona), one-shot */
+/**
+ * Runs the Stage-2 reflection call with the live conversation agent (Yasmin's persona), one-shot.
+ * The scratch conversation is defensively deleted afterwards: it runs on the conversation agent,
+ * whose conversations Phase 1 collects and journals as real family chats, so a store:false leak
+ * would poison the next nightly run with a reflection exchange.
+ */
 export async function runDreamReflection(dream: string): Promise<string> {
   const result = await askAgent({
     agentId: config.mistral.agentId,
     inputs: [{ role: 'user', content: dreamReflectionPrompt(dream) }],
     store: false
   });
+  // store:false should already prevent persistence; delete anyway so nothing can accumulate.
+  await deleteConversation(result.conversationId).catch(() => undefined);
 
   let text = stripSensitive(result.outputText.trim());
   if (text.length === 0) {

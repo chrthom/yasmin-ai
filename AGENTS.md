@@ -89,7 +89,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory, mood
+                            #   pipeline.integration, context.model, bootstrap-memory, mood, dream
 ```
 
 ### Data Flow

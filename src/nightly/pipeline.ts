@@ -613,9 +613,11 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
 
       await updateJobLog(jobId, { lastCompletedPhase: '5-dream' });
     } catch (error) {
+      // No lastCompletedPhase stamp here (unlike the success path): the log must show the last
+      // phase that actually succeeded, so a dream failure stays distinguishable in nightly_job_log
+      // from a dream that completed and failed later.
       console.error('ERROR Dream phase failed: ' + error);
       anyDreamFailed = true;
-      await updateJobLog(jobId, { lastCompletedPhase: '5-dream' });
     }
 
     // -----------------------------------------------------------------------

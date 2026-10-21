@@ -21,10 +21,11 @@ jest.mock('../config', () => ({
 }));
 
 jest.mock('../mistral/mistral_api', () => ({
-  askAgent: jest.fn()
+  askAgent: jest.fn(),
+  deleteConversation: jest.fn()
 }));
 
-import { askAgent } from '../mistral/mistral_api';
+import { askAgent, deleteConversation } from '../mistral/mistral_api';
 import {
   DREAM_REFLECTION_PATH,
   appendDreamReflection,
@@ -43,6 +44,7 @@ import {
 import { MemoryArchiveRow } from '../database/models/memory_archive.model';
 
 const mockAskAgent = askAgent as jest.Mock;
+const mockDelete = deleteConversation as jest.Mock;
 
 function archiveRow(
   filePath: string,
@@ -67,6 +69,10 @@ const NOW = new Date('2026-10-09T12:00:00Z');
 describe('nightly/dream', () => {
   beforeEach(() => {
     mockAskAgent.mockReset();
+    mockDelete.mockReset();
+    // deleteConversation's contract: a resolved void on success, and dream.ts swallows failures
+    // itself via .catch -- the mock only needs to be thenable.
+    mockDelete.mockResolvedValue(undefined);
   });
 
   describe('dreamFilePath', () => {
@@ -156,6 +162,15 @@ describe('nightly/dream', () => {
       expect(last).not.toBeNull();
       expect(last!.getTime()).toBe(newest.createdAt.getTime());
     });
+
+    it('ignores journals filed under journals/dreams/ by a user whose name sanitizes to dreams', () => {
+      // A bare DREAMS_DIR prefix check would count such a journal as the last dream and skew the
+      // cadence (delaying the max-gap forced dream); findLastDreamAt must use dreamDateFromPath.
+      expect(findLastDreamAt([archiveRow('journals/dreams/conv-123.md', 1)])).toBeNull();
+      const dream = archiveRow('journals/dreams/2026-10-05.md', 2);
+      const last = findLastDreamAt([archiveRow('journals/dreams/conv-123.md', 1), dream]);
+      expect(last!.getTime()).toBe(dream.createdAt.getTime());
+    });
   });
 
   describe('runDream (stage 1)', () => {
@@ -201,6 +216,18 @@ describe('nightly/dream', () => {
       expect(mockAskAgent.mock.calls[0][0].agentId).toBe('nightly-agent-1');
       config.mistral.dreamAgentId = original;
     });
+
+    it('defensively deletes the scratch conversation, and a failed delete never fails the dream', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        conversationId: 'dream-scratch-1',
+        outputText: 'Ein Traum.',
+        toolCalls: [],
+        rawOutputs: []
+      });
+      mockDelete.mockRejectedValueOnce(new Error('delete failed'));
+      await expect(runDream([archiveRow('journals/alice/conv-1.md', 30)])).resolves.toContain('Ein Traum.');
+      expect(mockDelete).toHaveBeenCalledWith('dream-scratch-1');
+    });
   });
 
   describe('runDreamReflection (stage 2)', () => {
@@ -227,6 +254,17 @@ describe('nightly/dream', () => {
       expect(mockAskAgent.mock.calls[0][0].agentId).toBe('conversation-agent-1');
       expect(mockAskAgent.mock.calls[0][0].store).toBe(false);
       expect(reflection).toBe('Ich fuhle mich...');
+    });
+
+    it('defensively deletes the scratch conversation: Phase 1 collects that same agent as family chats', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        conversationId: 'reflection-scratch-1',
+        outputText: 'Ich fuhle mich...',
+        toolCalls: [],
+        rawOutputs: []
+      });
+      await runDreamReflection('Der Traumtext');
+      expect(mockDelete).toHaveBeenCalledWith('reflection-scratch-1');
     });
   });
 
