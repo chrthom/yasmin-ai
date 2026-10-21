@@ -4,6 +4,7 @@ import { config } from '../config';
 import { ChatAgent } from '../chat_agent';
 import { SynologyClient } from '../synology_client';
 import { createRequestLogger } from '../middleware/requestTracing';
+import { buildChannelHistoryBlock } from '../channel_history';
 
 /** Options that distinguish the three chat endpoints (bot/slash/group) on top of the shared handler. */
 interface ChatControllerOptions {
@@ -17,6 +18,7 @@ interface ChatControllerOptions {
   stripPrefix?: string;
   /** Whether the answer is additionally pushed to Synology Chat (bot only). */
   sendToSynology?: boolean;
+  includeChannelHistory?: boolean;
 }
 
 /**
@@ -35,15 +37,58 @@ async function processRequest(
   synologyClient: SynologyClient,
   userText: string,
   username: string,
-  shortAnswer: boolean
+  shortAnswer: boolean,
+  channelContext?: string
 ): Promise<string> {
   try {
-    const outputs = await chatAgent.processRequest(userText, username, shortAnswer);
+    let prompt = userText;
+    if (channelContext) {
+      prompt = `${channelContext}\n\n${userText}`;
+    }
+    const outputs = await chatAgent.processRequest(prompt, username, shortAnswer);
     const text = chatAgent.convertMultiPart(outputs);
     return text ? synologyClient.formatAnswer(text) : '';
   } catch (error) {
     console.error('Error in processRequest:', error);
     throw new Error('Failed to process chat request');
+  }
+}
+
+/**
+ * Fetches the previous messages of a channel and formats them as a transcript block for the
+ * prompt; any failure only costs the history (warn + undefined), never the turn itself.
+ *
+ * @param synologyClient The Synology Chat client used to fetch and format the history.
+ * @param logger The request-scoped logger.
+ * @param channelId The channel the incoming post lives in.
+ * @param postId The incoming post's id -- history is everything strictly before it.
+ * @param botUserId The bot's own user id, used to strip its own messages from the transcript.
+ * @param stripPrefix Optional username whose message prefix should be stripped.
+ * @param token The channel/bot token used for the history API call.
+ * @returns The formatted `<channel_history>` block, or undefined when there is no history or the fetch failed.
+ */
+async function fetchChannelHistory(
+  synologyClient: SynologyClient,
+  logger: ReturnType<typeof createRequestLogger>,
+  channelId: number,
+  postId: number,
+  botUserId: number,
+  stripPrefix: string | undefined,
+  token: string
+): Promise<string | undefined> {
+  try {
+    const posts = await synologyClient.fetchPreviousMessages(
+      channelId,
+      postId,
+      config.synology.history.prevCount,
+      token
+    );
+    const transcript = synologyClient.formatChannelHistory(posts, botUserId, stripPrefix);
+    if (!transcript) return undefined;
+    return buildChannelHistoryBlock(transcript);
+  } catch (error) {
+    logger.warn('Failed to fetch channel history; continuing without it', { error });
+    return undefined;
   }
 }
 
@@ -87,12 +132,25 @@ export function createChatController(
         userText = userText.replace(options.stripPrefix, '').trim();
       }
 
+      let channelContext: string | undefined;
+      if (options.includeChannelHistory && reqBody.channel_id && reqBody.post_id) {
+        channelContext = await fetchChannelHistory(
+          synologyClient,
+          logger,
+          reqBody.channel_id,
+          reqBody.post_id,
+          config.synology.history.botUserId,
+          options.stripPrefix,
+          options.token
+        );
+      }
       const answer = await processRequest(
         chatAgent,
         synologyClient,
         userText,
         reqBody.username,
-        options.shortAnswer
+        options.shortAnswer,
+        channelContext
       );
 
       if (options.responseStatus === 200) {
@@ -129,8 +187,9 @@ export function createSlashController(chatAgent: ChatAgent, synologyClient: Syno
     token: config.synology.tokens.slash,
     responseStatus: 200,
     shortAnswer: true,
-    stripPrefix: '/yasmin',
-    sendToSynology: false
+    stripPrefix: config.synology.history.slashPrefix,
+    sendToSynology: false,
+    includeChannelHistory: true
   });
 }
 
@@ -140,6 +199,7 @@ export function createGroupController(chatAgent: ChatAgent, synologyClient: Syno
     token: config.synology.tokens.group,
     responseStatus: 200,
     shortAnswer: true,
-    sendToSynology: false
+    sendToSynology: false,
+    includeChannelHistory: true
   });
 }
