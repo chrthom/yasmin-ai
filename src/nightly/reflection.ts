@@ -14,27 +14,39 @@ export type { StagedUpdate };
 // Shared transcript helpers
 // ---------------------------------------------------------------------------
 
-// Re-exported for callers that only need the message shape, without redefining it.
+/** Re-exported for callers that only need the message shape, without redefining it. */
 export type RawConversationMessage = ConversationMessage;
 
-// Joins the text parts of a single message's content (string, or array of {type, text} parts).
+/**
+ * Joins the text parts of a single message's content (string, or array of {type, text} parts).
+ *
+ * @param content The raw message content of unknown shape.
+ * @returns The concatenated text parts, or an empty string for any other shape.
+ */
 export function extractMessageText(content: unknown): string {
   return extractContentText(content);
 }
 
-// The live agent seeds a fresh conversation (turn-limit reset or respawn) with a replayed summary and the
-// last few messages of the previous one, wrapped in this block. It is context, not something the user said,
-// and the previous conversation is journaled on its own -- so it must never reach the journal transcript.
+/**
+ * Strips the `<previous_conversation>` block the live agent seeds a fresh conversation with
+ * (turn-limit reset or respawn). It is context, not something the user said, and the previous
+ * conversation is journaled on its own -- so it must never reach the journal transcript.
+ *
+ * @param text The raw stored user message text.
+ * @returns The text with any handoff block removed.
+ */
 export function stripHandoffBlock(text: string): string {
   return text.replace(PREVIOUS_CONVERSATION_STRIP_RE, '').trim();
 }
 
-// Hard ceiling for the journal transcript. The live conversation can carry large internal tool results
-// (e.g. a web_search read of a whole web page), which are low-information for memory yet, if allowed
-// through, would balloon the journal prompt and can cause the journal agent to misbehave or emit nothing.
-
-// Internal plumbing isn't conversation content: tool calls, function calls/results (including giant
-// web_search reads), system/service rows and errors should never reach the transcript that feeds memory.
+/**
+ * Checks whether a message row is actual human<->assistant dialogue. Internal plumbing isn't
+ * conversation content: tool calls, function calls/results (including giant web_search reads),
+ * system/service rows and errors should never reach the transcript that feeds memory.
+ *
+ * @param message The raw message row.
+ * @returns true when the row is dialogue and should be kept in a transcript.
+ */
 export function isDialogueMessage(message: ConversationMessage): boolean {
   const t = message.type.toLowerCase();
   return !(
@@ -48,8 +60,11 @@ export function isDialogueMessage(message: ConversationMessage): boolean {
 
 /**
  * Renders a conversation's messages into a plain "label: text" transcript, one line per message.
- * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized reply
- * can never blow up the downstream journal prompt.
+ * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized
+ * message (e.g. an oversized user paste) can never blow up the downstream journal prompt.
+ *
+ * @param messages The conversation's raw message history.
+ * @returns The capped transcript, with the handoff block stripped from user messages.
  */
 export function buildTranscript(messages: ConversationMessage[]): string {
   const lines: string[] = [];
@@ -90,6 +105,10 @@ export const JOURNAL_SOFT_CAP_CHARS: number = config.nightly.journalSoftCapChars
 /**
  * Builds the Phase-2 prompt asking the nightly agent to journal a conversation with userName,
  * from the mistral_config/nightly/prompts/journal_prompt.txt template.
+ *
+ * @param userName The conversation partner's name.
+ * @param transcript The capped transcript to journal.
+ * @returns The rendered prompt.
  */
 export function journalPrompt(userName: string, transcript: string): string {
   return renderPrompt('journal_prompt.txt', { userName, transcript });
@@ -97,6 +116,11 @@ export function journalPrompt(userName: string, transcript: string): string {
 
 /**
  * Runs the Phase-2 journal call for one conversation, with one tighter retry and a truncation safety net
+ *
+ * @param userName The conversation partner's name.
+ * @param transcript The capped transcript to journal.
+ * @returns The journal entry text, within the soft cap.
+ * @throws Error when the agent returns an empty entry on both attempts.
  */
 export async function runJournal(userName: string, transcript: string): Promise<string> {
   let text = (
@@ -177,6 +201,9 @@ const TOPICS_RULE_TEMPLATE = 'topics_rule.txt';
 /**
  * Formats a Date as YYYY-MM-DD in the configured memory timezone (MEMORY_TZ) -- the run date the
  * decay instruction tells the agent to judge file ages against.
+ *
+ * @param date The instant to format.
+ * @returns The YYYY-MM-DD date string in MEMORY_TZ.
  */
 export function formatRunDate(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -191,6 +218,10 @@ export function formatRunDate(date: Date): string {
  * Builds the Phase-3 instruction that drives the tool-calling integrate loop. Undelivered
  * pending notes (the live agent's cross-person outbox) are appended as extra evidence so a
  * message that never reached its recipient still survives in long-term memory.
+ *
+ * @param runDate The run date the decay instruction judges file ages against.
+ * @param undeliveredNotes Still-pending notes to append as extra evidence.
+ * @returns The rendered Phase-3 instruction.
  */
 export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[] = []): string {
   const notesText = formatIntradayNotesText(undeliveredNotes);
@@ -208,6 +239,10 @@ export function integratePrompt(runDate: string, undeliveredNotes: IntradayNote[
  * Runs the Phase-3 tool loop; the caller reads back what was staged via tools.ts's getStagedUpdates().
  * The conversation must stay stored (the loop continues it turn by turn), so the caller deletes the
  * returned conversationId once it is done.
+ *
+ * @param executeTool Dispatches one nightly-tool call by name.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
+ * @returns The final agent text, the iterations run, and the scratch conversation id.
  */
 export async function runIntegrate(
   executeTool: (name: string, args: Record<string, unknown>) => Promise<string>,
@@ -231,12 +266,45 @@ export async function runIntegrate(
 // Phase 4 -- Review
 // ---------------------------------------------------------------------------
 
+/** The reviewer's verdict on one staged update: approved, plus a reason either way. */
 export interface ReviewVerdict {
   approved: boolean;
   reason: string;
 }
 
 const CODE_FENCE_RE = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
+
+/**
+ * Per-file-type reviewer extensions: opinion ≠ fact, traits need minimum evidence, mood needs
+ * today's evidence. Kept in one place so the review and the integration prompts stay consistent.
+ */
+function perFileTypeReviewerRules(path: string): string {
+  if (path.startsWith('people/')) {
+    return (
+      "Additional criteria for people/<name>.md: a statement in Yasmin's View is an opinion and must " +
+      "never read as a fact -- it must be marked as Yasmin's interpretation with a confidence level, and " +
+      "a first opinion is always tentative. A trait claim needs evidence, and a goal that today's " +
+      'journals show completed must be marked done or removed, not kept open. Reject if the section ' +
+      "structure (including Yasmin's View) is missing or reordered.\n"
+    );
+  }
+  if (path === 'self-reflection/profile.md') {
+    return (
+      'Additional criteria for self-reflection/profile.md: a trait requires at least 2 pieces of ' +
+      'evidence (an observed occurrence count or corroboration across nights); reject a trait declared ' +
+      "from a single occurrence. An opinion about a thing must be marked as Yasmin's interpretation " +
+      'with a confidence level, never asserted as fact.\n'
+    );
+  }
+  if (path === 'self-reflection/mood.md') {
+    return (
+      "Additional criteria for self-reflection/mood.md: a mood update requires TODAY's evidence in the " +
+      'journals -- reject any mood change fabricated out of nothing. The machine-readable header ' +
+      '(valence/energy/halfLifeDays/updatedAt, one field per line) must be present and parsable.\n'
+    );
+  }
+  return '';
+}
 
 /** Strips a leading/trailing markdown code fence (```json ... ```), since models sometimes add one anyway */
 function stripCodeFence(text: string): string {
@@ -262,6 +330,18 @@ function formatIntradayNotesText(notes: IntradayNote[]): string {
 }
 
 /**
+ * Renders the still-undelivered pending notes into the evidence block shared by the review and
+ * revision prompts (mirroring the integrate evidence block). Without it the reviewer's evidence
+ * base is just the journals -- which on a quiet night (zero conversations) are empty -- so a
+ * note-derived fact looks invented, gets rejected, and Phase 6.5 would still clear the outbox:
+ * the note's content silently lost from long-term memory. Empty when there are no notes.
+ */
+function renderUndeliveredNotesBlock(undeliveredNotes: IntradayNote[]): string {
+  const notesText = formatIntradayNotesText(undeliveredNotes);
+  return notesText.length > 0 ? '\n\n' + renderPrompt('review_notes_block.txt', { notesText }) : '';
+}
+
+/**
  * Formats today's journal entries into the shared evidence block used by the integrate, review and
  * revision prompts.
  */
@@ -271,19 +351,27 @@ function formatJournalsText(todaysJournals: JournalEntry[]): string {
     .join('\n\n');
 }
 
+/** One archived topic file, as the duplicate-barrier evidence for reviewing topics/ proposals. */
 export interface ExistingTopic {
   path: string;
   content: string;
 }
 
-/** Per-topic excerpt cap for the duplicate barrier: the Aliases line plus the leading content is
- * plenty to judge semantic duplication; without a cap the review prompt grows unboundedly with the
- * number and size of topic files. */
+/**
+ * Per-topic excerpt cap for the duplicate barrier: the Aliases line plus the leading content is
+ * plenty to judge semantic duplication; without a cap the review prompt grows unboundedly with
+ * the number and size of topic files.
+ */
 const TOPIC_EXCERPT_MAX_CHARS = 600;
 
-/** Truncates a topic's content for the review prompt. The leading line (the Aliases line is the
+/**
+ * Truncates a topic's content for the review prompt. The leading line (the Aliases line is the
  * duplicate-matching anchor) is always kept intact, even when it alone exceeds the cap; only the
- * remainder is truncated to the cap. */
+ * remainder is truncated to the cap.
+ *
+ * @param content The topic file's full current content.
+ * @returns The excerpt for the review prompt.
+ */
 function topicExcerpt(content: string): string {
   if (content.length <= TOPIC_EXCERPT_MAX_CHARS) {
     return content;
@@ -306,7 +394,17 @@ function topicExcerpt(content: string): string {
  * number (0 for the initial review, 1+ for re-reviews after a revision) relaxes the grounding bar: the
  * first rejection is the only one that may cite weak grounding alone; later attempts must not keep a
  * proposal stuck on interpretive disagreement, because a revision cannot create evidence that the
- * journals never contained.
+ * journals never contained. The undelivered pending notes ride along as evidence too, so a fact the
+ * integrate agent grounded in a note is not rejected as invented (see renderUndeliveredNotesBlock).
+ *
+ * @param update The staged update under review.
+ * @param currentContent The file's current archived content, or null when new.
+ * @param lastTouchedAt ISO timestamp of the current version's creation, or null when new.
+ * @param todaysJournals The evidence base.
+ * @param attempt 0 for the initial review, 1+ for re-reviews after a revision.
+ * @param existingTopics Other archived topics, as the duplicate barrier for topics/ proposals.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
+ * @returns The rendered review prompt.
  */
 export function reviewPrompt(
   update: StagedUpdate,
@@ -314,7 +412,8 @@ export function reviewPrompt(
   lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number,
-  existingTopics: ExistingTopic[] = []
+  existingTopics: ExistingTopic[] = [],
+  undeliveredNotes: IntradayNote[] = []
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
   const groundingRule =
@@ -347,9 +446,11 @@ export function reviewPrompt(
     newContent: update.content,
     currentContent: currentContent === null ? '(this is a brand-new file)' : currentContent,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    undeliveredNotesBlock: renderUndeliveredNotesBlock(undeliveredNotes),
     existingTopicsBlock,
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE),
     groundingRule,
+    perFileTypeReviewerRules: perFileTypeReviewerRules(update.path),
     runDate: formatRunDate(new Date()),
     lastTouched:
       lastTouchedAt === null
@@ -360,6 +461,15 @@ export function reviewPrompt(
 
 /**
  * Runs the Phase-4 review call for one staged update; malformed verdicts are rejected as a safe default
+ *
+ * @param update The staged update under review.
+ * @param currentContent The file's current archived content, or null when new.
+ * @param lastTouchedAt ISO timestamp of the current version's creation, or null when new.
+ * @param todaysJournals The evidence base.
+ * @param attempt 0 for the initial review, 1+ for re-reviews after a revision.
+ * @param existingTopics Other archived topics, as the duplicate barrier for topics/ proposals.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
+ * @returns The verdict; approved=false with a parse-failure reason when the reply is malformed.
  */
 export async function runReview(
   update: StagedUpdate,
@@ -367,14 +477,23 @@ export async function runReview(
   lastTouchedAt: string | null,
   todaysJournals: JournalEntry[],
   attempt: number,
-  existingTopics: ExistingTopic[] = []
+  existingTopics: ExistingTopic[] = [],
+  undeliveredNotes: IntradayNote[] = []
 ): Promise<ReviewVerdict> {
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
     inputs: [
       {
         role: 'user',
-        content: reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals, attempt, existingTopics)
+        content: reviewPrompt(
+          update,
+          currentContent,
+          lastTouchedAt,
+          todaysJournals,
+          attempt,
+          existingTopics,
+          undeliveredNotes
+        )
       }
     ],
     store: false
@@ -403,14 +522,24 @@ export async function runReview(
 
 /**
  * Builds the Phase-4 revision prompt asking the nightly agent to produce a corrected FULL replacement
- * for a proposal the reviewer rejected, addressing every point of the reviewer's feedback
+ * for a proposal the reviewer rejected, addressing every point of the reviewer's feedback. The
+ * undelivered pending notes ride along as evidence so the correction can re-ground in them.
+ *
+ * @param update The staged update being revised.
+ * @param currentContent The file's current archived content, or null when new.
+ * @param rejectedContent The proposal version the reviewer rejected.
+ * @param feedback The reviewer's rejection reason to address.
+ * @param todaysJournals The evidence base.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
+ * @returns The rendered revision prompt.
  */
 export function revisePrompt(
   update: StagedUpdate,
   currentContent: string | null,
   rejectedContent: string,
   feedback: string,
-  todaysJournals: JournalEntry[]
+  todaysJournals: JournalEntry[],
+  undeliveredNotes: IntradayNote[] = []
 ): string {
   const journalsText = formatJournalsText(todaysJournals);
   return renderPrompt('revise_prompt.txt', {
@@ -419,15 +548,28 @@ export function revisePrompt(
     rejectedContent,
     feedback,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    undeliveredNotesBlock: renderUndeliveredNotesBlock(undeliveredNotes),
     selfProfileVoiceRule: loadTemplate(SELF_PROFILE_VOICE_RULE_TEMPLATE)
   });
 }
 
+/**
+ * Builds the follow-up prompt for a revision that continues an existing revision conversation:
+ * the condensed variant without the full current content (already in the conversation history),
+ * plus the voice rule for Yasmin's own profile.
+ *
+ * @param update The staged update being revised.
+ * @param rejectedContent The proposal version the reviewer rejected.
+ * @param feedback The reviewer's rejection reason to address.
+ * @param todaysJournals The evidence base.
+ * @returns The rendered follow-up prompt.
+ */
 export function reviseFollowUpPrompt(
   update: StagedUpdate,
   rejectedContent: string,
   feedback: string,
-  todaysJournals: JournalEntry[]
+  todaysJournals: JournalEntry[],
+  undeliveredNotes: IntradayNote[] = []
 ): string {
   const voiceRule =
     update.path === 'self-reflection/profile.md'
@@ -439,6 +581,7 @@ export function reviseFollowUpPrompt(
     rejectedContent,
     feedback,
     journalsText: journalsText.length > 0 ? journalsText : '(no journal entries today)',
+    undeliveredNotesBlock: renderUndeliveredNotesBlock(undeliveredNotes),
     voiceRule
   });
 }
@@ -447,6 +590,16 @@ export function reviseFollowUpPrompt(
  * Runs the Phase-4 revision for one staged update, returning the corrected full replacement content and
  * the conversation id so callers can keep revising within the SAME conversation (full proposal->feedback
  * history stays in scope). Pass the conversationId from a prior call to continue that conversation.
+ * The undelivered pending notes ride along as evidence on every revision turn.
+ *
+ * @param update The staged update being revised.
+ * @param currentContent The file's current archived content, or null when new.
+ * @param rejectedContent The proposal version the reviewer rejected.
+ * @param feedback The reviewer's rejection reason to address.
+ * @param todaysJournals The evidence base.
+ * @param conversationId A prior revision conversation to continue, when re-revising.
+ * @param undeliveredNotes Still-pending notes appended as extra evidence.
+ * @returns The corrected replacement content and the (possibly new) conversation id.
  */
 export async function reviseProposal(
   update: StagedUpdate,
@@ -454,17 +607,30 @@ export async function reviseProposal(
   rejectedContent: string,
   feedback: string,
   todaysJournals: JournalEntry[],
-  conversationId?: string
+  conversationId?: string,
+  undeliveredNotes: IntradayNote[] = []
 ): Promise<{ content: string; conversationId: string }> {
   const inputs =
     conversationId === undefined
       ? [
           {
             role: 'user',
-            content: revisePrompt(update, currentContent, rejectedContent, feedback, todaysJournals)
+            content: revisePrompt(
+              update,
+              currentContent,
+              rejectedContent,
+              feedback,
+              todaysJournals,
+              undeliveredNotes
+            )
           }
         ]
-      : [{ role: 'user', content: reviseFollowUpPrompt(update, rejectedContent, feedback, todaysJournals) }];
+      : [
+          {
+            role: 'user',
+            content: reviseFollowUpPrompt(update, rejectedContent, feedback, todaysJournals, undeliveredNotes)
+          }
+        ];
 
   const result = await askAgent({
     agentId: config.mistral.nightlyAgentId,
@@ -482,10 +648,16 @@ export async function reviseProposal(
 // Phase 6 -- Compact
 // ---------------------------------------------------------------------------
 
+/** Which kind of long-term file a Phase-6 compaction prompt is built for. */
 export type CompactKind = 'person' | 'yasmin' | 'family';
 
 /**
  * Builds the Phase-6 compaction prompt for a given kind of long-term file
+ *
+ * @param kind Which kind of long-term file is being compacted.
+ * @param personName The person's name, required for kind 'person' (undefined otherwise).
+ * @param strippedContent The file's privacy-stripped current content.
+ * @returns The rendered compaction prompt.
  */
 export function compactPrompt(
   kind: CompactKind,
@@ -504,6 +676,11 @@ export function compactPrompt(
 
 /**
  * Runs the Phase-6 compaction call for one long-term file, with one tighter retry and a truncation safety net
+ *
+ * @param kind Which kind of long-term file is being compacted.
+ * @param personName The person's name, required for kind 'person' (undefined otherwise).
+ * @param strippedContent The file's privacy-stripped current content.
+ * @returns The compacted content, within the eager-cache cap.
  */
 export async function runCompact(
   kind: CompactKind,

@@ -34,7 +34,14 @@ export const PREVIOUS_CONVERSATION_STRIP_RE = new RegExp(
 );
 export const SUMMARY_CAPTURE_RE = captureRegex(TAG.summary);
 
-/** Wraps content in the given protocol tag, optionally with attributes. */
+/**
+ * Wraps content in the given protocol tag, optionally with attributes.
+ *
+ * @param tag The protocol tag name.
+ * @param content The inner text.
+ * @param attributes Optional tag attributes (e.g. { title: '...' }).
+ * @returns The wrapped `<tag ...>...</tag>` block.
+ */
 export const xmlBlock = (tag: string, content: string, attributes?: Record<string, string>): string => {
   const attrs = attributes
     ? ' ' +
@@ -45,14 +52,29 @@ export const xmlBlock = (tag: string, content: string, attributes?: Record<strin
   return `<${tag}${attrs}>\n${content}\n</${tag}>`;
 };
 
-/** Wraps a context entry title + content into `<context_entry title="...">...</context_entry>`. */
+/**
+ * Wraps a context entry title + content into `<context_entry title="...">...</context_entry>`.
+ *
+ * @param title The context entry's title.
+ * @param content The entry's content.
+ * @returns The wrapped context entry block.
+ */
 export const contextEntryBlock = (title: string, content: string): string =>
   xmlBlock(TAG.contextEntry, content, { title });
 
-/** Wraps the note lines delivered with a user's input into a `<nachrichten_fuer_dich>` block. */
+/**
+ * Wraps the note lines delivered with a user's input into a `<nachrichten_fuer_dich>` block.
+ *
+ * @param lines One rendered line per delivered note.
+ * @returns The wrapped notes block.
+ */
 export const notesBlock = (lines: string[]): string => xmlBlock(TAG.notes, lines.join('\n'));
 
-/** Builds the short-answer constraint appended to the prompt when the requesting client asks for it. */
+/**
+ * Builds the short-answer constraint appended to the prompt when the requesting client asks for it.
+ *
+ * @returns The constraint sentence, built from the same config value as its cleanup regex.
+ */
 export const shortAnswerHint = (): string =>
   `Your answer must be shorter than ${config.chat.shortAnswerMaxChars} characters.`;
 
@@ -61,6 +83,9 @@ export const shortAnswerHint = (): string =>
  * history, handoff blocks, context entries, the title manifest, the "You are talking to" line,
  * and the short-answer hint built by shortAnswerHint() -- the hint regex is built from the same
  * config value (escaped), so prompt and cleanup can no longer drift apart.
+ *
+ * @param text The raw stored user message text.
+ * @returns Only what the user actually wrote.
  */
 export const cleanStoredText = (text: string): string =>
   stripChannelHistoryBlock(text)

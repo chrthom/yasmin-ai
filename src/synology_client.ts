@@ -1,5 +1,8 @@
 import { config } from './config';
 
+/**
+ * A single post of a Synology Chat channel, as returned by the external `post_list` API.
+ */
 export interface SynologyPost {
   postId: number;
   userId: number;
@@ -8,15 +11,33 @@ export interface SynologyPost {
   timestamp: number;
 }
 
+/**
+ * Delivers answers to Synology Chat via its webhook API: strips the Markdown formatting the
+ * chat cannot render, chunks messages that exceed its length limit, and posts each chunk to
+ * the requesting user in reading order.
+ */
 export class SynologyClient {
   private baseUrl: string;
   private token: string;
 
+  /**
+   * Stores the incoming webhook URL and the endpoint's authentication token.
+   *
+   * @param baseUrl Synology Chat incoming webhook URL (config.synology.chatIncomingUrl).
+   * @param token The endpoint's authentication token (the bot token by convention).
+   */
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl;
     this.token = token;
   }
 
+  /**
+   * Formats an answer for display in Synology Chat: strips bold markers and heading hashes that
+   * the chat cannot render, and trims surrounding whitespace.
+   *
+   * @param answer The raw LLM answer text.
+   * @returns The plain-text answer ready to display.
+   */
   formatAnswer(answer: string): string {
     return answer
       .toString()
@@ -25,6 +46,17 @@ export class SynologyClient {
       .trim();
   }
 
+  /**
+   * Fetches the messages posted in a channel immediately before the given post via Synology
+   * Chat's external `post_list` API.
+   *
+   * @param channelId The channel to read.
+   * @param postId The post the history is relative to (everything before it is returned).
+   * @param prevCount How many previous posts to fetch (config.synology.history.prevCount).
+   * @param token The token to authenticate the API call (the channel's token by default).
+   * @returns The fetched posts, in the order the API returned them.
+   * @throws When the HTTP call fails, the API reports an error, or the response is malformed.
+   */
   async fetchPreviousMessages(
     channelId: number,
     postId: number,
@@ -72,6 +104,15 @@ export class SynologyClient {
     }));
   }
 
+  /**
+   * Formats fetched channel posts as a transcript: the bot's own posts and slash-command
+   * invocations are dropped, the rest are ordered oldest-first as `username: text` lines.
+   *
+   * @param posts The fetched channel posts.
+   * @param botUserId The bot's own user id, whose posts are excluded from the transcript.
+   * @param slashPrefix The prefix that marks slash-command posts (defaults to config).
+   * @returns The transcript lines joined by newlines; empty when nothing remains.
+   */
   formatChannelHistory(posts: SynologyPost[], botUserId: number, slashPrefix?: string): string {
     const prefix = slashPrefix ?? config.synology.history.slashPrefix;
     return posts
@@ -81,6 +122,14 @@ export class SynologyClient {
       .join('\n');
   }
 
+  /**
+   * Splits a long text into chunks of at most maxLength characters, preferring to break at
+   * newlines so paragraphs stay intact.
+   *
+   * @param str The text to chunk.
+   * @param maxLength Maximum characters per chunk (defaults to config.chunk.maxLength).
+   * @returns The chunks, in original reading order.
+   */
   chunkText(str: string, maxLength: number = config.chunk.maxLength): string[] {
     if (str.length <= maxLength) return [str];
 
@@ -99,6 +148,13 @@ export class SynologyClient {
     return chunks;
   }
 
+  /**
+   * Posts the given answer chunks to the requesting user's Synology Chat.
+   *
+   * @param userId The Synology Chat user id to deliver to.
+   * @param answers The already-chunked message texts, in send order (empty chunks are skipped).
+   * @throws Error when any request fails or the API answers with a non-OK status.
+   */
   async sendAnswersToChat(userId: number, answers: string[]): Promise<void> {
     const url = new URL(this.baseUrl);
     url.searchParams.append('api', 'SYNO.Chat.External');

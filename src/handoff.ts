@@ -9,11 +9,15 @@ import { extractMessageText, isDialogueMessage } from './nightly/reflection';
 import { PREVIOUS_CONVERSATION_CAPTURE_RE, SUMMARY_CAPTURE_RE, cleanStoredText, xmlBlock } from './protocol';
 import { stripChannelHistoryBlock } from './channel_history';
 
-// When a live conversation is restarted (turn limit or poisoned-conversation respawn) the new one has no
-// history. The handoff replays a summary of the old conversation plus its last few turns inside a
-// <previous_conversation> block on the new conversation's first prompt. The nightly journal strips this
-// block (stripHandoffBlock) because the old conversation is journaled on its own.
+/**
+ * When a live conversation is restarted (turn limit or poisoned-conversation respawn) the new one
+ * has no history. The handoff replays a summary of the old conversation plus its last few turns
+ * inside a <previous_conversation> block on the new conversation's first prompt. The nightly
+ * journal strips this block (stripHandoffBlock) because the old conversation is journaled on
+ * its own.
+ */
 
+/** One dialogue turn of a conversation: who said it and the (cleaned) text they wrote. */
 interface Turn {
   role: 'user' | 'assistant';
   text: string;
@@ -23,9 +27,15 @@ interface Turn {
 // hint) in front of what the user actually wrote; only the latter is dialogue.
 export { cleanStoredText };
 
+/** Truncates text to at most max characters, plus a trailing ellipsis marking the cut. */
 const truncate = (text: string, max: number): string => (text.length > max ? text.slice(0, max) + '…' : text);
 
-/** Returns the dialogue turns of a conversation, plus the previous handoff block it was seeded with (if any) */
+/**
+ * Returns the dialogue turns of a conversation, plus the previous handoff block it was seeded with (if any).
+ *
+ * @param messages The conversation's raw message history.
+ * @returns The extracted turns and the prior handoff block's inner text, when present.
+ */
 export const extractTurns = (messages: ConversationMessage[]): { turns: Turn[]; priorContext?: string } => {
   const turns: Turn[] = [];
   let priorContext: string | undefined;
@@ -49,16 +59,24 @@ export const extractTurns = (messages: ConversationMessage[]): { turns: Turn[]; 
   return { turns, priorContext };
 };
 
-/** Splits turns into the older part (to be summarized) and the last N user turns with their replies */
+/**
+ * Splits turns into the older part (to be summarized) and the last N user turns with their replies.
+ *
+ * @param turns The conversation's dialogue turns, in order.
+ * @param recentUserTurns How many user turns (with their replies) count as "recent".
+ * @returns The older turns and the recent tail.
+ */
 export const splitRecent = (turns: Turn[], recentUserTurns: number): { older: Turn[]; recent: Turn[] } => {
   const userIdx = turns.map((t, i) => (t.role === 'user' ? i : -1)).filter(i => i >= 0);
   const start = userIdx.length > recentUserTurns ? userIdx[userIdx.length - recentUserTurns] : 0;
   return { older: turns.slice(0, start), recent: turns.slice(start) };
 };
 
+/** Renders turns as "role: text" lines, each truncated to maxChars. */
 const renderTurns = (turns: Turn[], maxChars: number): string =>
   turns.map(t => `${t.role}: ${truncate(t.text, maxChars)}`).join('\n');
 
+/** Assembles the (optional) summary and the recent turns into the `<previous_conversation>` block. */
 const formatBlock = (summary: string | undefined, recent: Turn[]): string | undefined => {
   const parts: string[] = [];
   if (summary) {
@@ -70,7 +88,12 @@ const formatBlock = (summary: string | undefined, recent: Turn[]): string | unde
   return parts.length > 0 ? xmlBlock('previous_conversation', parts.join('\n')) : undefined;
 };
 
-/** One-shot call to the summarizer agent; the throwaway conversation is never kept */
+/**
+ * One-shot call to the summarizer agent; the throwaway conversation is never kept.
+ *
+ * @param input The rendered turns (plus prior context) to summarize.
+ * @returns The summary text, or undefined when no summarizer agent is configured.
+ */
 const summarize = async (input: string): Promise<string | undefined> => {
   const agentId = config.mistral.summarizerAgentId;
   if (!agentId) {
@@ -90,6 +113,10 @@ const summarize = async (input: string): Promise<string | undefined> => {
 /**
  * Builds the <previous_conversation> block for a conversation that is about to be replaced.
  * Never throws: any failure degrades to fewer details (last turns only) or no block at all.
+ *
+ * @param conversationId The conversation being replaced.
+ * @param options withSummary=false skips the summarizer call and replays only the last turns.
+ * @returns The rendered block, or undefined when nothing could be built.
  */
 export const buildHandoff = async (
   conversationId: string,
@@ -124,7 +151,13 @@ export const buildHandoff = async (
   return formatBlock(summary, recent);
 };
 
-/** Resolves with the promise's value, or undefined if it takes longer than ms or rejects */
+/**
+ * Resolves with the promise's value, or undefined if it takes longer than ms or rejects.
+ *
+ * @param promise The promise to await.
+ * @param ms The bounded wait window in milliseconds.
+ * @returns The promise's value, or undefined on timeout/rejection.
+ */
 export const waitFor = async <T>(promise: Promise<T>, ms: number): Promise<T | undefined> => {
   let timer: NodeJS.Timeout | undefined;
   try {

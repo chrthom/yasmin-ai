@@ -1,10 +1,12 @@
 #!/usr/bin/env ts-node
 
-// One-time migration CLI: the memory library and memory_archive table start EMPTY. This script
-// reads the CURRENT context_entries table (the existing 'Profile of X' / 'Session with X' /
-// 'Profile of Yasmin' / 'Family notes' rows) and seeds memory_archive + the Mistral library from
-// them, so the nightly pipeline has a real starting point instead of wiping existing profiles on
-// its first run. It is read-only against context_entries.
+/**
+ * One-time migration CLI: the memory library and memory_archive table start EMPTY. This script
+ * reads the CURRENT context_entries table (the existing 'Profile of X' / 'Session with X' /
+ * 'Profile of Yasmin' / 'Family notes' rows) and seeds memory_archive + the Mistral library from
+ * them, so the nightly pipeline has a real starting point instead of wiping existing profiles on
+ * its first run. It is read-only against context_entries.
+ */
 
 import { listContextEntries } from '../src/database/models/context.model';
 import { insertNextVersion, markSynced } from '../src/database/models/memory_archive.model';
@@ -16,6 +18,7 @@ import { personNameFromTitle, profileTitle } from '../src/strings';
 
 validateEnv({ requireDb: true });
 
+/** One (path, content) pair to seed into memory_archive. */
 interface SeedFile {
   path: string;
   content: string;
@@ -27,7 +30,7 @@ function buildSection(heading: string, body: string): string {
 }
 
 /**
- * Builds the 7-section person profile template from the existing 'Profile of <name>' and
+ * Builds the 8-section person profile template from the existing 'Profile of <name>' and
  * (optional) 'Session with <name>' content, matching reflection.ts's exact section headings. The
  * two sections with no equivalent in the old 2-column data (Ideas/Interests/Goals, Communication
  * Style) start empty; the nightly pipeline fills them in as it observes real signal over time.
@@ -40,6 +43,7 @@ function buildPersonProfile(coreFacts: string, sessionContent: string): string {
     buildSection('## Recent Happenings', ''),
     buildSection('## Open Topics', sessionContent),
     buildSection('## Communication Style', ''),
+    buildSection("## Yasmin's View", ''),
     buildSection("## Yasmin's Intentions", '')
   ].join('\n\n');
 }
@@ -103,10 +107,9 @@ export async function bootstrapMemory(): Promise<void> {
 
   const yasminProfile = byTitle.get(profileTitle('Yasmin'));
   if (yasminProfile !== undefined) {
-    // Seeded as-is (verbatim), even though it is currently written in third person -- the nightly
-    // pipeline's own compaction step already produces a correctly first-person EAGER cache entry
-    // on its very first run regardless of the verbose archive's initial voice, so no bootstrap-time
-    // rewriting is needed here.
+    // Seeded as-is (verbatim), even though it is currently written in third person -- the
+    // nightly pipeline's compaction step produces a correctly first-person EAGER cache entry on
+    // its very first run regardless of the verbose archive's initial voice.
     seeds.push({ path: 'self-reflection/profile.md', content: yasminProfile });
   }
 
@@ -136,6 +139,10 @@ export async function bootstrapMemory(): Promise<void> {
   );
 }
 
+/**
+ * Process lifecycle wrapper: opens the DB pool, runs the migration, and always closes the pool
+ * again; exits non-zero when the migration fails.
+ */
 async function main(): Promise<void> {
   try {
     getDatabasePool();

@@ -29,7 +29,7 @@ jest.mock('../config', () => ({
     nightly: {
       lockStaleMs: 2 * 60 * 60 * 1000,
       maxRevisions: 3,
-      maxIterations: 15,
+      maxIterations: 25,
       archiveKeepVersions: 10,
       eagerMaxChars: 10000,
       watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000
@@ -88,6 +88,7 @@ jest.mock('../mistral/mistral_api', () => ({
 }));
 
 import { LockHeldError, runNightlyPipeline } from '../nightly/pipeline';
+import { parseMood } from '../nightly/mood';
 import { resetNightlyToolsState } from '../nightly/tools';
 import {
   NightlyJobLog,
@@ -355,6 +356,14 @@ describe('nightly pipeline integration', () => {
     expect(result.conversationsProcessed).toBe(3);
     expect(mockSetWatermark).toHaveBeenCalledTimes(1);
     expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
+
+    // Phase 1 persists the collected batch right away (the crash-recovery watermark for a resume):
+    // a fresh NON-empty run must record processedConversationIds + '1-collect' so a crash later in
+    // the run replays exactly this batch instead of re-collecting.
+    expect(mockUpdateJobLog).toHaveBeenCalledWith(1, {
+      processedConversationIds: ['conv-1', 'conv-2', 'conv-3'],
+      lastCompletedPhase: '1-collect'
+    });
 
     expect(mockInsertNextVersion).toHaveBeenCalledWith(
       'journals/alice/conv-1.md',
@@ -639,6 +648,211 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 4b. Empty-batch short-circuit (issue #109)
+  // -------------------------------------------------------------------------
+  it('empty batch (fresh): skips phases 2-7 entirely -- no LLM calls, no Mistral writes, completed row + watermark', async () => {
+    // Default mockListConversations resolves to [] -- nothing to collect.
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(result.conversationsProcessed).toBe(0);
+    expect(result.jobId).toBe(1);
+
+    // The skip decision consults the outbox first -- with no conversations AND no undelivered
+    // notes there is genuinely nothing only the nightly job could do.
+    expect(mockGetIntradayNotesMaxId).toHaveBeenCalledTimes(1);
+    expect(mockGetUnconsolidatedNotes).toHaveBeenCalledTimes(1);
+
+    // No LLM calls at all: journal, integrate, review, revise, compact.
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockRunIntegrate).not.toHaveBeenCalled();
+    expect(mockRunReview).not.toHaveBeenCalled();
+    expect(mockReviseProposal).not.toHaveBeenCalled();
+    expect(mockRunCompact).not.toHaveBeenCalled();
+
+    // No Mistral writes or deletes, and no conversation reads either.
+    expect(mockGetConversationMessages).not.toHaveBeenCalled();
+    expect(mockReplaceDocument).not.toHaveBeenCalled();
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+    expect(mockDeleteConversation).not.toHaveBeenCalled();
+
+    // Nothing is archived and the eager cache is not rewritten.
+    expect(mockInsertNextVersion).not.toHaveBeenCalled();
+    expect(mockUpsertContextEntry).not.toHaveBeenCalled();
+
+    // The job log records exactly one write: the completed row with zero conversations (no
+    // empty processedConversationIds batch is persisted).
+    expect(mockUpdateJobLog).toHaveBeenCalledTimes(1);
+    expect(mockUpdateJobLog).toHaveBeenCalledWith(1, {
+      status: 'completed',
+      completedAt: expect.any(Date),
+      lastCompletedPhase: '1-collect',
+      conversationsProcessed: 0
+    });
+
+    // The watermark advances to the Phase-1 snapshot time, like any completed run.
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockSetWatermark).toHaveBeenCalledWith(expect.any(Date));
+
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch (resumed): an orphan row whose effective batch is empty short-circuits the same way', async () => {
+    // Crash between createJobLog() and the processedConversationIds write: the orphan row exists
+    // but its batch was never recorded, so the run re-collects fresh -- and finds nothing.
+    const orphan: NightlyJobLog = {
+      id: 42,
+      startedAt: new Date('2026-07-05T22:00:00Z'),
+      completedAt: null,
+      status: 'running',
+      lastCompletedPhase: null,
+      processedConversationIds: [],
+      skippedConversationIds: [],
+      errorMessage: null,
+      conversationsProcessed: 0,
+      filesUpdated: 0,
+      filesCreated: 0
+    };
+    mockFindRunningJob.mockResolvedValueOnce(orphan);
+    // Default mockListConversations resolves to [] -- the effective batch stays empty.
+
+    const result = await runNightlyPipeline();
+
+    // The orphan's row is reused (no new job row created) and it is the one being completed.
+    expect(mockCreateJobLog).not.toHaveBeenCalled();
+    expect(result.jobId).toBe(42);
+    expect(result.status).toBe('completed');
+    expect(result.conversationsProcessed).toBe(0);
+
+    // Same skip shape as the fresh case: no LLM calls, no Mistral writes/deletes.
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockRunIntegrate).not.toHaveBeenCalled();
+    expect(mockRunReview).not.toHaveBeenCalled();
+    expect(mockRunCompact).not.toHaveBeenCalled();
+    expect(mockGetConversationMessages).not.toHaveBeenCalled();
+    expect(mockDeleteConversation).not.toHaveBeenCalled();
+    expect(mockDeleteDocument).not.toHaveBeenCalled();
+    expect(mockReplaceDocument).not.toHaveBeenCalled();
+
+    const completedUpdate = mockUpdateJobLog.mock.calls.find(call => call[1]?.status === 'completed');
+    expect(completedUpdate).toBeDefined();
+    expect(completedUpdate![1].conversationsProcessed).toBe(0);
+
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch + undelivered notes: does NOT skip -- the run consolidates the pending notes with zero conversations', async () => {
+    // Zero conversations, but the outbox still holds an undelivered note: the skip must not
+    // strand it, so the consolidation path (phases 3/4/6.5) keeps running.
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce([
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'consolidated the note', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+
+    // No conversation was journaled or deleted, but integrate saw the note as evidence...
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockRunIntegrate).toHaveBeenCalledTimes(1);
+    expect(mockRunIntegrate).toHaveBeenCalledWith(expect.any(Function), [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ]);
+    expect(mockDeleteConversation).not.toHaveBeenCalled();
+
+    // ...and the outbox was emptied after the successful consolidation.
+    expect(mockClearIntradayNotes).toHaveBeenCalledTimes(1);
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(5);
+
+    expect(result.status).toBe('completed');
+    expect(result.conversationsProcessed).toBe(0);
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch + undelivered notes: review and revision ground in the notes, so the note survives into memory', async () => {
+    // The quiet-night loss guard: the reviewer's evidence base must include the undelivered notes.
+    // Without them a note-derived fact looks invented (the journals are empty on this path), gets
+    // rejected, and Phase 6.5 would still empty the outbox -- silently losing the note's content.
+    mockGetIntradayNotesMaxId.mockResolvedValueOnce(5);
+    const notes = [
+      {
+        id: 5,
+        fromUsername: 'christopher',
+        toUsername: 'zara',
+        content: 'Please be home by 6 pm',
+        createdAt: new Date('2026-07-05T15:00:00Z')
+      }
+    ];
+    mockGetUnconsolidatedNotes.mockResolvedValueOnce(notes);
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'people/zara.md',
+        content: 'Zara profile with the note fact',
+        isNew: true
+      });
+      return { finalText: 'staged the note fact', iterations: 1 };
+    });
+    // The first review rejects (as it would with empty journals), the revision re-grounds in the
+    // notes, the re-review approves.
+    mockRunReview
+      .mockResolvedValueOnce({ approved: false, reason: 'fact not grounded in the journals' })
+      .mockResolvedValueOnce({ approved: true, reason: 'grounded in the note' });
+
+    const result = await runNightlyPipeline();
+
+    // Every review call and the revision call carried the notes as evidence.
+    expect(mockRunReview).toHaveBeenCalledTimes(2);
+    expect(mockRunReview.mock.calls[0][6]).toEqual(notes);
+    expect(mockRunReview.mock.calls[1][6]).toEqual(notes);
+    expect(mockReviseProposal).toHaveBeenCalledTimes(1);
+    expect(mockReviseProposal.mock.calls[0][6]).toEqual(notes);
+
+    // The note-derived fact was archived, so emptying the outbox no longer loses it.
+    expect(mockInsertNextVersion).toHaveBeenCalledWith(
+      'people/zara.md',
+      'Zara profile with the note fact',
+      expect.any(Date)
+    );
+    expect(mockClearIntradayNotes).toHaveBeenCalledWith(5);
+
+    expect(result.status).toBe('completed');
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty batch + failed notes read: skips (no LLM calls) and leaves the outbox untouched', async () => {
+    // The outbox state is unknown, but the skip performs no outbox writes -- pending notes are
+    // never lost, they stay for the next run. And with zero conversations there is no journal
+    // evidence, so running phases 2-7 could only stage spurious updates.
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockGetUnconsolidatedNotes.mockRejectedValueOnce(new Error('db down'));
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(mockRunIntegrate).not.toHaveBeenCalled();
+    expect(mockRunJournal).not.toHaveBeenCalled();
+    expect(mockClearIntradayNotes).not.toHaveBeenCalled();
+    expect(mockSetWatermark).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  // -------------------------------------------------------------------------
   // 5. Skipped conversation
   // -------------------------------------------------------------------------
   it('skipped conversation: a failed journal step is logged as skipped, excluded from cleanup', async () => {
@@ -860,7 +1074,131 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 9b. Topics layer wiring
+  // 9b. Mood decay + fold-in (issue #48)
+  // -------------------------------------------------------------------------
+
+  it('mood: deterministic decay applies without an agent update; a fully faded mood drops its narrative', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // A mood whose updatedAt is ~290 one-day half-lives before the run date: code must decay
+    // it to zero with no agent update, and the stale reason must fade WITH the numbers.
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin. Ich mag lange Gespraeche.');
+    await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\n' +
+        'Christopher hat mich heute heftig kritisiert.'
+    );
+
+    await runNightlyPipeline();
+
+    // The decayed archive version persists with the narrative dropped...
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow).not.toBeNull();
+    const moodContent = moodRow!.content;
+    const decayedMood = parseMood(moodContent);
+    expect(decayedMood).not.toBeNull();
+    // 2026-01-01 is ~290 one-day half-lives before the run date -- far past the ~6.3 half-lives
+    // it takes 0.8 to fall under the 0.01 decay epsilon -- so the decayed valence must be fully
+    // neutralized (0), and the assertion must not accidentally match the seeded 0.8 (a
+    // toContain('valence: 0') would).
+    expect(decayedMood!.valence).toBe(0);
+    expect(decayedMood!.energy).toBe(0);
+    expect(moodContent).not.toContain('Christopher hat mich heute heftig kritisiert.');
+
+    // ...so the yasmin compaction source carries no stale current-mood section: the reason
+    // cannot outlive its mood in the eager profile.
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall).toBeDefined();
+    expect(yasminCall![2]).not.toContain('My current mood');
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('mood: a mid-decay value is halved per half-life, proving decay actually applied', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // updatedAt ~3 collected-times in the past is impossible to control precisely here, so
+    // instead assert the deterministic property on the unit level (see mood.test.ts) and here
+    // only that a stale mood gets a NEW version (decay applied at all) with a refreshed header.
+    await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\nAlt.'
+    );
+    const seeded = await archive.getCurrentVersion('self-reflection/mood.md');
+    await runNightlyPipeline();
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow!.version).toBeGreaterThan(seeded!.version);
+  });
+
+  it('mood: a [PRIVACY:SENSITIVE] passage in the mood narrative never reaches the compactor', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    // updatedAt 12h ago with a 1-day half-life: the mood decays (~0.57/0.42) but is NOT fully
+    // faded, so the narrative survives decay and the fold-in below actually has text to strip.
+    await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0.8\nenergy: 0.6\nhalfLifeDays: 1\nupdatedAt: ' +
+        new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString() +
+        '\n\nIch bin today frustriert.\n[PRIVACY:SENSITIVE]\nGeheimes: ich hatte einen Streit mit R.\n[/PRIVACY:SENSITIVE]'
+    );
+    await runNightlyPipeline();
+    const compactSource = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin')[2];
+    expect(compactSource).toContain('My current mood');
+    expect(compactSource).toContain('frustriert');
+    expect(compactSource).not.toContain('PRIVACY:SENSITIVE');
+    expect(compactSource).not.toContain('Geheimes');
+  });
+
+  it('mood: an unparsable header skips the fold-in (no stale n/a mood in the eager profile)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    await archive.seed('self-reflection/mood.md', 'kein header, nur narrative');
+    await runNightlyPipeline();
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall[2]).not.toContain('n/a');
+    expect(yasminCall[2]).not.toContain('current mood');
+  });
+
+  it('mood: a staged mood update with a bogus updatedAt is re-stamped with the archive time', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    // The agent stages a hallucinated far-future date; the pipeline must overwrite it with the
+    // archive stamp so decay measures from the real commit time, not the agent's lie.
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      await executeTool('stage_update', {
+        path: 'self-reflection/mood.md',
+        content:
+          'valence: 0.9\nenergy: 0.7\nhalfLifeDays: 1\nupdatedAt: 2030-01-01T00:00:00Z\n\nIch bin gut gelaunt.',
+        isNew: true
+      });
+      return { finalText: 'staged mood', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'ok' });
+
+    await runNightlyPipeline();
+
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow).not.toBeNull();
+    const mood = parseMood(moodRow!.content);
+    expect(mood).not.toBeNull();
+    expect(mood!.valence).toBe(0.9);
+    // The rendered header stores second precision, so compare at that granularity.
+    expect(Math.floor(mood!.updatedAt.getTime() / 1000)).toBe(
+      Math.floor(moodRow!.createdAt.getTime() / 1000)
+    );
+    // The bogus 2030 date must be gone.
+    expect(mood!.updatedAt.getFullYear()).toBeLessThan(2030);
+  });
+
+  it('mood: a fully decayed (neutral) mood produces no new version and no churn', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    const seeded = await archive.seed(
+      'self-reflection/mood.md',
+      'valence: 0\nenergy: 0\nhalfLifeDays: 1\nupdatedAt: 2026-01-01T22:00:00Z\n\nAlles neutral.'
+    );
+    await runNightlyPipeline();
+    const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
+    expect(moodRow!.version).toBe(seeded.version);
+  });
+
+  // -------------------------------------------------------------------------
+  // 9c. Topics layer wiring
   // -------------------------------------------------------------------------
 
   it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {
@@ -1120,6 +1458,7 @@ describe('nightly pipeline integration', () => {
       seeded.createdAt.toISOString(),
       expect.any(Array),
       0,
+      [],
       []
     );
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
@@ -1210,7 +1549,7 @@ describe('nightly pipeline integration', () => {
   it('outbox: is NOT emptied when the integrate loop hit maxIterations (notes may be unconsolidated)', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
     mockRunJournal.mockImplementation(async (userName: string) => 'Journal about ' + userName);
-    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'staged', iterations: 15 });
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'staged', iterations: 25 });
     const result = await runNightlyPipeline();
     // integrateTruncated itself already degrades the run to 'partial'
     expect(result.status).toBe('partial');

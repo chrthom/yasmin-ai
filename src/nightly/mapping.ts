@@ -7,6 +7,7 @@ import { capitalizeLowerRest, personNameFromTitle, profileTitle, sanitizeForPath
  * those files have no eager-cache representation in context_entries.
  */
 
+/** A fixed (non-person) mapping between a verbose file path and a context_entries title. */
 interface FixedMapping {
   path: string;
   title: string;
@@ -19,13 +20,21 @@ const FIXED_MAPPINGS: FixedMapping[] = [
 
 const PEOPLE_PATH_PATTERN = /^people\/([a-z0-9_-]+)\.([A-Za-z]+)$/;
 
-/** Converts a people/<stem>.md stem into a "Name" title, e.g. "mary-jane" -> "Mary Jane" */
+/**
+ * Converts a people/<stem>.md stem into a "Name" title, e.g. "mary-jane" -> "Mary Jane"
+ *
+ * @param stem The slug part of a people/ file path.
+ * @returns The display name built from the stem parts.
+ */
 function stemToName(stem: string): string {
   return stem.split(/[-_]/).map(capitalizeLowerRest).join(' ');
 }
 
 /**
  * Maps a long-term verbose file path to its context_entries title, or null if unmapped
+ *
+ * @param path The memory_archive file path.
+ * @returns The eager-cache title for the path, or null when the file has no eager mapping.
  */
 export function pathToTitle(path: string): string | null {
   const fixed = FIXED_MAPPINGS.find(mapping => mapping.path === path);
@@ -36,10 +45,9 @@ export function pathToTitle(path: string): string | null {
   const peopleMatch = PEOPLE_PATH_PATTERN.exec(path);
   if (peopleMatch && peopleMatch[2].toLowerCase() === 'md') {
     const name = stemToName(peopleMatch[1]);
-    // "yasmin" is reserved for the fixed self-reflection mapping above -- a people/ file that
-    // happens to be named yasmin.md must not resolve to the same "Profile of Yasmin" title, or it
-    // would silently overwrite Yasmin's own self-reflection context entry (see bootstrap-memory.ts,
-    // which excludes this exact name for the same reason).
+    // "yasmin" is reserved for the fixed self-reflection mapping above -- a people/ file named
+    // yasmin.md must not resolve to the same "Profile of Yasmin" title and silently overwrite
+    // Yasmin's own self-reflection entry (bootstrap-memory.ts excludes the name for the same reason).
     if (name.toLowerCase() === 'yasmin') {
       return null;
     }
@@ -51,6 +59,9 @@ export function pathToTitle(path: string): string | null {
 
 /**
  * Maps a context_entries title to its long-term verbose file path, or null if unmapped
+ *
+ * @param title The context_entries title.
+ * @returns The memory_archive file path for the title, or null when the title has no eager mapping.
  */
 export function titleToPath(title: string): string | null {
   const fixed = FIXED_MAPPINGS.find(mapping => mapping.title === title);

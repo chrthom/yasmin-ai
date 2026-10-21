@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { LockHeldError, runNightlyPipeline } from './pipeline';
 
+/** A timezone-local wall-clock date/time split into its numeric parts. */
 interface DateParts {
   year: number;
   month: number;
@@ -10,6 +11,13 @@ interface DateParts {
   second: number;
 }
 
+/**
+ * Splits a Date into its wall-clock parts in the given timezone via Intl (no timezone library).
+ *
+ * @param date The instant to split.
+ * @param timeZone The IANA timezone the parts are computed in.
+ * @returns The numeric year/month/day/hour/minute/second parts.
+ */
 function getDateParts(date: Date, timeZone: string): DateParts {
   const found = new Map<string, string>();
   const formatter = new Intl.DateTimeFormat('en-US', {
@@ -52,6 +60,12 @@ function getTzOffsetMs(date: Date, timeZone: string): number {
  * search from now (rolling over to tomorrow if that time already passed today). Approximates the DST
  * offset using "now"'s offset rather than the target day's -- at most off by an hour, at most twice a
  * year, which is an acceptable margin for a once-a-night batch job.
+ *
+ * @param now The instant the search starts from.
+ * @param timeZone The IANA timezone of the target wall-clock time.
+ * @param hour The target wall-clock hour (0-23).
+ * @param minute The target wall-clock minute (0-59).
+ * @returns The next UTC instant the timezone's wall clock reads hour:minute.
  */
 export function nextRunAt(now: Date, timeZone: string, hour: number, minute: number): Date {
   const offsetMs = getTzOffsetMs(now, timeZone);
@@ -66,10 +80,17 @@ export function nextRunAt(now: Date, timeZone: string, hour: number, minute: num
   return new Date(target);
 }
 
+/** Timer of the next scheduled tick; undefined while the scheduler is stopped. */
 let timer: NodeJS.Timeout | undefined;
+/** The in-flight nightly run, if one is currently executing. */
 let inFlight: Promise<void> | undefined;
+/** Set by stopNightlyScheduler so a finishing run does not reschedule. */
 let stopped = false;
 
+/**
+ * Runs the nightly pipeline once (a skipped run logs an info instead of failing), then reschedules
+ * the next tick unless the scheduler was stopped in the meantime.
+ */
 async function runAndReschedule(): Promise<void> {
   try {
     const result = await runNightlyPipeline();
@@ -87,6 +108,7 @@ async function runAndReschedule(): Promise<void> {
   }
 }
 
+/** Arms the timer for the next nightly run (the next configured wall-clock time in MEMORY_TZ). */
 function scheduleNext(): void {
   const delayMs =
     nextRunAt(new Date(), config.nightly.tz, config.nightly.hour, config.nightly.minute).getTime() -
@@ -123,6 +145,9 @@ export function startNightlyScheduler(): void {
  * lock is only cleared when the stale threshold `config.nightly.lockStaleMs` elapses).
  * Resolves `true` when no run was in flight or it finished within the timeout; `false` if the run was
  * still going when the timeout elapsed (the caller should then exit non-zero).
+ *
+ * @param timeoutMs How long to wait for an in-flight run before resolving false.
+ * @returns true when no run was in flight or it finished within the timeout, false otherwise.
  */
 export async function stopNightlyScheduler(timeoutMs: number): Promise<boolean> {
   stopped = true;

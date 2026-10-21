@@ -7,7 +7,7 @@ jest.mock('../config', () => ({
     },
     nightly: {
       tz: 'Europe/Berlin',
-      maxIterations: 15,
+      maxIterations: 25,
       eagerMaxChars: 10000,
       transcriptMaxChars: 20000,
       journalSoftCapChars: 4000
@@ -34,6 +34,7 @@ import {
   runReview,
   reviseProposal,
   runCompact,
+  compactPrompt,
   StagedUpdate
 } from '../nightly/reflection';
 
@@ -213,7 +214,7 @@ describe('reflection', () => {
 
       expect(result).toEqual({ finalText: 'staged 2 files', iterations: 3, conversationId: 'conv-1' });
       expect(mockRunAgentToolLoop).toHaveBeenCalledWith(
-        expect.objectContaining({ agentId: 'nightly-agent-1', maxIterations: 15, executeTool })
+        expect.objectContaining({ agentId: 'nightly-agent-1', maxIterations: 25, executeTool })
       );
     });
     it('injects the run date (MEMORY_TZ) into the integrate prompt sent to the agent loop', async () => {
@@ -434,6 +435,7 @@ describe('reflection', () => {
       const prompt = reviewPrompt(update, 'old content', null, [], 0);
       expect(prompt).toContain('never -- this would be its first version');
     });
+
     it('injects the date and lastTouchedAt into the prompt actually sent to askAgent', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '{"approved": true, "reason": "ok"}' });
       await runReview(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
@@ -442,6 +444,43 @@ describe('reflection', () => {
       expect(sentPrompt).toMatch(/Today is \d{4}-\d{2}-\d{2}/);
       expect(sentPrompt).toContain('The file was last touched');
       expect(sentPrompt).toContain('on 2026-01-01.');
+    });
+
+    it('embeds undelivered pending notes as review evidence so note-derived facts are not judged as invented', async () => {
+      mockAskAgent.mockResolvedValueOnce({
+        outputText: '{"approved": true, "reason": "grounded in a note"}'
+      });
+
+      await runReview(
+        update,
+        'old content',
+        '2026-01-01T00:00:00.000Z',
+        [],
+        0,
+        [],
+        [
+          {
+            id: 9,
+            fromUsername: 'christopher',
+            toUsername: 'zara',
+            content: 'Please be home by 6 pm',
+            createdAt: new Date('2026-07-05T15:00:00Z')
+          }
+        ]
+      );
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('never delivered in the live chat');
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+      expect(prompt).toContain('supported by the evidence, not invented');
+    });
+
+    it('adds no notes evidence block to the review prompt when the outbox is empty', () => {
+      const prompt = reviewPrompt(update, 'old content', '2026-01-01T00:00:00.000Z', [], 0);
+      expect(prompt).toContain('(no journal entries today)');
+      expect(prompt).not.toContain('Undelivered note');
+      expect(prompt).not.toContain('never delivered in the live chat');
     });
   });
 
@@ -521,6 +560,43 @@ describe('reflection', () => {
       const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
       expect(prompt).toContain('first person');
     });
+
+    it('embeds undelivered pending notes as evidence in the first correction prompt', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: 'corrected', conversationId: 'rev-conv-1' });
+
+      await reviseProposal(update, 'old content', 'rejected content', 'not grounded', [], undefined, [
+        {
+          id: 9,
+          fromUsername: 'christopher',
+          toUsername: 'zara',
+          content: 'Please be home by 6 pm',
+          createdAt: new Date('2026-07-05T15:00:00Z')
+        }
+      ]);
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+      expect(prompt).toContain('supported by the evidence, not invented');
+    });
+
+    it('re-embeds undelivered pending notes as evidence in every follow-up correction turn', async () => {
+      mockAskAgent.mockResolvedValueOnce({ outputText: 'corrected again', conversationId: 'rev-conv-1' });
+
+      await reviseProposal(update, 'old content', 'rejected again', 'still not grounded', [], 'rev-conv-1', [
+        {
+          id: 9,
+          fromUsername: 'christopher',
+          toUsername: 'zara',
+          content: 'Please be home by 6 pm',
+          createdAt: new Date('2026-07-05T15:00:00Z')
+        }
+      ]);
+
+      const prompt = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(prompt).toContain('Undelivered note #9 from christopher to zara');
+      expect(prompt).toContain('Please be home by 6 pm');
+    });
   });
 
   describe('formatRunDate', () => {
@@ -564,6 +640,109 @@ describe('reflection', () => {
       expect(mockAskAgent).toHaveBeenCalledTimes(2);
       expect(result).toBe(truncateToCap(tooLong, 10000));
       expect(result.endsWith('…[truncated]')).toBe(true);
+    });
+  });
+
+  describe('integratePrompt: inner life (issue #48)', () => {
+    it('describes the mood file, its header format, and the today-evidence rule', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('self-reflection/mood.md');
+      expect(prompt).toContain('valence: <number>');
+      expect(prompt).toContain('halfLifeDays: <number>');
+      expect(prompt).toContain("requires TODAY's evidence");
+    });
+
+    it("keeps the person template intact with the new Yasmin's View section", () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('8-section template');
+      expect(prompt).toContain("Yasmin's View");
+      expect(prompt).toContain("Communication Style, Yasmin's View, Yasmin's Intentions");
+    });
+
+    it('demands tentative first opinions with a tendency, never facts', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('a first impression is always marked tentative');
+      expect(prompt).toContain('(improving/worsening/stable)');
+    });
+
+    it('demands trait crystallization with minimum evidence and tendency', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('2nd-3rd observed occurrence');
+      expect(prompt).toContain('(growing/stable/declining)');
+    });
+
+    it('turns a due, unanswered goal into a proactive topic in the person profile', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('status (open/done)');
+      expect(prompt).toContain('proactive topic');
+      expect(prompt).toContain('Yasmin wants to ask ...');
+    });
+  });
+
+  describe('reviewPrompt: per-file-type reviewer criteria (issue #48)', () => {
+    it('applies opinion/tendency/first-opinion-tentative criteria to person profiles', () => {
+      const prompt = reviewPrompt(
+        { path: 'people/alice.md', content: 'c', isNew: false },
+        'old',
+        null,
+        [],
+        0
+      );
+      expect(prompt).toContain('never read as a fact');
+      expect(prompt).toContain('always tentative');
+      expect(prompt).toContain('confidence level');
+    });
+
+    it('applies the two-pieces-of-evidence trait rule to the self profile', () => {
+      const prompt = reviewPrompt(
+        { path: 'self-reflection/profile.md', content: 'c', isNew: false },
+        'old',
+        null,
+        [],
+        0
+      );
+      expect(prompt).toContain('at least 2 pieces of evidence');
+      expect(prompt).toContain('single occurrence');
+    });
+
+    it('applies the today-evidence rule to the mood file', () => {
+      const prompt = reviewPrompt(
+        { path: 'self-reflection/mood.md', content: 'c', isNew: false },
+        'old',
+        null,
+        [],
+        0
+      );
+      expect(prompt.toLowerCase()).toContain("mood update requires today's evidence");
+      expect(prompt).toContain('valence/energy/halfLifeDays/updatedAt');
+    });
+
+    it('adds no special criteria for the family file', () => {
+      const prompt = reviewPrompt(
+        { path: 'general/family.md', content: 'c', isNew: false },
+        'old',
+        null,
+        [],
+        0
+      );
+      expect(prompt).not.toContain('at least 2 pieces of evidence');
+      expect(prompt).not.toContain("mood update requires TODAY'S evidence");
+    });
+  });
+
+  describe('compactPrompt: compaction priority and mood fold-in (issue #48)', () => {
+    it("keeps the person template intact including Yasmin's View", () => {
+      const prompt = compactPrompt('person', 'Alice', 'content');
+      expect(prompt).toContain("## Yasmin's View");
+      expect(prompt).toContain('Soft priority when the limit forces cuts');
+      expect(prompt.toLowerCase()).toContain('mood, active goals, and personality before everything else');
+    });
+
+    it('asks the yasmin compaction to keep mood and trait tendency visible', () => {
+      const prompt = compactPrompt('yasmin', undefined, 'content');
+      expect(prompt).toContain('current mood');
+      expect(prompt).toContain('growing/stable/declining');
+      expect(prompt).toContain('mood, active goals, and personality before everything else');
     });
   });
 });

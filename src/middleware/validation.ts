@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { config } from '../config';
 
+/**
+ * Runtime validation schema every incoming Synology Chat webhook body (bot, slash, group) must
+ * pass before any controller logic runs. Field limits come from config.validation.
+ */
 export const SynologyRequestSchema = z.object({
   text: z.string().min(1).max(config.validation.maxTextLength),
   token: z.string().min(1).optional(),
