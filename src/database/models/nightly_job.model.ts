@@ -32,7 +32,7 @@ export interface NightlyJobLogPatch {
    * true: sets completed_at = NOW() (current wall-clock time).
    * Date: sets completed_at to that specific instant -- used by the nightly pipeline to record when
    * Phase 1's conversation-listing snapshot was actually taken, not whenever the whole job (which can
-   * run for several more minutes across phases 2-7) eventually finishes. See pipeline.ts's
+   * run for several more minutes across phases 2-9) eventually finishes. See pipeline.ts's
    * `collectedAt` for why this distinction matters for the next run's watermark.
    */
   completedAt?: boolean | Date;

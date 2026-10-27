@@ -332,7 +332,7 @@ function formatIntradayNotesText(notes: IntradayNote[]): string {
  * Renders the still-undelivered pending notes into the evidence block shared by the review and
  * revision prompts (mirroring the integrate evidence block). Without it the reviewer's evidence
  * base is just the journals -- which on a quiet night (zero conversations) are empty -- so a
- * note-derived fact looks invented, gets rejected, and Phase 6.5 would still clear the outbox:
+ * note-derived fact looks invented, gets rejected, and Phase 8 would still clear the outbox:
  * the note's content silently lost from long-term memory. Empty when there are no notes.
  */
 function renderUndeliveredNotesBlock(undeliveredNotes: IntradayNote[]): string {
@@ -644,14 +644,14 @@ export async function reviseProposal(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 6 -- Compact
+// Phase 7 -- Compact
 // ---------------------------------------------------------------------------
 
-/** Which kind of long-term file a Phase-6 compaction prompt is built for. */
+/** Which kind of long-term file a Phase-7 compaction prompt is built for. */
 export type CompactKind = 'person' | 'yasmin' | 'family';
 
 /**
- * Builds the Phase-6 compaction prompt for a given kind of long-term file
+ * Builds the Phase-7 compaction prompt for a given kind of long-term file
  *
  * @param kind Which kind of long-term file is being compacted.
  * @param personName The person's name, required for kind 'person' (undefined otherwise).
@@ -674,7 +674,7 @@ export function compactPrompt(
 }
 
 /**
- * Runs the Phase-6 compaction call for one long-term file, with one tighter retry and a truncation safety net
+ * Runs the Phase-7 compaction call for one long-term file, with one tighter retry and a truncation safety net
  *
  * @param kind Which kind of long-term file is being compacted.
  * @param personName The person's name, required for kind 'person' (undefined otherwise).
