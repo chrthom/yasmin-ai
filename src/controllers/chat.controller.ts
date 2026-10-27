@@ -63,7 +63,7 @@ async function processRequest(
  * @param channelId The channel the incoming post lives in.
  * @param postId The incoming post's id -- history is everything strictly before it.
  * @param botUserId The bot's own user id, used to strip its own messages from the transcript.
- * @param stripPrefix Optional username whose message prefix should be stripped.
+ * @param stripPrefix Optional slash-command prefix whose posts are filtered from the transcript.
  * @param token The channel/bot token used for the history API call.
  * @returns The formatted `<channel_history>` block, or undefined when there is no history or the fetch failed.
  */

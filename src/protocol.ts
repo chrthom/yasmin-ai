@@ -1,5 +1,6 @@
 import { config } from './config';
 import { stripChannelHistoryBlock } from './channel_history';
+import { PROTOCOL_TAG } from './protocol_tags';
 
 /**
  * Single source of truth for the XML protocol tags the live agent injects into user prompts,
@@ -7,14 +8,7 @@ import { stripChannelHistoryBlock } from './channel_history';
  * cleanup regexes must never drift apart, so they are always derived from the names here.
  */
 
-const TAG = {
-  contextEntry: 'context_entry',
-  availableContextEntries: 'available_context_entries',
-  previousConversation: 'previous_conversation',
-  notes: 'nachrichten_fuer_dich',
-  summary: 'summary',
-  recentMessages: 'recent_messages'
-} as const;
+const TAG = PROTOCOL_TAG;
 
 /** Matches a full `<tag ...>...</tag>` block (non-greedy, attributes tolerated). */
 const blockRegex = (tag: string): RegExp => new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'g');

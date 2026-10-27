@@ -96,7 +96,7 @@ describe('validateEnv', () => {
     try {
       validateEnv();
       expect(warn).toHaveBeenCalledWith(
-        "WARNING: CHAT_BOT_USER_ID is not set; the bot's own replies cannot be excluded from group channel history."
+        "WARNING: CHAT_BOT_USER_ID is not set or not a number; the bot's own replies cannot be excluded from group channel history."
       );
       process.env['CHAT_BOT_USER_ID'] = '42';
       warn.mockClear();

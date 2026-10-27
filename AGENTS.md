@@ -267,7 +267,7 @@ Required for runtime:
 - `CHAT_TOKEN_BOT` - Token for `/chat/bot` endpoint
 - `CHAT_TOKEN_SLASH` - Token for `/chat/slash` endpoint
 - `CHAT_TOKEN_GROUP` - Token for `/chat/group` endpoint
-- `CHAT_BOT_USER_ID` - Synology user id of the Yasmin bot (used to exclude its own replies from group channel history; a startup warning is logged if unset)
+- `CHAT_BOT_USER_ID` - Optional: Synology user id of the Yasmin bot (used to exclude its own replies from group channel history; unset only degrades bot-reply filtering and logs a startup warning)
 - `AGENT_ID_CONVERSATION` - Mistral agent identifier for the live conversation agent
 - `MISTRAL_LIBRARY_ID` - Mistral knowledge library id the nightly job uploads to and the live agent RAGs against
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the nightly memory-consolidation agent

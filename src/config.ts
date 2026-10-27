@@ -109,7 +109,8 @@ export const config = {
       prevCount: 10,
       botUserId: Number(process.env['CHAT_BOT_USER_ID'] || 0) || 0,
       slashPrefix: '/yasmin',
-      fetchTimeoutMs: 5000
+      fetchTimeoutMs: 5000,
+      transcriptMaxCharsPerMessage: 1500
     },
     tokens: {
       get bot(): string {
@@ -204,7 +205,7 @@ export function validateEnv(options: ValidateEnvOptions = {}): void {
 
   if (!Number(process.env['CHAT_BOT_USER_ID'])) {
     console.warn(
-      "WARNING: CHAT_BOT_USER_ID is not set; the bot's own replies cannot be excluded from group channel history."
+      "WARNING: CHAT_BOT_USER_ID is not set or not a number; the bot's own replies cannot be excluded from group channel history."
     );
   }
 }

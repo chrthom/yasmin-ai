@@ -53,7 +53,7 @@ export class SynologyClient {
    * @param channelId The channel to read.
    * @param postId The post the history is relative to (everything before it is returned).
    * @param prevCount How many previous posts to fetch (config.synology.history.prevCount).
-   * @param token The token to authenticate the API call (the channel's token by default).
+   * @param token The token to authenticate the API call (defaults to the client's token).
    * @returns The fetched posts, in the order the API returned them.
    * @throws When the HTTP call fails, the API reports an error, or the response is malformed.
    */
@@ -104,6 +104,11 @@ export class SynologyClient {
     }));
   }
 
+  /** Truncates a text to max characters, appending an ellipsis when it was cut. */
+  private static truncate(text: string, max: number): string {
+    return text.length > max ? text.slice(0, max) + '\u2026' : text;
+  }
+
   /**
    * Formats fetched channel posts as a transcript: the bot's own posts and slash-command
    * invocations are dropped, the rest are ordered oldest-first as `username: text` lines.
@@ -111,14 +116,22 @@ export class SynologyClient {
    * @param posts The fetched channel posts.
    * @param botUserId The bot's own user id, whose posts are excluded from the transcript.
    * @param slashPrefix The prefix that marks slash-command posts (defaults to config).
+   * @param maxCharsPerLine Per-message character cap for transcript lines (defaults to config).
    * @returns The transcript lines joined by newlines; empty when nothing remains.
    */
-  formatChannelHistory(posts: SynologyPost[], botUserId: number, slashPrefix?: string): string {
+  formatChannelHistory(
+    posts: SynologyPost[],
+    botUserId: number,
+    slashPrefix?: string,
+    maxCharsPerLine: number = config.synology.history.transcriptMaxCharsPerMessage
+  ): string {
     const prefix = slashPrefix ?? config.synology.history.slashPrefix;
+    /** True for a real slash invocation: the exact prefix or the prefix followed by a word boundary. */
+    const isSlashCommand = (text: string) => text === prefix || text.startsWith(prefix + ' ');
     return posts
-      .filter(post => post.userId !== botUserId && !post.text.trimStart().startsWith(prefix))
+      .filter(post => post.userId !== botUserId && !isSlashCommand(post.text.trim()))
       .sort((a, b) => a.timestamp - b.timestamp)
-      .map(post => `${post.username}: ${post.text}`)
+      .map(post => `${post.username}: ${SynologyClient.truncate(post.text, maxCharsPerLine)}`)
       .join('\n');
   }
 
