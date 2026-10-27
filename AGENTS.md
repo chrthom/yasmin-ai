@@ -26,6 +26,8 @@ mistral_config/
 │       └── share_note.json              # Stage a note for another person (cross-person outbox)
 ├── summarizer/                         # Restart-handoff summarizer agent (Studio)
 │   └── system_prompt.txt
+├── dream/                              # Nightly dream agent (weaves old journals into a dream)
+│   └── system_prompt.txt
 └── nightly/                            # Nightly memory-consolidation agent
     ├── nightly_system_prompt.txt
     ├── prompts/                          # Phase prompt templates (journal, integrate, review, compact);
@@ -62,12 +64,15 @@ src/
 ├── nightly/
 │   ├── run.ts         # CLI entry point (run via ts-node from source); manual runs + --dry-run
 │   ├── scheduler.ts   # In-process daily scheduler; started from app.ts, calls the same pipeline
-│   ├── pipeline.ts    # 7-phase orchestrator: collect, journal, integrate, review/archive,
-│   │                  #   upload, regenerate eager cache, cleanup
+│   ├── pipeline.ts    # 9-phase orchestrator: collect, journal, integrate, review/archive,
+│   │                  #   dream, upload, regenerate eager cache, pending-notes reset, cleanup
 │   ├── reflection.ts  # Prompts + nightly-agent calls (journal, integrate, review, compact)
 │   ├── tools.ts       # Nightly agent's tool set (list/get_long_term_file, read_todays_journals,
 │   │                  #   stage_update)
 │   ├── privacy.ts     # [PRIVACY:SENSITIVE] stripping + eager-cache compaction size cap
+│   ├── dream.ts       # Dream phase (2-3x/week): 2-3 random old journals -> dream agent ->
+│   │                  #   reflection with Yasmin's conversation persona (journals/dreams/<date>.md
+│   │                  #   + append-only self-reflection/dreams.md)
 │   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
 │   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
 │   │                  #   overrides the agent's updatedAt
@@ -85,7 +90,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory, mood
+                            #   pipeline.integration, context.model, bootstrap-memory, mood, dream
 ```
 
 ### Data Flow
@@ -182,11 +187,11 @@ At a high level, each run:
 1. **Collects** every conversation the live agent (`AGENT_ID_CONVERSATION`) has had since the last successful watermark.
    If the collected batch is empty — fresh **or** resumed — and the `intraday_notes` outbox holds no undelivered
    notes, the run **short-circuits** right there: it records a `completed` job row with `conversationsProcessed: 0`,
-   advances the watermark, releases the lock, and skips phases 2-7 entirely (no LLM calls, no Mistral writes or
+   advances the watermark, releases the lock, and skips phases 2-9 entirely (no LLM calls, no Mistral writes or
    deletes). A non-empty outbox keeps the consolidation path running even with zero conversations, so undelivered
    notes are never stranded by the skip. The skip also fires when the outbox state is unknown because reading it
    failed (`getUnconsolidatedNotes` threw): the skip performs no outbox writes, so any pending notes stay in the
-   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (phase 6.5), so
+   outbox untouched and are picked up by the next run. The skip never reaches the outbox reset (Phase 8), so
    already-delivered notes can linger across consecutive quiet nights; they are inert (delivery and consolidation
    only ever look at rows with `delivered_at IS NULL`) and are cleared by the next non-skipped run's bounded
    delete.
@@ -197,7 +202,12 @@ At a high level, each run:
 4. **Reviews** each proposed update against the day's evidence, then **archives** accepted versions as new
    rows in MariaDB's `memory_archive` table — a versioned, verbose local backup (may contain
    `[PRIVACY:SENSITIVE]` markers) that is the durable source of truth for the pipeline itself.
-5. **Uploads** changed files, with `[PRIVACY:SENSITIVE]` content already stripped, to a Mistral knowledge
+5. **Dreams** (2-3x per week, randomly cadenced): a dedicated dream agent weaves 2-3 random OLD
+   privacy-stripped journals into a dream (archived to `journals/dreams/<date>.md`, RAG-searchable),
+   which Yasmin's conversation persona then reflects on herself; the dated reflection is appended to the
+   append-only `self-reflection/dreams.md`. Resumable like every phase: no double dream, no duplicated
+   reflection after a crash between the two stages.
+6. **Uploads** changed files, with `[PRIVACY:SENSITIVE]` content already stripped, to a Mistral knowledge
    library (`MISTRAL_LIBRARY_ID`) that the live conversation agent can search via RAG for deeper facts and
    history, and deletes any orphaned library documents. Sensitive passages never leave local storage —
    `memory_archive` keeps the full content for versioning/audit, but nothing marked sensitive is ever sent
@@ -205,10 +215,12 @@ At a high level, each run:
    see the unstripped archive content — privacy stripping applies to the library upload, not to the
    pipeline-internal LLM calls; those run with `store: false` and their scratch conversations are
    deleted.)
-6. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
+7. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
    so the small, fast, sensitive-free eager set always reflects the latest long-term memory.
-7. **Cleans up**: deletes the now-processed Mistral conversations and prunes old `memory_archive` versions
+8. **Resets the pending-notes outbox** (after consolidation succeeded, the day's intraday notes have
+   served their purpose).
+9. **Cleans up**: deletes the now-processed Mistral conversations and prunes old `memory_archive` versions
    and `nightly_job_log` rows.
 
 The job is resumable and self-locking (`processing_lock`, `nightly_job_log`), and can be smoke-tested
@@ -268,6 +280,7 @@ Required once the nightly job is deployed (see Nightly Memory Pipeline above):
 - `AGENT_ID_NIGHTLY` - Mistral agent identifier for the dedicated nightly memory-consolidation agent
 - `MEMORY_TZ` - IANA timezone the nightly job's schedule/watermark are computed in (default `Europe/Berlin`)
 - `AGENT_ID_SUMMARIZER` - Optional: Mistral agent that summarizes a conversation for the restart handoff (see above). Without it the handoff carries only the last turns
+- `AGENT_ID_DREAM` - Optional: dedicated dream agent for the nightly dream phase (narrative, absurd, non-linear). Without it the dream generation falls back to the nightly agent with a creative prompt
 - `NIGHTLY_MAX_RETRIES` - Max retries for Mistral HTTP requests in the nightly pipeline (used by `MistralApi.withRetry` for transient 429/5xx/network errors; default `3`)
 - `MAX_TURNS_PER_SESSION` - Turn-based mid-session compaction: once a live conversation reaches this many user turns, it is closed (the nightly job still journals and deletes it) and the next turn starts a fresh conversation, resetting latency. Default `50`. The fresh conversation is seeded with a summary and the last 3 turns of the old one (see Conversation restarts and the handoff).
 - `REQUEST_TIMEOUT_MS` - Hard timeout for any single Mistral HTTP call made through `mistral_api.ts` (live turns and the nightly pipeline alike; default `120000`, clamped to [1, 600000], unparseable values fall back to the default).

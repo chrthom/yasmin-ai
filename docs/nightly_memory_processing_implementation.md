@@ -56,18 +56,19 @@ Creates: `memory_archive`, `nightly_job_log`, `processing_lock`. Non-destructive
 
 ### 2.2 MariaDB (bootstrap migration — CRITICAL)
 
-The library is empty. Phase 6 regenerates `context_entries` **from** the verbose store, so if the verbose store is empty on first run it would **wipe the existing profiles**. Before the scheduler's first automatic run, run the one-time bootstrap (`scripts/bootstrap-memory.ts`, §7.3):
+The library is empty. Phase 7 regenerates `context_entries` **from** the verbose store, so if the verbose store is empty on first run it would **wipe the existing profiles**. Before the scheduler's first automatic run, run the one-time bootstrap (`scripts/bootstrap-memory.ts`, §7.3):
 
 > Reads current `context_entries` → **merges each `Profile of X` + `Session with X` into one `people/<name>.md`** (5-section template), composes `self-reflection/profile.md` (from `Profile of Yasmin`) and `general/family.md` (from `Family notes`) → inserts them as `memory_archive` v1 → uploads them to the Mistral library.
 
-Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entries` row that has no verbose source** (see §8.4), so a missed bootstrap degrades to "no change," never data loss.
+Safety net (also permanent behavior): **Phase 7 never overwrites a `context_entries` row that has no verbose source** (see §8.4), so a missed bootstrap degrades to "no change," never data loss.
 
 ### 2.3 Mistral Console
 
 1. **Library** — the `memory` library already exists in the production workspace. Obtain its **library id** and put it in `MISTRAL_LIBRARY_ID` (§10). _Do not_ reuse the temporary test id from earlier spikes.
 2. **Conversation agent** (`AGENT_ID_CONVERSATION`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/conversation/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (done at cutover, §13 — after the nightly job is verified; the privacy block turned out to be unnecessary because the live agent never sees stripped text).
 3. **Nightly agent** — create a new agent `yasmin-nightly` with the memory-processor system prompt (§6.3). Library wiring **optional** (only for cross-file discovery; see v3 §1.2). Put its id in `AGENT_ID_NIGHTLY`.
-4. **API key** — issue a **production** key with access to the library + both agents; set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
+4. **Dream agent (optional)** — create the agent `yasmin-dream` with the dream system prompt (`mistral_config/dream/system_prompt.txt`; see §6.1 Phase 5) and put its id in `AGENT_ID_DREAM`. Without it the nightly job still dreams, but falls back to the structured `yasmin-nightly` agent with a creative prompt instead of the dedicated narrative one.
+5. **API key** — issue a **production** key with access to the library + all agents (dream agent included); set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
 
 ### 2.4 Environment / deployment
 
@@ -82,6 +83,7 @@ Safety net (also permanent behavior): **Phase 6 never overwrites a `context_entr
 - [ ] `MISTRAL_LIBRARY_ID` = production `memory` id; prod key can read it
 - [ ] Conversation agent: library attached + privacy prompt updated
 - [ ] `yasmin-nightly` agent created; `AGENT_ID_NIGHTLY` set
+- [ ] (optional) `yasmin-dream` agent created from `mistral_config/dream/system_prompt.txt`; `AGENT_ID_DREAM` set (unset → dream generation falls back to the nightly agent with a creative prompt)
 - [ ] Bootstrap migration run; `memory_archive` seeded; library populated
 - [ ] App (re)started so the scheduler arms itself; dry-run reviewed
 
@@ -215,19 +217,24 @@ Orchestrates phases; each writes `last_completed_phase` for resume. The caller (
 
 ### 6.1 Phases
 
-**Phase 1 — Collect.** Acquire lock (§6.2). Watermark = last successful `completed_at` (fallback 24 h if none/corrupt; guard against future timestamps from clock skew). `listConversations(sinceWatermark)`; persist ids to `processed_conversation_ids`. Empty (fresh **or** resumed, and no undelivered pending `intraday_notes`) → mark `completed` with `conversations_processed: 0`, advance the watermark, release, exit — phases 2-7 are skipped entirely (no LLM calls, no Mistral writes/deletes). A non-empty pending-notes outbox keeps the run going even with zero conversations, so undelivered notes are always consolidated rather than stranded by the skip; the outbox snapshot is therefore taken right after collect; a failed outbox read also skips, leaving any pending notes untouched for the next run.
+**Phase 1 — Collect.** Acquire lock (§6.2). Watermark = last successful `completed_at` (fallback 24 h if none/corrupt; guard against future timestamps from clock skew). `listConversations(sinceWatermark)`; persist ids to `processed_conversation_ids`. Empty (fresh **or** resumed, and no undelivered pending `intraday_notes`) → mark `completed` with `conversations_processed: 0`, advance the watermark, release, exit — phases 2-9 are skipped entirely (no LLM calls, no Mistral writes/deletes). A non-empty pending-notes outbox keeps the run going even with zero conversations, so undelivered notes are always consolidated rather than stranded by the skip; the outbox snapshot is therefore taken right after collect; a failed outbox read also skips, leaving any pending notes untouched for the next run.
 
-**Phase 2 — Journal.** For each conversation: `getConversationMessages` → `askAgent(nightly, journalPrompt(messages))` → structured journal. Write to `memory_archive` (`journals/<user>/<conv_id>.md`, version 1) **and** upload to Mistral. On failure: retry (backoff); still failing → add to `skipped_conversation_ids`, continue (a skipped conversation is **not** deleted in Phase 7, so it retries next night). Cap journal length; oversized → summarize-again with a tighter instruction.
+**Phase 2 — Journal.** For each conversation: `getConversationMessages` → `askAgent(nightly, journalPrompt(messages))` → structured journal. Write to `memory_archive` (`journals/<user>/<conv_id>.md`, version 1) **and** upload to Mistral. On failure: retry (backoff); still failing → add to `skipped_conversation_ids`, continue (a skipped conversation is **not** deleted in Phase 9, so it retries next night). Cap journal length; oversized → summarize-again with a tighter instruction.
 
 **Phase 3 — Integrate.** One `askAgent(nightly, integrationPrompt, tools)` tool loop (`maxIterations` 25). Tools (§7): reads come from `memory_archive`; the AI **stages** proposed verbose updates via `stage_update`. Returns the staged list. No real store is written yet.
 
 **Phase 4 — Review + Archive.** For each staged update: `askAgent(nightly, reviewPrompt(update, currentContent, lastTouchedAt, todaysJournals))` → per-file verdict (structured JSON). Rejected files → quarantined (kept at current version, logged), **not** batch-aborted. Accepted files: in one transaction, insert new `memory_archive` versions (skip if `content_hash` unchanged → no churn). Commit **before** any Mistral write.
 
-**Phase 5 — Upload.** For each current version with `synced_at IS NULL`: `replaceDocument(path, content)` (delete old `mistral_doc_id`, upload, store new id), set `synced_at`. On failure: retry; still failing → leave `synced_at` NULL (retried next run) and mark job `partial`. **Orphan reconcile:** `listDocuments()`; delete any Mistral doc whose path is not the current archive row (handles renames / failed prior deletes).
+**Phase 5 — Dream (two-stage).** Runs on only some nights (2-3x per week): `shouldDreamTonight` rolls against a nightly probability, but always dreams once the gap since the last dream reaches `dreamMaxGapDays` (a random streak can never starve the mechanism). Stage 1: 2-3 random OLD journals (>= `dreamMinSourceAgeDays`, dreams themselves excluded, privacy-stripped before they leave local storage) are woven into a dream by the dedicated dream agent (`AGENT_ID_DREAM`, falling back to the nightly agent) -- the dissociation between widely separated memories is the point. The dream is archived as `journals/dreams/<date>.md` (normal archive mechanics + Mistral upload → RAG-searchable), prefixed with an explicit German header ("TRAUM -- nicht wirklich passiert. Am <date> hatte Yasmin diesen Traum ...") so the RAG copy is self-describing: the live agent retrieving it can never mistake the dream's recombined events for things that really happened (the conversation system prompt states the same rule for `journals/dreams/` documents). Stage 2: the dream is reflected on **with Yasmin's conversation persona** (`AGENT_ID_CONVERSATION`), and the short reflection is appended -- dated, append-only, never modified -- to `self-reflection/dreams.md`. Resume/retry: the per-date dream file guards stage 1 (no double dream), and the dated reflection header guards stage 2. Stage 2 deliberately targets the NEWEST dream whose reflection is still missing (`findUnreflectedDream`), not just tonight's -- so a crash between the two stages AND a failed/empty stage-2 reflection (which ends the run `partial`; `partial` runs are not resumed, and the next night's dreamPath is a new date) are both caught up on a later run. An empty agent reply in either stage throws, so nothing empty is ever persisted and the run ends `partial` for a retry. Catch-up drains at most one missing reflection per run (the newest first), so a backlog of several unreflected dreams thins out one dream per night. A dream failure marks the run `partial` but never aborts it.
+**Phase 6 — Upload.** For each current version with `synced_at IS NULL`: `replaceDocument(path, content)` (delete old `mistral_doc_id`, upload, store new id), set `synced_at`. On failure: retry; still failing → leave `synced_at` NULL (retried next run) and mark job `partial`. **Orphan reconcile:** `listDocuments()`; delete any Mistral doc whose path is not the current archive row (handles renames / failed prior deletes).
 
-**Phase 6 — Regenerate eager cache.** §8. Compress + strip privacy, map path→title, upsert `context_entries`. Non-destructive for titles lacking a verbose source.
+**Phase 7 — Regenerate eager cache.** §8. Compress + strip privacy, map path→title, upsert `context_entries`. Non-destructive for titles lacking a verbose source.
 
-**Phase 7 — Cleanup.** Delete **only** `processed − skipped` conversations from Mistral (204/404 OK). Prune `memory_archive` to last N=10 versions/path (keep ≥2). Prune `nightly_job_log` older than 90 days. Mark `completed`; release lock.
+Dream wiring note: `self-reflection/dreams.md` has no `context_entries` mapping (like the journals) -- dreams stay RAG-only; derivable insights reach the profiles through the normal integrate/review chain when later journals mention them.
+
+**Phase 8 — Pending-notes reset (outbox).** After integrate (3) and review/archive (4) succeeded, every intraday note -- delivered or not -- has served its purpose; the outbox is cleared with a bounded DELETE (no TRUNCATE: implicit commit / DROP privileges).
+
+**Phase 9 — Cleanup.** Delete **only** `processed − skipped` conversations from Mistral (204/404 OK). Prune `memory_archive` to last N=10 versions/path (keep ≥2). Prune `nightly_job_log` older than 90 days. Mark `completed`; release lock.
 
 ### 6.2 Locking
 
@@ -274,11 +281,11 @@ stage_update(path, content, isNew); // append to in-run staged list  ← the ONL
 
 **One eager entry per person.** `Session with X` and `Journal with X` are **retired** (facts + proactive topics merge into `Profile of X`; deep history lives in Mistral journals via RAG).
 
-| Verbose path                 | Eager title         | Transform                                                                                                                                                                                                    |
-| ---------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Verbose path                 | Eager title         | Transform                                                                                                                                                                                                                   |
+| ---------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `people/<name>.md`           | `Profile of <Name>` | LLM-compact to the 8-section template (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's View, Yasmin's Intentions); strip `[PRIVACY:SENSITIVE]`; cap 2 KB |
-| `self-reflection/profile.md` | `Profile of Yasmin` | compact (first-person)                                                                                                                                                                                       |
-| `general/family.md`          | `Family notes`      | compact                                                                                                                                                                                                      |
+| `self-reflection/profile.md` | `Profile of Yasmin` | compact (first-person)                                                                                                                                                                                                      |
+| `general/family.md`          | `Family notes`      | compact                                                                                                                                                                                                                     |
 
 Eager set loaded on turn 1 = `Profile of <sender>` + `Profile of Yasmin` + `Family notes`.
 
@@ -294,7 +301,7 @@ Eager set loaded on turn 1 = `Profile of <sender>` + `Profile of Yasmin` + `Fami
 
 ## 9. Privacy
 
-- **Eager cache: always sensitive-free.** `[PRIVACY:SENSITIVE]` blocks stripped in Phase 6 before compaction. Non-negotiable (eager is injected unconditionally).
+- **Eager cache: always sensitive-free.** `[PRIVACY:SENSITIVE]` blocks stripped in Phase 7 before compaction. Non-negotiable (eager is injected unconditionally).
 - **`memory_archive`: full content** including sensitive (durable truth).
 - **Mistral library (default): keeps sensitive**, with **answer-time enforcement** via the conversation agent's system prompt (block added in 2.3): _"Content marked [PRIVACY:SENSITIVE]: use only as a direct answer when the user explicitly asks about that exact topic; never proactively, for creative connections, or for inferences."_
   - ⚠️ **Known residual risk (accepted):** the library is shared across family members and RAG has no per-person access control, so enforcement relies on the LLM not surfacing person A's sensitive chunk while chatting with person B. Accepted for usability (Yasmin can recall e.g. a surprise-party plan for the right person). **Future hardening:** strip sensitive from the upload + add a gated recall tool that checks the requester against the person the fact concerns.
@@ -349,8 +356,8 @@ with full ICU.
 |---|---|
 | `status='failed'/'partial'` | Read `error_message`; safe to re-run — resumes via `last_completed_phase`, hash-guarded writes are idempotent. |
 | Stale lock (crash) | Auto-broken after `lockStaleMs`; or `DELETE FROM processing_lock WHERE lock_name='nightly'`. |
-| Mistral out of sync / manual edit | Re-run: Phase 5 re-uploads `synced_at IS NULL`; orphan-reconcile removes strays. Full rebuild: re-upload all current `memory_archive` versions. |
-| Bad AI update to a file | Restore a **chosen prior** version from `memory_archive` (keep ≥2), set `synced_at=NULL`, re-run Phase 5+6. |
+| Mistral out of sync / manual edit | Re-run: Phase 6 re-uploads `synced_at IS NULL`; orphan-reconcile removes strays. Full rebuild: re-upload all current `memory_archive` versions. |
+| Bad AI update to a file | Restore a **chosen prior** version from `memory_archive` (keep ≥2), set `synced_at=NULL`, re-run Phase 6+7. |
 | Content integrity check | `SHA256(content) == content_hash` on read; mismatch → restore prior version. |
 | Backups | Nightly `mysqldump` of `context_entries` + `memory_archive` before 23:00. |
 
@@ -379,7 +386,7 @@ Existing harness: Jest + ts-jest, global `fetch` mocked, `dbProxy` uses `PROXY_D
 - **Reviewer rejects one file**: quarantined at prior version; others applied; `status='partial'` not aborted.
 - **Resume**: inject crash after each phase ⇒ re-run continues from `last_completed_phase`, no duplicate journals/uploads/deletes.
 - **Skipped conversation**: Phase 2 fails for conv C ⇒ C in `skipped_conversation_ids`, C **not** deleted, others proceed.
-- **Orphan reconcile**: library has a doc absent from current archive ⇒ deleted in Phase 5.
+- **Orphan reconcile**: library has a doc absent from current archive ⇒ deleted in Phase 6.
 - **Concurrency**: second run sees lock ⇒ aborts.
 - **Upload retry**: Mistral 503 then 200 ⇒ `synced_at` set, no dup; persistent 503 ⇒ `synced_at` NULL, `partial`, retried next run.
 - **Bootstrap**: `context_entries` ⇒ verbose files ⇒ archive v1 + uploads; then a normal run doesn't wipe anything.
@@ -414,13 +421,13 @@ Run once against a scratch library before go-live:
 
 Three layers by rate of change -- deliberately folded into existing files, no new tables:
 
-| Layer | Location | Cadence |
-| --- | --- | --- |
-| Mood / daily state | `self-reflection/mood.md` | daily, with deterministic exponential decay (half-life set per update by the agent; a heated argument ~3 days, a compliment ~1) |
-| Opinions | `Yasmin's View` section in `people/<name>.md`; opinions about things in `self-reflection/profile.md` ("Who I am") | weekly (implicit) |
-| Traits + values | `self-reflection/profile.md`, "Who I am" | slow, crystallization: a trait requires the 2nd-3rd observed occurrence, annotated with tendency (growing/stable/declining) and evidence count |
+| Layer              | Location                                                                                                          | Cadence                                                                                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mood / daily state | `self-reflection/mood.md`                                                                                         | daily, with deterministic exponential decay (half-life set per update by the agent; a heated argument ~3 days, a compliment ~1)                |
+| Opinions           | `Yasmin's View` section in `people/<name>.md`; opinions about things in `self-reflection/profile.md` ("Who I am") | weekly (implicit)                                                                                                                              |
+| Traits + values    | `self-reflection/profile.md`, "Who I am"                                                                          | slow, crystallization: a trait requires the 2nd-3rd observed occurrence, annotated with tendency (growing/stable/declining) and evidence count |
 
-- **Mood decay is code, not agent work** (`src/nightly/mood.ts`): `decayMoodFile()` runs nightly before Phase 5 (so the decayed version syncs to the library in the same run), exponentially fading valence/energy toward 0 with the mood's own half-life even when the agent staged no update. The file starts with a machine-readable header (`valence/energy/halfLifeDays/updatedAt`) that `parseMood` reads back; the agent-supplied `updatedAt` is overwritten with the archive stamp at commit time, so a hallucinated date can never skew decay. Mood is compacted into `Profile of Yasmin` (eager) by folding the current mood into the yasmin compaction source -- sensitive-stripped like the profile itself, and skipped entirely when the header is unparsable. Once decay fully neutralizes the state (valence and energy both 0), `decayMoodFile()` drops the narrative too, so a stale reason cannot outlive its mood in the eager profile or the library; the versioned archive keeps every earlier version, so no history is lost.
+- **Mood decay is code, not agent work** (`src/nightly/mood.ts`): `decayMoodFile()` runs nightly before Phase 6 (so the decayed version syncs to the library in the same run), exponentially fading valence/energy toward 0 with the mood's own half-life even when the agent staged no update. The file starts with a machine-readable header (`valence/energy/halfLifeDays/updatedAt`) that `parseMood` reads back; the agent-supplied `updatedAt` is overwritten with the archive stamp at commit time, so a hallucinated date can never skew decay. Mood is compacted into `Profile of Yasmin` (eager) by folding the current mood into the yasmin compaction source -- sensitive-stripped like the profile itself, and skipped entirely when the header is unparsable. Once decay fully neutralizes the state (valence and energy both 0), `decayMoodFile()` drops the narrative too, so a stale reason cannot outlive its mood in the eager profile or the library; the versioned archive keeps every earlier version, so no history is lost.
 - **Opinions are eager**: `Yasmin's View` lives inside the person profile (like `Yasmin's Intentions`), so the opinion is present as soon as the person appears in a chat -- no RAG hop. Phrased as Yasmin's assessment with a tendency (improving/worsening/stable), never a fact; a first impression is marked tentative.
 - **Goals**: `Yasmin's Intentions` entries carry status (open/done) + target date; a due-and-unanswered goal becomes a proactive topic in the same profile's Open Topics.
 - **Reviewer extensions** (per file type): opinion != fact with a confidence level; traits need >= 2 pieces of evidence; a mood update requires today's evidence; a first opinion is always tentative.
@@ -433,8 +440,8 @@ Three layers by rate of change -- deliberately folded into existing files, no ne
 | Topic                  | Decision                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Read source (Phase 3)  | **`memory_archive`** (local, exact) — no runtime dependency on the Mistral read API. MariaDB is the durable content source; Mistral is a derived search projection.                                                                                                                                                                                                                                                   |
-| Compression (Phase 6)  | **LLM compaction** by the nightly agent to the 8-section template; 2000-char cap; deterministic truncate fallback.                                                                                                                                                                                                                                                                                                    |
-| Sensitive in library   | **Revised:** stripped before Phase 5's upload too, not just the eager cache -- `[PRIVACY:SENSITIVE]` content never leaves local storage (`memory_archive` keeps it for versioning/audit only). Data minimization won over the original "keep in library + answer-time prompt enforcement" design, which relied entirely on the live agent's prompt discipline to gate a marker the RAG layer could otherwise surface. |
+| Compression (Phase 7)  | **LLM compaction** by the nightly agent to the 8-section template; 2000-char cap; deterministic truncate fallback.                                                                                                                                                                                                                                                                                                    |
+| Sensitive in library   | **Revised:** stripped before Phase 6's upload too, not just the eager cache -- `[PRIVACY:SENSITIVE]` content never leaves local storage (`memory_archive` keeps it for versioning/audit only). Data minimization won over the original "keep in library + answer-time prompt enforcement" design, which relied entirely on the live agent's prompt discipline to gate a marker the RAG layer could otherwise surface. |
 | Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions). **`Session with X` retired.**                                                                                                                                                                                              |
 | Journals               | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings.                                                                                                                                                                                                                                                                                 |
 | Live agent             | **Read-only** for memory; nightly job is the **sole writer**. `update_context_entry` retired. Keep live writes until the nightly job ships, then flip (§13).                                                                                                                                                                                                                                                          |
@@ -474,7 +481,7 @@ row listing the abandoned conversation ids) so the permanent loss stays auditabl
 
 ## Appendix C — Feedback triage (`feedback_v3_concept.md`)
 
-**Adopted:** retry/backoff (§5), `processing_lock` schema (§4), upload tracking via `synced_at` + orphan reconcile (§6.5), `skipped` status (§4), compression rules + cap (§8.1), pagination (§5), timezone (§10), log/version pruning (§6 P7), Phase-1 fallback/clock-skew guard (§6.1), lock timeout (§6.2), response validation (§5), read-from-archive to remove `text_content` runtime dependency (§1), example rows (§4), code references throughout, path↔title mapping table (§8.2).
+**Adopted:** retry/backoff (§5), `processing_lock` schema (§4), upload tracking via `synced_at` + orphan reconcile (§6.1 Phase 6), `skipped` status (§4), compression rules + cap (§8.1), pagination (§5), timezone (§10), log/version pruning (§6 P7), Phase-1 fallback/clock-skew guard (§6.1), lock timeout (§6.2), response validation (§5), read-from-archive to remove `text_content` runtime dependency (§1), example rows (§4), code references throughout, path↔title mapping table (§8.2).
 **Adopted-partial:** "single point of failure" in `stage_update` — kept as intentional per-run atomicity (§7); journal size limits — cap + re-summarize (§6.1 P2).
 **Deferred (future):** broader PII detection (§9), soft-delete of conversations (journal is the record; skipped convs already survive), systemd restart policy (§11 optional).
 **Rejected as out-of-scope for a single-family deployment (§0):** encryption-at-rest / secrets manager, row-level security, `audit_log` (versioning covers it), circuit breaker / DLQ / transactional-outbox, Prometheus, chaos/load testing at 10k, parallelized summarization, `LONGTEXT`, hash-collision/version-overflow handling.

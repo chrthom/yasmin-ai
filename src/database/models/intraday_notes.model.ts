@@ -138,7 +138,7 @@ export async function claimNoteDelivery(noteId: number, username: string): Promi
 /**
  * Returns the highest intraday_notes id currently in the table (0 when empty). The nightly
  * consolidation snapshot is bounded by this id: notes staged after it are not yet part of the
- * snapshot and must survive the phase-6.5 reset.
+ * snapshot and must survive the phase-8 reset.
  *
  * @returns The current MAX(id), or 0 when the table is empty.
  * @throws The underlying error when the query fails.

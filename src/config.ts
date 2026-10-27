@@ -80,7 +80,10 @@ export const config = {
     // Cap on the sequential tool-calling loop in the live agent; a warning is logged when hit.
     maxToolCalls: 5,
     // Without this optional agent the handoff degrades to replaying just the last turns.
-    summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', '')
+    summarizerAgentId: optionalEnv('AGENT_ID_SUMMARIZER', ''),
+    // Optional: dedicated Mistral agent for the nightly dream phase. The dream agent may be narrative;
+    // without it the dream generation falls back to the structured nightly agent with a creative prompt.
+    dreamAgentId: optionalEnv('AGENT_ID_DREAM', '')
   },
   context: {
     familyNotesTitle: 'Family notes',
@@ -154,7 +157,15 @@ export const config = {
     maxIterations: parseClampedEnvInt('NIGHTLY_MAX_ITERATIONS', 25, 1, 200),
     archiveKeepVersions: 10,
     eagerMaxChars: 10000,
-    watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000
+    watermarkStalenessMs: 10 * 24 * 60 * 60 * 1000,
+    // Dream phase cadence: a nightly probability of ~0.35 yields 2-3 dreams per week on average;
+    // once the gap since the last dream reaches dreamMaxGapDays the next night always dreams, so an
+    // unlucky random streak can never starve the mechanism.
+    dreamProbabilityPerNight: 0.35,
+    dreamMaxGapDays: 4,
+    // Only journals at least this old may become dream sources (dissociation: widely separated
+    // memories generate the non-trivial, cross-cutting connections the dream phase is after).
+    dreamMinSourceAgeDays: 7
   }
 } as const;
 
