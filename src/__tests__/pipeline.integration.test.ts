@@ -75,55 +75,64 @@ jest.mock('../nightly/reflection', () => ({
   runCompact: jest.fn()
 }));
 
-jest.mock('../nightly/dream', () => ({
-  DREAM_REFLECTION_PATH: 'self-reflection/dreams.md',
-  appendDreamReflection: jest.fn(
-    (current: string | null, dateStr: string, reflection: string) =>
-      (current === null ? '' : current + '\n\n') + '## Traum vom ' + dateStr + '\n\n' + reflection
-  ),
-  dreamFilePath: jest.fn((now: Date) => {
-    const y = now.getUTCFullYear();
-    const m = String(now.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(now.getUTCDate()).padStart(2, '0');
-    return `journals/dreams/${y}-${m}-${d}.md`;
-  }),
-  dreamDateFromPath: jest.fn((filePath: string) => {
-    const prefix = 'journals/dreams/';
-    if (!filePath.startsWith(prefix) || !filePath.endsWith('.md')) {
-      return null;
-    }
-    // Mirrors the real module's date-shape guard so a regression of that guard is visible here.
-    const stem = filePath.slice(prefix.length, -'.md'.length);
-    return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
-  }),
-  hasReflectionForDate: jest.fn(
-    (current: string | null, dateStr: string) =>
-      current !== null && current.includes('## Traum vom ' + dateStr)
-  ),
-  findUnreflectedDream: jest.fn((currentVersions: any[], reflectionContent: string | null) => {
-    const prefix = 'journals/dreams/';
-    const dreams = currentVersions
-      .filter(
-        (row: any) =>
-          row.filePath.startsWith(prefix) &&
-          row.filePath.endsWith('.md') &&
-          /^\d{4}-\d{2}-\d{2}$/.test(row.filePath.slice(prefix.length, -'.md'.length))
-      )
-      .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
-    for (const dream of dreams) {
-      const dateStr = dream.filePath.slice(prefix.length, -'.md'.length);
-      if (reflectionContent === null || !reflectionContent.includes('## Traum vom ' + dateStr)) {
-        return dream;
+jest.mock('../nightly/dream', () => {
+  // The soft-evidence extraction (recentDreamReflections) is exercised through the REAL
+  // implementation -- the fold-in tests assert its actual trimming behavior -- while the
+  // agent-calling and cadence functions stay mocked to keep Phase 5 controllable.
+  const actualDream = jest.requireActual('../nightly/dream');
+  return {
+    DREAM_EVIDENCE_HEADER: actualDream.DREAM_EVIDENCE_HEADER,
+    DREAM_EVIDENCE_MAX_CHARS: actualDream.DREAM_EVIDENCE_MAX_CHARS,
+    recentDreamReflections: actualDream.recentDreamReflections,
+    DREAM_REFLECTION_PATH: 'self-reflection/dreams.md',
+    appendDreamReflection: jest.fn(
+      (current: string | null, dateStr: string, reflection: string) =>
+        (current === null ? '' : current + '\n\n') + '## Traum vom ' + dateStr + '\n\n' + reflection
+    ),
+    dreamFilePath: jest.fn((now: Date) => {
+      const y = now.getUTCFullYear();
+      const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(now.getUTCDate()).padStart(2, '0');
+      return `journals/dreams/${y}-${m}-${d}.md`;
+    }),
+    dreamDateFromPath: jest.fn((filePath: string) => {
+      const prefix = 'journals/dreams/';
+      if (!filePath.startsWith(prefix) || !filePath.endsWith('.md')) {
+        return null;
       }
-    }
-    return null;
-  }),
-  findLastDreamAt: jest.fn(),
-  runDream: jest.fn(),
-  runDreamReflection: jest.fn(),
-  selectDreamSources: jest.fn(),
-  shouldDreamTonight: jest.fn()
-}));
+      // Mirrors the real module's date-shape guard so a regression of that guard is visible here.
+      const stem = filePath.slice(prefix.length, -'.md'.length);
+      return /^\d{4}-\d{2}-\d{2}$/.test(stem) ? stem : null;
+    }),
+    hasReflectionForDate: jest.fn(
+      (current: string | null, dateStr: string) =>
+        current !== null && current.includes('## Traum vom ' + dateStr)
+    ),
+    findUnreflectedDream: jest.fn((currentVersions: any[], reflectionContent: string | null) => {
+      const prefix = 'journals/dreams/';
+      const dreams = currentVersions
+        .filter(
+          (row: any) =>
+            row.filePath.startsWith(prefix) &&
+            row.filePath.endsWith('.md') &&
+            /^\d{4}-\d{2}-\d{2}$/.test(row.filePath.slice(prefix.length, -'.md'.length))
+        )
+        .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime());
+      for (const dream of dreams) {
+        const dateStr = dream.filePath.slice(prefix.length, -'.md'.length);
+        if (reflectionContent === null || !reflectionContent.includes('## Traum vom ' + dateStr)) {
+          return dream;
+        }
+      }
+      return null;
+    }),
+    findLastDreamAt: jest.fn(),
+    runDream: jest.fn(),
+    runDreamReflection: jest.fn(),
+    selectDreamSources: jest.fn(),
+    shouldDreamTonight: jest.fn()
+  };
+});
 jest.mock('../mistral/mistral_api', () => ({
   listConversations: jest.fn(),
   getConversationMessages: jest.fn(),
@@ -1314,6 +1323,109 @@ describe('nightly pipeline integration', () => {
     await runNightlyPipeline();
     const moodRow = await archive.getCurrentVersion('self-reflection/mood.md');
     expect(moodRow!.version).toBe(seeded.version);
+  });
+
+  // -------------------------------------------------------------------------
+  // 9d. Dream-reflection soft evidence in the yasmin compaction (issue #126)
+  // -------------------------------------------------------------------------
+
+  it('dream evidence: recent dream reflections ride along as soft evidence in the yasmin compaction source', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    await archive.seed(
+      'self-reflection/dreams.md',
+      '## Traum vom 2026-10-01\n\nErste Reflexion.\n\n## Traum vom 2026-10-05\n\nDer Traum hat mich an meine Ungeduld erinnert.'
+    );
+
+    await runNightlyPipeline();
+
+    // Phase 5 must not have touched the seeded reflections (no dream tonight, none unreflected):
+    // the fold-in below reads exactly what the dream phase wrote on earlier nights.
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall).toBeDefined();
+    expect(yasminCall![2]).toContain('Ich bin Yasmin.');
+    expect(yasminCall![2]).toContain('## My reflections on my dreams');
+    expect(yasminCall![2]).toContain('Traum vom 2026-10-01');
+    expect(yasminCall![2]).toContain('Ungeduld');
+  });
+
+  it('dream evidence: without a dreams.md row the yasmin compaction source carries no dream section', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+
+    await runNightlyPipeline();
+
+    const yasminCall = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin');
+    expect(yasminCall).toBeDefined();
+    expect(yasminCall![2]).not.toContain('My reflections on my dreams');
+  });
+
+  it('dream evidence: a [PRIVACY:SENSITIVE] passage in the reflections never reaches the compactor', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    await archive.seed(
+      'self-reflection/dreams.md',
+      '## Traum vom 2026-10-05\n\nOeffentliche Reflexion.\n[PRIVACY:SENSITIVE]\nGeheimes: ich traume von R.\n[/PRIVACY:SENSITIVE]'
+    );
+
+    await runNightlyPipeline();
+
+    const compactSource = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin')![2];
+    expect(compactSource).toContain('Oeffentliche Reflexion.');
+    expect(compactSource).not.toContain('PRIVACY:SENSITIVE');
+    expect(compactSource).not.toContain('Geheimes');
+  });
+
+  it('dream evidence: only the most recent entries are passed once dreams.md exceeds the evidence cap', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    const longEntry = (date: string, text: string) =>
+      '## Traum vom ' + date + '\n\n' + text + 'x'.repeat(3000);
+    await archive.seed(
+      'self-reflection/dreams.md',
+      [
+        longEntry('2026-09-01', 'Alte Reflexion.'),
+        longEntry('2026-10-01', 'Mittlere Reflexion.'),
+        longEntry('2026-10-05', 'Neue Reflexion.')
+      ].join('\n\n')
+    );
+
+    await runNightlyPipeline();
+
+    // The mock factory passes the REAL recentDreamReflections through, so this asserts the actual
+    // trimming: the cap (4000) fits one ~3000-char entry but not two, so only the newest survives.
+    const compactSource = mockRunCompact.mock.calls.find(call => call[0] === 'yasmin')![2];
+    expect(compactSource).toContain('Neue Reflexion.');
+    expect(compactSource).not.toContain('Alte Reflexion.');
+    expect(compactSource).not.toContain('Mittlere Reflexion.');
+  });
+
+  it('dream evidence: people/ and family compaction sources never see dream material (the fact gate)', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    await archive.seed('self-reflection/profile.md', 'Ich bin Yasmin.');
+    await archive.seed('people/bob.md', 'Bobs Profil.');
+    await archive.seed('general/family.md', 'Familiennotizen.');
+    await archive.seed('self-reflection/dreams.md', '## Traum vom 2026-10-05\n\nReflexion ueber den Traum.');
+
+    await runNightlyPipeline();
+
+    // The deliberate asymmetry (issue #126): dream reflections flow into Profile of Yasmin ONLY
+    // -- people/ and general/ files keep receiving dream-derived insights exclusively through the
+    // normal integrate/review chain, so their compaction inputs must stay dream-free.
+    const personCall = mockRunCompact.mock.calls.find(call => call[0] === 'person');
+    expect(personCall).toBeDefined();
+    expect(personCall![2]).not.toContain('My reflections on my dreams');
+    expect(personCall![2]).not.toContain('Reflexion ueber den Traum.');
+    const familyCall = mockRunCompact.mock.calls.find(call => call[0] === 'family');
+    expect(familyCall).toBeDefined();
+    expect(familyCall![2]).not.toContain('My reflections on my dreams');
+    expect(familyCall![2]).not.toContain('Reflexion ueber den Traum.');
+    // dreams.md itself has no context_entries mapping: no eager entry is created for it either.
+    const titlesUpserted = mockUpsertContextEntry.mock.calls.map(call => call[0]);
+    expect(titlesUpserted).toHaveLength(3);
+    expect(titlesUpserted).toEqual(
+      expect.arrayContaining(['Profile of Yasmin', 'Profile of Bob', 'Family notes'])
+    );
   });
 
   // -------------------------------------------------------------------------

@@ -147,6 +147,15 @@ that this cache is regenerated from every night:
 (`journals/<name>/<conversation-id>.md` also lives in `memory_archive` as an intermediate artifact of the
 nightly pipeline, but has no mapping to a `context_entries` title or the Mistral library.)
 
+`self-reflection/dreams.md` — Yasmin's dated, append-only reflections on her dreams — likewise has no
+`context_entries` title of its own (it is RAG-searchable via the Mistral library), with one deliberate
+asymmetry: dream-derived _facts_ reach `people/` and `general/` profiles only through the normal
+integrate/review chain (i.e. when a later journal mentions them), but the _self-concept_ in her dream
+reflections flows one-way into the compacted `Profile of Yasmin` as soft evidence — Phase 7 folds the
+file's most recent, privacy-stripped entries into the profile compaction, and the compaction prompt forces
+dream-derived material to be marked as such (e.g. "aus einem Traum"), never stated as a standalone fact.
+See `docs/nightly_memory_processing_implementation.md` §6.1 (dream wiring note).
+
 ### How it's populated and read
 
 - **Written by:** the nightly job only — every run re-reads that day's conversations, updates the relevant

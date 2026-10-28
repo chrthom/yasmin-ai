@@ -277,3 +277,55 @@ export function appendDreamReflection(
   }
   return currentContent.trimEnd() + '\n\n' + entry;
 }
+
+// ---------------------------------------------------------------------------
+// Phase-7 soft evidence -- how Yasmin reflects on her dreams is first-person
+// self-concept material and may flow (marked as dream-derived, never as fact)
+// into the compacted Profile of Yasmin; dream FACTS stay gated behind the
+// normal integrate/review chain (issue #126).
+// ---------------------------------------------------------------------------
+
+/** Section header the Phase-7 fold-in prepends to the dream-reflection soft evidence */
+export const DREAM_EVIDENCE_HEADER = '## My reflections on my dreams';
+
+/** Soft cap on the dream-reflection soft evidence: the file is append-only and grows forever, so
+ *  without a bound the yasmin compaction prompt would grow with it (each entry is <= 2000 chars,
+ *  so this keeps roughly the last 2-3 reflections). */
+export const DREAM_EVIDENCE_MAX_CHARS = 4000;
+
+/**
+ * Picks the most recent whole entries of the append-only reflection file, bounded by a soft char
+ * cap. Entries are taken from the end (newest last) while they fit; the newest entry is always
+ * kept even when it alone exceeds the cap, so the evidence never drops to nothing.
+ *
+ * @param content The current self-reflection/dreams.md content.
+ * @param maxChars The soft cap on the returned evidence.
+ * @returns The trailing entries joined with blank lines, or '' for empty content.
+ */
+export function recentDreamReflections(content: string, maxChars: number): string {
+  const trimmed = content.trim();
+  if (trimmed.length === 0) {
+    return '';
+  }
+
+  // Entries are the dated '## Traum vom <date>' blocks appendDreamReflection writes; content
+  // without any header (not produced by the pipeline, but possible in a hand-repaired file) is
+  // treated as one single entry so it is still considered instead of silently dropped.
+  const entries = trimmed
+    .split(/^## /m)
+    .map((part, index) => (index === 0 ? part : '## ' + part.trim()))
+    .map(part => part.trim())
+    .filter(part => part.length > 0);
+
+  const selected: string[] = [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const candidate = [entries[i], ...selected].join('\n\n');
+    // The newest entry (first iteration) is always kept -- only an OLDER entry may push the
+    // evidence over the cap, and then it (and everything older) is dropped whole.
+    if (selected.length > 0 && candidate.length > maxChars) {
+      break;
+    }
+    selected.unshift(entries[i]);
+  }
+  return selected.join('\n\n');
+}
