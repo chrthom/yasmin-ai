@@ -745,4 +745,20 @@ describe('reflection', () => {
       expect(prompt).toContain('mood, active goals, and personality before everything else');
     });
   });
+
+  describe('compactPrompt: dream-reflection soft evidence (issue #126)', () => {
+    it('tells the yasmin compaction to mark dream-derived material and never state it as fact', () => {
+      const prompt = compactPrompt('yasmin', undefined, 'content');
+      expect(prompt).toContain('## My reflections on my dreams');
+      expect(prompt).toContain('SOFT evidence');
+      expect(prompt).toContain('aus einem Traum');
+      expect(prompt).toContain('never stated as a standalone fact');
+    });
+
+    it('keeps the person and family compaction prompts free of dream instructions', () => {
+      // The fact gate: only Yasmin's own profile compaction draws on dream reflections.
+      expect(compactPrompt('person', 'Alice', 'content')).not.toContain('My reflections on my dreams');
+      expect(compactPrompt('family', undefined, 'content')).not.toContain('My reflections on my dreams');
+    });
+  });
 });

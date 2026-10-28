@@ -27,6 +27,8 @@ jest.mock('../mistral/mistral_api', () => ({
 
 import { askAgent, deleteConversation } from '../mistral/mistral_api';
 import {
+  DREAM_EVIDENCE_HEADER,
+  DREAM_EVIDENCE_MAX_CHARS,
   DREAM_REFLECTION_PATH,
   appendDreamReflection,
   dreamDateFromPath,
@@ -36,6 +38,7 @@ import {
   findUnreflectedDream,
   hasReflectionForDate,
   findLastDreamAt,
+  recentDreamReflections,
   runDream,
   runDreamReflection,
   selectDreamSources,
@@ -326,6 +329,58 @@ describe('nightly/dream', () => {
     it('uses the self-reflection path constant', () => {
       expect(DREAM_REFLECTION_PATH).toBe('self-reflection/dreams.md');
       expect(dreamReflectionHeader('2026-10-01')).toBe('## Traum vom 2026-10-01');
+    });
+  });
+
+  describe('recentDreamReflections (Phase-7 soft evidence, issue #126)', () => {
+    it('returns empty evidence for empty content, so the fold-in is skipped', () => {
+      expect(recentDreamReflections('', DREAM_EVIDENCE_MAX_CHARS)).toBe('');
+      expect(recentDreamReflections('   \n  ', DREAM_EVIDENCE_MAX_CHARS)).toBe('');
+    });
+
+    it('returns every entry unchanged while the whole file fits the cap', () => {
+      const content = appendDreamReflection(
+        appendDreamReflection(null, '2026-10-01', 'Erste Reflexion.'),
+        '2026-10-05',
+        'Zweite Reflexion.'
+      );
+      expect(recentDreamReflections(content, DREAM_EVIDENCE_MAX_CHARS)).toBe(content.trim());
+    });
+
+    it('drops the OLDEST whole entries first once the cap is exceeded', () => {
+      const content = [
+        appendDreamReflection(null, '2026-10-01', 'Erste Reflexion.'),
+        appendDreamReflection(null, '2026-10-02', 'Zweite Reflexion.'),
+        appendDreamReflection(null, '2026-10-03', 'Dritte Reflexion.')
+      ]
+        .map(entry => entry + 'x'.repeat(200))
+        .join('\n\n');
+      // Each entry is ~240 chars: one fits the 500 cap, two (~484) still fit, three (~727) do
+      // not -- so only the two newest entries may survive, whole and in order.
+      const evidence = recentDreamReflections(content, 500);
+      expect(evidence).toContain('2026-10-02');
+      expect(evidence).toContain('2026-10-03');
+      expect(evidence).toContain('Zweite Reflexion.');
+      expect(evidence).toContain('Dritte Reflexion.');
+      expect(evidence).not.toContain('2026-10-01');
+      expect(evidence).not.toContain('Erste Reflexion.');
+    });
+
+    it('always keeps the newest entry even when it alone exceeds the cap', () => {
+      const content = appendDreamReflection(null, '2026-10-05', 'Neueste Reflexion. ' + 'x'.repeat(600));
+      expect(recentDreamReflections(content, 100)).toContain('Neueste Reflexion.');
+    });
+
+    it('treats header-less content as one single entry instead of dropping it', () => {
+      // Not produced by the pipeline, but a hand-repaired file must still be considered.
+      expect(recentDreamReflections('Nur Text ohne Header.', 10)).toBe('Nur Text ohne Header.');
+    });
+
+    it('exposes the fold-in section header the compaction prompt refers to', () => {
+      // The prompt template names this exact section; a rename must stay in sync with
+      // compact_yasmin_prompt.txt (pinned by reflection.test.ts).
+      expect(DREAM_EVIDENCE_HEADER).toBe('## My reflections on my dreams');
+      expect(DREAM_EVIDENCE_MAX_CHARS).toBeGreaterThan(0);
     });
   });
 

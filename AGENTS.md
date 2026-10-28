@@ -71,7 +71,8 @@ src/
 │   ├── privacy.ts     # [PRIVACY:SENSITIVE] stripping + eager-cache compaction size cap
 │   ├── dream.ts       # Dream phase (2-3x/week): 2-3 random old journals -> dream agent ->
 │   │                  #   reflection with Yasmin's conversation persona (journals/dreams/<date>.md
-│   │                  #   + append-only self-reflection/dreams.md)
+│   │                  #   + append-only self-reflection/dreams.md), plus the Phase-7 fold-in of the
+│   │                  #   most recent reflections into the yasmin compaction as marked soft evidence
 │   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
 │   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
 │   │                  #   overrides the agent's updatedAt
@@ -166,7 +167,7 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 - **`ChatAgent`** (`src/chat_agent.ts`): Core LLM integration. Manages conversation lifecycle (create/new), dynamically tracks `loadedContextTitles` per active session, formats/prepends static context, and executes sequential Tool Calling loops for lazy-loading. Read-only for memory (see above); on a restart it prepends the handoff block built by `src/handoff.ts`.
 - **`ContextService`** (`src/services/context.service.ts`): Handles loading matching documents, loading mandatory static grounding entries, filtering out duplicates, and formatting them into XML.
 - **`MistralApi`** (`src/mistral/mistral_api.ts`): Low-level Mistral HTTP client (conversations, documents, library) with retry/pagination, used by the nightly pipeline and by the handoff (`src/handoff.ts`: reading the old conversation, the one-shot summarizer call) — separate from `ChatAgent`'s own inline `fetch` calls for the live conversation.
-- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `mood.ts` implements Yasmin's daily mood layer (`self-reflection/mood.md`): the machine-readable header, deterministic exponential decay toward neutral (run nightly before the upload phase, no agent call), the archive stamp that overrides the agent-supplied `updatedAt`, and the privacy-guarded fold-in of the current mood into the compacted `Profile of Yasmin`; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files, `general/topic-index.md`, and `self-reflection/mood.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt); `run.ts` is the CLI entry point (run via ts-node from source).
+- **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `mood.ts` implements Yasmin's daily mood layer (`self-reflection/mood.md`): the machine-readable header, deterministic exponential decay toward neutral (run nightly before the upload phase, no agent call), the archive stamp that overrides the agent-supplied `updatedAt`, and the privacy-guarded fold-in of the current mood into the compacted `Profile of Yasmin`; `dream.ts` implements the nightly dream phase (dream generation plus Yasmin's own dated, append-only reflections in `self-reflection/dreams.md`) and the Phase-7 fold-in of the most recent dream reflections into the compacted `Profile of Yasmin` as soft evidence — marked as dream-derived ("aus einem Traum"), never standalone facts; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files, `general/topic-index.md`, `self-reflection/mood.md`, and `self-reflection/dreams.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt; mood and dream reflections reach the turn-1 prompt only through the fold-ins into the compacted `Profile of Yasmin`); `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
 
@@ -201,7 +202,9 @@ At a high level, each run:
    privacy-stripped journals into a dream (archived to `journals/dreams/<date>.md`, RAG-searchable),
    which Yasmin's conversation persona then reflects on herself; the dated reflection is appended to the
    append-only `self-reflection/dreams.md`. Resumable like every phase: no double dream, no duplicated
-   reflection after a crash between the two stages.
+   reflection after a crash between the two stages. How Yasmin reflects on her dreams is first-person
+   self-concept material — it reaches `Profile of Yasmin` via the Phase-7 soft-evidence fold-in (see 7),
+   never the factual profiles directly.
 6. **Uploads** changed files, with `[PRIVACY:SENSITIVE]` content already stripped, to a Mistral knowledge
    library (`MISTRAL_LIBRARY_ID`) that the live conversation agent can search via RAG for deeper facts and
    history, and deletes any orphaned library documents. Sensitive passages never leave local storage —
@@ -212,7 +215,13 @@ At a high level, each run:
    deleted.)
 7. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
-   so the small, fast, sensitive-free eager set always reflects the latest long-term memory.
+   so the small, fast, sensitive-free eager set always reflects the latest long-term memory. The
+   `Profile of Yasmin` compaction additionally folds in the current mood and the most recent dream
+   reflections (`self-reflection/dreams.md`) as soft evidence — dream-derived material is always marked as
+   such (e.g. "aus einem Traum") and never promoted to standalone facts. That asymmetry is deliberate:
+   dream FACTS reach `people/` and `general/` profiles only through the normal integrate/review chain
+   (i.e. when a later journal mentions them), while the self-concept from dream reflections flows one-way
+   into `self-reflection/profile.md`.
 8. **Resets the pending-notes outbox** (after consolidation succeeded, the day's intraday notes have
    served their purpose).
 9. **Cleans up**: deletes the now-processed Mistral conversations and prunes old `memory_archive` versions
