@@ -164,9 +164,9 @@ export async function runJournal(userName: string, transcript: string): Promise<
           role: 'user',
           content:
             journalPrompt(userName, transcript) +
-            '\n\nYour previous answer was empty. Do not use any tools and do not call any'
-            + ' functions for this task -- tools are not available here. Write the journal entry as'
-            + ' your plain text answer now.'
+            '\n\nYour previous answer was empty. Do not use any tools and do not call any' +
+            ' functions for this task -- tools are not available here. Write the journal entry as' +
+            ' your plain text answer now.'
         }
       ],
       store: false
