@@ -1,11 +1,6 @@
 import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
-import {
-  askAgent,
-  runAgentToolLoop,
-  logEmptyAgentReply,
-  ConversationMessage
-} from '../mistral/mistral_api';
+import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
