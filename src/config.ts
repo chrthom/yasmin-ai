@@ -105,6 +105,13 @@ export const config = {
   },
   synology: {
     chatIncomingUrl: 'https://thomsen.in/chat/webapi/entry.cgi',
+    history: {
+      prevCount: 10,
+      botUserId: Number(process.env['CHAT_BOT_USER_ID'] || 0) || 0,
+      slashPrefix: '/yasmin',
+      fetchTimeoutMs: 5000,
+      transcriptMaxCharsPerMessage: 1500
+    },
     tokens: {
       get bot(): string {
         return requiredEnv('CHAT_TOKEN_BOT');
@@ -194,5 +201,11 @@ export function validateEnv(options: ValidateEnvOptions = {}): void {
   if (missing.length > 0) {
     missing.forEach(key => console.error(`ERROR: Missing required environment variable: ${key}`));
     process.exit(1);
+  }
+
+  if (!Number(process.env['CHAT_BOT_USER_ID'])) {
+    console.warn(
+      "WARNING: CHAT_BOT_USER_ID is not set or not a number; the bot's own replies cannot be excluded from group channel history."
+    );
   }
 }

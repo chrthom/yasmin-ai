@@ -88,6 +88,27 @@ describe('validateEnv', () => {
     }
   });
 
+  it('warns when CHAT_BOT_USER_ID is unset or non-numeric', () => {
+    setAll('set');
+    process.env['CHAT_BOT_USER_ID'] = 'not-a-number';
+    const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      validateEnv();
+      expect(warn).toHaveBeenCalledWith(
+        "WARNING: CHAT_BOT_USER_ID is not set or not a number; the bot's own replies cannot be excluded from group channel history."
+      );
+      process.env['CHAT_BOT_USER_ID'] = '42';
+      warn.mockClear();
+      validateEnv();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      delete process.env['CHAT_BOT_USER_ID'];
+      exit.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it('does not require DB_PASSWORD by default', () => {
     setAll('set');
     const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);

@@ -5,6 +5,7 @@ import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
+import { stripChannelHistoryBlock } from '../channel_history';
 import { IntradayNote } from '../database/models/intraday_notes.model';
 
 export type { StagedUpdate };
@@ -72,7 +73,7 @@ export function buildTranscript(messages: ConversationMessage[]): string {
     if (!isDialogueMessage(message)) {
       continue;
     }
-    const text = stripHandoffBlock(extractMessageText(message.content));
+    const text = stripHandoffBlock(stripChannelHistoryBlock(extractMessageText(message.content)));
     if (text.length === 0) {
       continue;
     }

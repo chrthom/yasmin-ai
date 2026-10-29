@@ -1,4 +1,6 @@
 import { config } from './config';
+import { stripChannelHistoryBlock } from './channel_history';
+import { PROTOCOL_TAG } from './protocol_tags';
 
 /**
  * Single source of truth for the XML protocol tags the live agent injects into user prompts,
@@ -6,14 +8,7 @@ import { config } from './config';
  * cleanup regexes must never drift apart, so they are always derived from the names here.
  */
 
-const TAG = {
-  contextEntry: 'context_entry',
-  availableContextEntries: 'available_context_entries',
-  previousConversation: 'previous_conversation',
-  notes: 'nachrichten_fuer_dich',
-  summary: 'summary',
-  recentMessages: 'recent_messages'
-} as const;
+const TAG = PROTOCOL_TAG;
 
 /** Matches a full `<tag ...>...</tag>` block (non-greedy, attributes tolerated). */
 const blockRegex = (tag: string): RegExp => new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'g');
@@ -78,16 +73,16 @@ export const shortAnswerHint = (): string =>
   `Your answer must be shorter than ${config.chat.shortAnswerMaxChars} characters.`;
 
 /**
- * Removes everything the harness (not the user) injected into a stored user message: handoff
- * blocks, context entries, the title manifest, the "You are talking to" line, and the
- * short-answer hint built by shortAnswerHint() -- the hint regex is built from the same
+ * Removes everything the harness (not the user) injected into a stored user message: channel
+ * history, handoff blocks, context entries, the title manifest, the "You are talking to" line,
+ * and the short-answer hint built by shortAnswerHint() -- the hint regex is built from the same
  * config value (escaped), so prompt and cleanup can no longer drift apart.
  *
  * @param text The raw stored user message text.
  * @returns Only what the user actually wrote.
  */
 export const cleanStoredText = (text: string): string =>
-  text
+  stripChannelHistoryBlock(text)
     .replace(PREVIOUS_CONVERSATION_BLOCK_RE, '')
     .replace(AVAILABLE_CONTEXT_ENTRIES_BLOCK_RE, '')
     .replace(CONTEXT_ENTRY_BLOCK_RE, '')
