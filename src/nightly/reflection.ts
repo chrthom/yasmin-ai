@@ -107,10 +107,15 @@ export const JOURNAL_SOFT_CAP_CHARS: number = config.nightly.journalSoftCapChars
  *
  * @param userName The conversation partner's name.
  * @param transcript The capped transcript to journal.
+ * @param runDate The run date the entry should date events with (defaults to today in the nightly tz).
  * @returns The rendered prompt.
  */
-export function journalPrompt(userName: string, transcript: string): string {
-  return renderPrompt('journal_prompt.txt', { userName, transcript });
+export function journalPrompt(userName: string, transcript: string, runDate?: string): string {
+  return renderPrompt('journal_prompt.txt', {
+    userName,
+    transcript,
+    runDate: runDate ?? formatRunDate(new Date())
+  });
 }
 
 /**
