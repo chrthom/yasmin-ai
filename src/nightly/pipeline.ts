@@ -877,10 +877,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       } catch (error) {
         console.error('ERROR Failed to clear the intraday_notes outbox: ' + error);
       }
-    } else {
+    } else if (!notesConsolidated) {
       console.warn(
         'WARN Consolidation phases did not complete; keeping intraday_notes for the next nightly run'
       );
+    } else {
+      console.log('INFO intraday_notes outbox is empty; nothing to clear');
     }
 
     // -----------------------------------------------------------------------
