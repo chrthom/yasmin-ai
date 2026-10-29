@@ -22,7 +22,8 @@ jest.mock('../config', () => ({
 
 jest.mock('../mistral/mistral_api', () => ({
   askAgent: jest.fn(),
-  deleteConversation: jest.fn()
+  deleteConversation: jest.fn(),
+  logEmptyAgentReply: jest.fn()
 }));
 
 import { askAgent, deleteConversation } from '../mistral/mistral_api';
