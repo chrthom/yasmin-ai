@@ -527,7 +527,17 @@ export async function runAgentToolLoop(params: {
         try {
           args = JSON.parse(call.arguments);
         } catch (error) {
-          console.error('ERROR Failed to parse tool call arguments for ' + call.name + ': ' + error);
+          console.error(
+            'ERROR Failed to parse tool call arguments for ' +
+              call.name +
+              ': ' +
+              error +
+              ' (arguments length: ' +
+              call.arguments.length +
+              ' chars, tail: ' +
+              JSON.stringify(call.arguments.slice(-80)) +
+              ')'
+          );
           parseError = String(error);
         }
       } else {
@@ -535,10 +545,19 @@ export async function runAgentToolLoop(params: {
       }
 
       // The parse error rides back to the agent verbatim so it can actually correct the malformed
-      // arguments (often a truncated long string) instead of guessing at a generic "invalid".
+      // arguments (often a truncated long string) instead of guessing at a generic "invalid". When
+      // the payload looks truncated (no closing quote near the end), say so explicitly: the agent
+      // then knows to resend the full content instead of fiddling with the characters it can see.
+      const truncatedHint =
+        parseError !== null && typeof call.arguments === 'string' && !/"\s*[\]}]\s*$/.test(call.arguments)
+          ? ' The arguments appear TRUNCATED -- resend the complete content, do not abbreviate it.'
+          : '';
       const resultStr =
         parseError !== null
-          ? '{"error":"arguments were not valid JSON: ' + parseError.replace(/"/g, "'") + '"}'
+          ? '{"error":"arguments were not valid JSON: ' +
+            parseError.replace(/"/g, "'") +
+            truncatedHint +
+            '"}'
           : await executeTool(call.name, args);
 
       toolInputs.push({
