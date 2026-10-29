@@ -17,7 +17,8 @@ jest.mock('../config', () => ({
 
 jest.mock('../mistral/mistral_api', () => ({
   askAgent: jest.fn(),
-  runAgentToolLoop: jest.fn()
+  runAgentToolLoop: jest.fn(),
+  logEmptyAgentReply: jest.fn()
 }));
 
 import { askAgent, runAgentToolLoop } from '../mistral/mistral_api';

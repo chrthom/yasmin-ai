@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
-import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
+import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
@@ -122,13 +122,15 @@ export function journalPrompt(userName: string, transcript: string): string {
  * @throws Error when the agent returns an empty entry on both attempts.
  */
 export async function runJournal(userName: string, transcript: string): Promise<string> {
-  let text = (
-    await askAgent({
-      agentId: config.mistral.nightlyAgentId,
-      inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
-      store: false
-    })
-  ).outputText.trim();
+  const first = await askAgent({
+    agentId: config.mistral.nightlyAgentId,
+    inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
+    store: false
+  });
+  let text = first.outputText.trim();
+  if (text.length === 0) {
+    logEmptyAgentReply('journal for ' + userName + ', attempt 1', first);
+  }
 
   // An empty reply is always a failed generation, not "nothing to say": retry once, then throw so the
   // conversation is reprocessed next night instead of persisting an empty journal file.
@@ -140,12 +142,17 @@ export async function runJournal(userName: string, transcript: string): Promise<
           role: 'user',
           content:
             journalPrompt(userName, transcript) +
-            '\n\nYour previous answer was empty. Write the journal entry now.'
+            '\n\nYour previous answer was empty. Do not use any tools and do not call any' +
+            ' functions for this task -- tools are not available here. Write the journal entry as' +
+            ' your plain text answer now.'
         }
       ],
       store: false
     });
     text = retry.outputText.trim();
+    if (text.length === 0) {
+      logEmptyAgentReply('journal for ' + userName + ', attempt 2', retry);
+    }
     if (text.length === 0) {
       throw new Error('Journal agent returned an empty entry for ' + userName + ' on both attempts');
     }
@@ -512,8 +519,14 @@ export async function runReview(
       };
     }
     console.error('ERROR Malformed reviewer verdict for ' + update.path + ': ' + result.outputText);
+    if (result.outputText.trim().length === 0) {
+      logEmptyAgentReply('review verdict for ' + update.path, result);
+    }
   } catch (error) {
     console.error('ERROR Failed to parse reviewer verdict for ' + update.path + ': ' + error);
+    if (result.outputText.trim().length === 0) {
+      logEmptyAgentReply('review verdict for ' + update.path, result);
+    }
   }
 
   return { approved: false, reason: 'Could not parse reviewer verdict; rejecting as a safe default.' };
@@ -637,8 +650,14 @@ export async function reviseProposal(
     inputs
   });
 
+  const content = result.outputText.trim();
+  if (content.length === 0) {
+    logEmptyAgentReply('revision of ' + update.path, result);
+    throw new Error('Revision agent returned an empty replacement for ' + update.path);
+  }
+
   return {
-    content: result.outputText.trim(),
+    content,
     conversationId: result.conversationId || conversationId || ''
   };
 }
@@ -694,7 +713,9 @@ export async function runCompact(
     store: false
   });
   let text = first.outputText.trim();
-  if (!isOverCap(text, cap)) {
+  if (text.length === 0) {
+    logEmptyAgentReply('compaction of kind=' + kind + ' (first attempt)', first);
+  } else if (!isOverCap(text, cap)) {
     return text;
   }
 
@@ -709,6 +730,9 @@ export async function runCompact(
     store: false
   });
   text = second.outputText.trim();
+  if (text.length === 0) {
+    logEmptyAgentReply('compaction of kind=' + kind + ' (over-cap retry)', second);
+  }
 
   if (isOverCap(text, cap)) {
     console.warn(
