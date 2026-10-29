@@ -373,6 +373,26 @@ export interface AgentCallResult {
   rawOutputs: unknown[];
 }
 
+/**
+ * Diagnostics for an agent reply that parsed to no text: the parsed text alone cannot distinguish
+ * a tool-call-only reply, a guardrail block, or an unexpected output shape -- all look "empty".
+ * Logs the parsed tool calls and the raw outputs so the next occurrence is diagnosable from the
+ * container log alone.
+ *
+ * @param context What the caller was asking the agent for (e.g. "journal for Alice, attempt 1").
+ * @param result The raw agent call result that yielded no text.
+ */
+export function logEmptyAgentReply(context: string, result: AgentCallResult): void {
+  console.error(
+    'ERROR Agent reply for ' +
+      context +
+      ' contained no text. Tool calls: ' +
+      JSON.stringify(result.toolCalls) +
+      '. Raw outputs: ' +
+      JSON.stringify(result.rawOutputs)
+  );
+}
+
 const OutputContentPartResponseSchema = z
   .object({
     type: z.string(),

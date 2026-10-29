@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { askAgent, deleteConversation } from '../mistral/mistral_api';
+import { askAgent, deleteConversation, logEmptyAgentReply } from '../mistral/mistral_api';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { MemoryArchiveRow } from '../database/models/memory_archive.model';
 
@@ -153,6 +153,7 @@ export async function runDream(sources: MemoryArchiveRow[]): Promise<string> {
     // An empty reply (e.g. a tool call with no text) would persist an empty dream file that the
     // per-date existence guard then treats as done forever. Fail the phase instead so the run is
     // marked 'partial' and the dream is retried on the next invocation.
+    logEmptyAgentReply('dream generation', result);
     throw new Error('Dream agent returned an empty dream');
   }
   if (isOverCap(text, DREAM_SOFT_CAP_CHARS)) {
@@ -203,6 +204,7 @@ export async function runDreamReflection(dream: string): Promise<string> {
   if (text.length === 0) {
     // Same rationale as runDream: an empty reply would append an empty dated entry whose header
     // then blocks every retry. Fail the phase so it is re-run.
+    logEmptyAgentReply('dream reflection', result);
     throw new Error('Dream reflection agent returned an empty reflection');
   }
   if (isOverCap(text, DREAM_REFLECTION_SOFT_CAP_CHARS)) {

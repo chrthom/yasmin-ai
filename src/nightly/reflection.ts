@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
-import { askAgent, runAgentToolLoop, AgentCallResult, ConversationMessage } from '../mistral/mistral_api';
+import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
@@ -114,28 +114,6 @@ export function journalPrompt(userName: string, transcript: string): string {
 }
 
 /**
- * Diagnostics for an empty journal attempt: the parsed outputText alone cannot distinguish a
- * tool-call-only reply, a guardrail block, or an unexpected output shape -- all look "empty".
- * Logs the raw outputs so the next occurrence is diagnosable from the container log alone.
- *
- * @param userName The conversation partner's name.
- * @param attempt The 1-based attempt number.
- * @param result The raw agent call result that yielded no text.
- */
-function logEmptyJournalReply(userName: string, attempt: number, result: AgentCallResult): void {
-  console.error(
-    'ERROR Journal attempt ' +
-      attempt +
-      ' for ' +
-      userName +
-      ' returned no text. Tool calls: ' +
-      JSON.stringify(result.toolCalls) +
-      '. Raw outputs: ' +
-      JSON.stringify(result.rawOutputs)
-  );
-}
-
-/**
  * Runs the Phase-2 journal call for one conversation, with one tighter retry and a truncation safety net
  *
  * @param userName The conversation partner's name.
@@ -151,7 +129,7 @@ export async function runJournal(userName: string, transcript: string): Promise<
   });
   let text = first.outputText.trim();
   if (text.length === 0) {
-    logEmptyJournalReply(userName, 1, first);
+    logEmptyAgentReply('journal for ' + userName + ', attempt 1', first);
   }
 
   // An empty reply is always a failed generation, not "nothing to say": retry once, then throw so the
@@ -173,7 +151,7 @@ export async function runJournal(userName: string, transcript: string): Promise<
     });
     text = retry.outputText.trim();
     if (text.length === 0) {
-      logEmptyJournalReply(userName, 2, retry);
+      logEmptyAgentReply('journal for ' + userName + ', attempt 2', retry);
     }
     if (text.length === 0) {
       throw new Error('Journal agent returned an empty entry for ' + userName + ' on both attempts');
@@ -541,8 +519,14 @@ export async function runReview(
       };
     }
     console.error('ERROR Malformed reviewer verdict for ' + update.path + ': ' + result.outputText);
+    if (result.outputText.trim().length === 0) {
+      logEmptyAgentReply('review verdict for ' + update.path, result);
+    }
   } catch (error) {
     console.error('ERROR Failed to parse reviewer verdict for ' + update.path + ': ' + error);
+    if (result.outputText.trim().length === 0) {
+      logEmptyAgentReply('review verdict for ' + update.path, result);
+    }
   }
 
   return { approved: false, reason: 'Could not parse reviewer verdict; rejecting as a safe default.' };
@@ -666,8 +650,14 @@ export async function reviseProposal(
     inputs
   });
 
+  const content = result.outputText.trim();
+  if (content.length === 0) {
+    logEmptyAgentReply('revision of ' + update.path, result);
+    throw new Error('Revision agent returned an empty replacement for ' + update.path);
+  }
+
   return {
-    content: result.outputText.trim(),
+    content,
     conversationId: result.conversationId || conversationId || ''
   };
 }
@@ -723,7 +713,9 @@ export async function runCompact(
     store: false
   });
   let text = first.outputText.trim();
-  if (!isOverCap(text, cap)) {
+  if (text.length === 0) {
+    logEmptyAgentReply('compaction of kind=' + kind + ' (first attempt)', first);
+  } else if (!isOverCap(text, cap)) {
     return text;
   }
 
@@ -738,6 +730,9 @@ export async function runCompact(
     store: false
   });
   text = second.outputText.trim();
+  if (text.length === 0) {
+    logEmptyAgentReply('compaction of kind=' + kind + ' (over-cap retry)', second);
+  }
 
   if (isOverCap(text, cap)) {
     console.warn(
