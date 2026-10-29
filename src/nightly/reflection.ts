@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
-import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
+import { askAgent, runAgentToolLoop, AgentCallResult, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
@@ -114,6 +114,28 @@ export function journalPrompt(userName: string, transcript: string): string {
 }
 
 /**
+ * Diagnostics for an empty journal attempt: the parsed outputText alone cannot distinguish a
+ * tool-call-only reply, a guardrail block, or an unexpected output shape -- all look "empty".
+ * Logs the raw outputs so the next occurrence is diagnosable from the container log alone.
+ *
+ * @param userName The conversation partner's name.
+ * @param attempt The 1-based attempt number.
+ * @param result The raw agent call result that yielded no text.
+ */
+function logEmptyJournalReply(userName: string, attempt: number, result: AgentCallResult): void {
+  console.error(
+    'ERROR Journal attempt ' +
+      attempt +
+      ' for ' +
+      userName +
+      ' returned no text. Tool calls: ' +
+      JSON.stringify(result.toolCalls) +
+      '. Raw outputs: ' +
+      JSON.stringify(result.rawOutputs)
+  );
+}
+
+/**
  * Runs the Phase-2 journal call for one conversation, with one tighter retry and a truncation safety net
  *
  * @param userName The conversation partner's name.
@@ -122,13 +144,15 @@ export function journalPrompt(userName: string, transcript: string): string {
  * @throws Error when the agent returns an empty entry on both attempts.
  */
 export async function runJournal(userName: string, transcript: string): Promise<string> {
-  let text = (
-    await askAgent({
-      agentId: config.mistral.nightlyAgentId,
-      inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
-      store: false
-    })
-  ).outputText.trim();
+  const first = await askAgent({
+    agentId: config.mistral.nightlyAgentId,
+    inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
+    store: false
+  });
+  let text = first.outputText.trim();
+  if (text.length === 0) {
+    logEmptyJournalReply(userName, 1, first);
+  }
 
   // An empty reply is always a failed generation, not "nothing to say": retry once, then throw so the
   // conversation is reprocessed next night instead of persisting an empty journal file.
@@ -140,12 +164,17 @@ export async function runJournal(userName: string, transcript: string): Promise<
           role: 'user',
           content:
             journalPrompt(userName, transcript) +
-            '\n\nYour previous answer was empty. Write the journal entry now.'
+            '\n\nYour previous answer was empty. Do not use any tools and do not call any'
+            + ' functions for this task -- tools are not available here. Write the journal entry as'
+            + ' your plain text answer now.'
         }
       ],
       store: false
     });
     text = retry.outputText.trim();
+    if (text.length === 0) {
+      logEmptyJournalReply(userName, 2, retry);
+    }
     if (text.length === 0) {
       throw new Error('Journal agent returned an empty entry for ' + userName + ' on both attempts');
     }
