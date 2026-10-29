@@ -501,20 +501,25 @@ export async function runAgentToolLoop(params: {
 
     for (const call of result.toolCalls) {
       let args: Record<string, unknown> = {};
-      let parseFailed = false;
+      let parseError: string | null = null;
 
       if (typeof call.arguments === 'string') {
         try {
           args = JSON.parse(call.arguments);
         } catch (error) {
           console.error('ERROR Failed to parse tool call arguments for ' + call.name + ': ' + error);
-          parseFailed = true;
+          parseError = String(error);
         }
       } else {
         args = call.arguments;
       }
 
-      const resultStr = parseFailed ? '{"error":"invalid arguments"}' : await executeTool(call.name, args);
+      // The parse error rides back to the agent verbatim so it can actually correct the malformed
+      // arguments (often a truncated long string) instead of guessing at a generic "invalid".
+      const resultStr =
+        parseError !== null
+          ? '{"error":"arguments were not valid JSON: ' + parseError.replace(/"/g, "'") + '"}'
+          : await executeTool(call.name, args);
 
       toolInputs.push({
         type: 'function.result',
