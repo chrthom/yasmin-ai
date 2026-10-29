@@ -554,10 +554,7 @@ export async function runAgentToolLoop(params: {
           : '';
       const resultStr =
         parseError !== null
-          ? '{"error":"arguments were not valid JSON: ' +
-            parseError.replace(/"/g, "'") +
-            truncatedHint +
-            '"}'
+          ? '{"error":"arguments were not valid JSON: ' + parseError.replace(/"/g, "'") + truncatedHint + '"}'
           : await executeTool(call.name, args);
 
       toolInputs.push({
