@@ -24,8 +24,8 @@ fixed for this run. Change approach or stop with `WALL: <reason>`.
    architecture, code style and commands.
 2. `git fetch origin && git checkout -b vibe/issue-<N>-<short-slug> origin/main`.
 3. Implement the issue with the smallest change that fully solves it. Add or update Jest tests in
-   `src/__tests__/` for changed behavior. Update `AGENTS.md` if architecture, env vars or commands
-   change. Do not touch unrelated code.
+   `src/__tests__/` for changed behavior. Update `docs/ARCHITECTURE.md` and, when relevant, the concise
+   `AGENTS.md` if architecture, env vars or commands change. Do not touch unrelated code.
 4. Run `npm ci` if `node_modules` is missing, then `npm run build`, `npm test` and `npm run lint`.
    All must pass. Fix what you broke.
 5. Commit with a clear message, `git push -u origin HEAD`, then open the PR:
