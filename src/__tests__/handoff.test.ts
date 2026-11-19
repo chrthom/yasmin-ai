@@ -166,7 +166,7 @@ describe('handoff', () => {
         msg('user', '<previous_conversation>\nSECRET SUMMARY\n</previous_conversation>\n\nHi'),
         msg('assistant', 'Hello')
       ] as never);
-      expect(transcript).toBe('user: Hi\nassistant: Hello');
+      expect(transcript).toBe('[date unknown] user: Hi\n[date unknown] assistant: Hello');
     });
   });
 });

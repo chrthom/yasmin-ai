@@ -2261,6 +2261,36 @@ describe('nightly pipeline integration', () => {
     ]);
   });
 
+  it('passes message-specific dates into journaling and retains topic dates in the evidence for integration', async () => {
+    const actualReflection = jest.requireActual('../nightly/reflection');
+    mockBuildTranscript.mockImplementation(actualReflection.buildTranscript);
+    mockListConversations.mockResolvedValueOnce([
+      { id: 'conv-multi', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-07T12:00:00Z' }
+    ]);
+    mockGetConversationMessages.mockResolvedValueOnce([
+      { type: 'message.input', role: 'user', content: 'Prüfung morgen', createdAt: '2026-10-05T20:00:00Z' },
+      { type: 'message.input', role: 'user', content: 'Anderes Thema', createdAt: '2026-10-07T12:00:00Z' }
+    ]);
+    const journal =
+      'Am 2026-10-05 sprach Alice über ihre Prüfung am 2026-10-06. Am 2026-10-07 ging es um anderes.';
+    mockRunJournal.mockResolvedValueOnce(journal);
+    let integrationEvidence: any;
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      integrationEvidence = await executeTool('read_todays_journals', {});
+      return { finalText: '', iterations: 1 };
+    });
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(mockRunJournal).toHaveBeenCalledWith(
+      'Alice',
+      '[2026-10-05] user: Prüfung morgen\n[2026-10-07] user: Anderes Thema'
+    );
+    expect(JSON.stringify(integrationEvidence)).toContain(journal);
+    expect(JSON.stringify(integrationEvidence)).toContain('chatDates: 2026-10-05, 2026-10-07');
+  });
+
   it('cooldown (fällig ab across quiet nights): future due-date follow-ups survive consecutive skipped quiet runs and live chat receives Today is YYYY-MM-DD', async () => {
     const contextCache = new Map<string, string>();
     mockUpsertContextEntry.mockImplementation(async (title: string, content: string) => {

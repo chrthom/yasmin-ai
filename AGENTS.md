@@ -240,7 +240,10 @@ At a high level, each run:
    persisted `journals/<slug>/*.md` `chatDates` headers and passes them (with `runDate`) into the Phase-7
    person compaction prompt so recently discussed topics (`(besprochen am YYYY-MM-DD)`) observe a
    5-active-conversation-day cooldown (retaining future `fällig ab` deadlines with date-gated restraint
-   and honoring `neuer Aspekt` / reached `fällig ab` overrides, with zero `memory_archive` churn).
+   and honoring unresolved `neuer Aspekt` / reached `fällig ab` overrides, even on the same day,
+   with zero `memory_archive` churn). Phase 2 labels transcript messages with their own `MEMORY_TZ`
+   dates, so integration can use each topic's actual discussion date rather than the latest date of
+   a multi-day journal; missing timestamps are explicitly unknown, never guessed.
    The `Profile of Yasmin` compaction additionally folds in the current mood and the most recent dream
    reflections (`self-reflection/dreams.md`) as soft evidence — dream-derived material is always marked as
    such (e.g. "aus einem Traum") and never promoted to standalone facts. That asymmetry is deliberate:

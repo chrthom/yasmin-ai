@@ -3,7 +3,7 @@ import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
 import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
-import { formatActiveChatDatesForPrompt } from './cooldown';
+import { formatActiveChatDatesForPrompt, formatCooldownDate } from './cooldown';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
 import { IntradayNote } from '../database/models/intraday_notes.model';
@@ -59,9 +59,10 @@ export function isDialogueMessage(message: ConversationMessage): boolean {
 }
 
 /**
- * Renders a conversation's messages into a plain "label: text" transcript, one line per message.
+ * Renders a conversation's messages into a dated "[YYYY-MM-DD] label: text" transcript, one line per message.
  * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized
- * message (e.g. an oversized user paste) can never blow up the downstream journal prompt.
+ * message (e.g. an oversized user paste) can never blow up the downstream journal prompt. Messages
+ * without a valid timestamp are explicitly marked unknown rather than assigned a guessed date.
  *
  * @param messages The conversation's raw message history.
  * @returns The capped transcript, with the handoff block stripped from user messages.
@@ -78,7 +79,9 @@ export function buildTranscript(messages: ConversationMessage[]): string {
       continue;
     }
     const label = message.role || (message.type.includes('output') ? 'assistant' : 'user');
-    lines.push(label + ': ' + text);
+    const timestamp = message.createdAt ? new Date(message.createdAt) : undefined;
+    const date = timestamp && !isNaN(timestamp.getTime()) ? formatCooldownDate(timestamp) : 'date unknown';
+    lines.push('[' + date + '] ' + label + ': ' + text);
   }
 
   const transcriptMaxChars = config.nightly.transcriptMaxChars;

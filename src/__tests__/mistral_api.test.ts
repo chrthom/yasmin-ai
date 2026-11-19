@@ -190,14 +190,28 @@ describe('mistral_api', () => {
         json: async () => ({
           conversation_id: 'conv-1',
           object: 'conversation.messages',
-          messages: [{ id: 'm1', type: 'message.output', role: 'assistant', content: 'hi' }]
+          messages: [
+            {
+              id: 'm1',
+              type: 'message.output',
+              role: 'assistant',
+              content: 'hi',
+              created_at: '2026-10-05T20:00:00Z'
+            }
+          ]
         })
       });
 
       const result = await getConversationMessages('conv-1');
 
       expect(result).toEqual([
-        { id: 'm1', type: 'message.output', role: 'assistant', content: 'hi', createdAt: undefined }
+        {
+          id: 'm1',
+          type: 'message.output',
+          role: 'assistant',
+          content: 'hi',
+          createdAt: '2026-10-05T20:00:00Z'
+        }
       ]);
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.test/v1/conversations/conv-1/messages',

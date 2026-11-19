@@ -102,11 +102,11 @@ describe('nightly prompt templates', () => {
       runDate: '2026-10-05'
     });
     expect(prompt).toContain(
-      "Write a journal entry summarizing today's conversation with Alice. Today is 2026-10-05."
+      'Write a journal entry summarizing the conversation with Alice. The processing date is 2026-10-05;'
     );
     expect(prompt).toContain('<<<BEGIN TRANSCRIPT>>>');
     expect(prompt).toContain('user: hi\nassistant: hello');
     expect(prompt).toContain('<<<END TRANSCRIPT>>>');
-    expect(prompt.endsWith('write the journal entry described above.')).toBe(true);
+    expect(prompt.trimEnd().endsWith('write the journal entry described above.')).toBe(true);
   });
 });
