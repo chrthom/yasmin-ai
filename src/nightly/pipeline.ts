@@ -250,8 +250,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Empty-batch short-circuit (skip Phases 2-9 when there is nothing to do)
     // -----------------------------------------------------------------------
-    // Fresh and resumed empty batches skip only without known pending notes. If the notes read
-    // failed, this skip leaves the outbox untouched for the next run.
+    // Fresh and resumed effective batches skip only without known pending notes; an orphan with
+    // no saved IDs is re-collected first. A failed notes read leaves the outbox untouched.
     if (conversations.length === 0 && undeliveredNotes.length === 0) {
       await updateJobLog(jobId, {
         status: 'completed',

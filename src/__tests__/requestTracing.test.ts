@@ -2,6 +2,40 @@ import { NextFunction, Request, Response } from 'express';
 import { createRequestLogger, getRequestId, requestTracingMiddleware } from '../middleware/requestTracing';
 
 describe('request tracing', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('uses the no-id fallback for a request that bypassed tracing middleware', () => {
+    const req = { method: 'GET', path: '/test' } as Request;
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    createRequestLogger(req).warn('untraced');
+
+    expect(getRequestId(req)).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('WARN [no-id] untraced {"method":"GET","path":"/test"}');
+  });
+
+  it('merges extra metadata and lets it override base fields without changing the request ID prefix', () => {
+    const req = { method: 'POST', path: '/chat/bot' } as Request;
+    requestTracingMiddleware(req, { set: jest.fn() } as unknown as Response, jest.fn());
+    const debug = jest.spyOn(console, 'debug').mockImplementation(() => undefined);
+    const logger = createRequestLogger(req);
+    const prefix = `DEBUG [${getRequestId(req)}] started `;
+
+    logger.debug('started', { username: 'Alice' });
+    expect(debug).toHaveBeenLastCalledWith(
+      prefix +
+        JSON.stringify({ requestId: getRequestId(req), method: 'POST', path: '/chat/bot', username: 'Alice' })
+    );
+
+    logger.debug('started', { requestId: 'external-id', method: 'PATCH', path: '/override' });
+    expect(debug).toHaveBeenLastCalledWith(
+      prefix + JSON.stringify({ requestId: 'external-id', method: 'PATCH', path: '/override' })
+    );
+    expect(getRequestId(req)).not.toBe('external-id');
+  });
+
   it('sets a unique request ID on the request and response header', () => {
     const req = { method: 'POST', path: '/chat/bot' } as Request;
     const res = { set: jest.fn() } as unknown as Response;

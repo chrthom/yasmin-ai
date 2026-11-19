@@ -19,8 +19,40 @@ import {
 describe('nightly pipeline integration', () => {
   beforeEach(setupPipelineFixture);
 
+  it('decay wiring: list_long_term_files exposes lastTouchedAt to the integrate loop, and runReview receives it with the current content', async () => {
+    mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
+    const seeded = await archive.seed('people/alice.md', 'Existing alice content');
+    let listed: { path: string; contentHash: string; lastTouchedAt: string }[] = [];
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      listed = JSON.parse(await executeTool('list_long_term_files', {}));
+      await executeTool('stage_update', {
+        path: 'people/alice.md',
+        content: 'Alice profile content',
+        isNew: false
+      });
+      return { finalText: 'staged 1 file', iterations: 1 };
+    });
+    mockRunReview.mockResolvedValue({ approved: true, reason: 'looks good' });
+    mockRunCompact.mockResolvedValue('compacted profile');
+    mockUpsertContextEntry.mockResolvedValue('inserted');
+    await runNightlyPipeline();
+    const aliceEntry = listed.find(entry => entry.path === 'people/alice.md');
+    expect(aliceEntry).toBeDefined();
+    expect(aliceEntry!.lastTouchedAt).toBe(seeded.createdAt.toISOString());
+    expect(mockRunReview).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'people/alice.md' }),
+      'Existing alice content',
+      seeded.createdAt.toISOString(),
+      expect.any(Array),
+      0,
+      [],
+      []
+    );
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
+  });
+
   // -------------------------------------------------------------------------
-  // 9b. Mood decay + fold-in (issue #48)
+  // Mood decay + fold-in (issue #48)
   // -------------------------------------------------------------------------
 
   it('mood: deterministic decay applies without an agent update; a fully faded mood drops its narrative', async () => {
@@ -144,7 +176,7 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 9d. Dream-reflection soft evidence in the yasmin compaction (issue #126)
+  // Dream-reflection soft evidence in the yasmin compaction (issue #126)
   // -------------------------------------------------------------------------
 
   it('dream evidence: recent dream reflections ride along as soft evidence in the yasmin compaction source', async () => {
@@ -247,7 +279,7 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 9c. Topics layer wiring
+  // Topics layer wiring
   // -------------------------------------------------------------------------
 
   it('topics duplicate barrier: pipeline seeds the reviewer with archived topics, filters topics/, and excludes the proposed path', async () => {
@@ -411,7 +443,7 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 10. Phase 7 privacy wiring
+  // Phase 7 privacy wiring
   // -------------------------------------------------------------------------
   it('Phase 7 strips [PRIVACY:SENSITIVE] blocks before compaction -- runCompact never sees sensitive content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
@@ -433,7 +465,7 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 11. Phase 7 empty-compaction guard
+  // Phase 7 empty-compaction guard
   // -------------------------------------------------------------------------
   it('Phase 7 skips the eager-cache upsert when compaction produces empty output, but does not fail the run', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
@@ -454,7 +486,7 @@ describe('nightly pipeline integration', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 12. Phase 6 privacy wiring
+  // Phase 6 privacy wiring
   // -------------------------------------------------------------------------
   it('Phase 6 strips [PRIVACY:SENSITIVE] blocks before uploading to Mistral -- the local archive keeps the full content', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);

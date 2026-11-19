@@ -49,7 +49,7 @@ export function normalizeTopicPath(path: string): string | null {
   }
   const stem = path.slice(TOPICS_PATH_PREFIX.length).replace(/\.md$/i, '');
   const slug = sanitizeSlug(stem);
-  if (slug.length === 0 || slug === '-') {
+  if (slug.length === 0) {
     return null;
   }
   return TOPICS_PATH_PREFIX + slug + '.md';

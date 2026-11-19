@@ -32,6 +32,22 @@ is dead until the table is in place.
 3. An "everyone" note must never be delivered back to its own sender (the delivery query
    filters `from_username != ?`).
 
+## Nightly snapshot and reset
+
+Immediately after collecting conversations (Phase 1), the pipeline captures `MAX(id)` over **all**
+notes, including delivered rows, then reads undelivered notes up to that bound. The early snapshot
+lets undelivered notes prevent the empty-batch skip. A note staged mid-run above that bound is
+neither consolidated nor deleted: it survives for the next run. Phase 8 deletes only up to the
+snapshot bound after integration and review/archive succeeded; a failed snapshot read prevents
+the reset. Using the undelivered subset's maximum instead would leave a delivered-only outbox
+with a zero bound, so those rows would never be cleared on a non-skipped run.
+
+The empty-batch skip applies to fresh and resumed runs. An orphaned job with no recorded
+conversation IDs is collected again using the same job row, since a crash may have happened before
+the ID list was persisted; only an empty effective batch with no known undelivered notes skips.
+The skip performs no outbox reset (even if the notes read failed), leaving unknown pending notes
+and inert delivered rows untouched until a later non-skipped run.
+
 ## Known gotcha: existing conversations keep the old toolset
 
 Mistral pins an agent's tools at conversation creation time. Conversations started **before**

@@ -114,6 +114,7 @@ describe('nightly/tools', () => {
     it('rejects a topics/ path with an empty slug', () => {
       const result = stage_update('topics/.md', 'content', true);
       expect(result.success).toBe(false);
+      expect(stage_update('topics/---.md', 'content', true).success).toBe(false);
       expect(getStagedUpdates()).toHaveLength(0);
     });
     it('normalizes non-canonical casing of fixed paths to the canonical lowercase form', () => {

@@ -16,6 +16,7 @@ jest.mock('../config', () => ({
   }
 }));
 
+import { ZodError } from 'zod';
 import { config } from '../config';
 import {
   MistralApiError,
@@ -38,6 +39,10 @@ global.fetch = mockFetch;
 describe('mistral_api', () => {
   beforeEach(() => {
     mockFetch.mockClear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('withRetry', () => {
@@ -418,14 +423,13 @@ describe('mistral_api', () => {
         status: 200,
         json: async () => ({ data: [{ name: 'missing-id.md' }], has_more: false })
       });
-      const originalRetries = config.nightly.maxRetries;
-      (config.nightly as { maxRetries: number }).maxRetries = 0;
-      try {
-        await expect(listDocuments()).rejects.toThrow();
-        expect(mockFetch).toHaveBeenCalledTimes(1);
-      } finally {
-        (config.nightly as { maxRetries: number }).maxRetries = originalRetries;
-      }
+      jest.replaceProperty(config.nightly, 'maxRetries', 0);
+      const result = listDocuments();
+      await expect(result).rejects.toThrow(ZodError);
+      await expect(result).rejects.toMatchObject({
+        issues: [expect.objectContaining({ code: 'invalid_type', path: ['data', 0, 'id'] })]
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('deduplicates repeated ids while retaining new documents across pages', async () => {

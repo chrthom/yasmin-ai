@@ -22,7 +22,7 @@ describe('nightly pipeline integration', () => {
   beforeEach(setupPipelineFixture);
 
   // -------------------------------------------------------------------------
-  // 13. Dream phase (4.5)
+  // Dream phase (4.5)
   // -------------------------------------------------------------------------
   it('dream: generates + archives the dream, appends the dated reflection, uploads both', async () => {
     mockListConversations.mockResolvedValueOnce([conversation('conv-1', 'Alice')]);
@@ -310,9 +310,4 @@ describe('nightly pipeline integration', () => {
     );
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
-
-  // -------------------------------------------------------------------------
-  // 13. Decay wiring: last_touched_at flows from memory_archive into the
-  //     integrate tool surface and the review prompt
-  // -------------------------------------------------------------------------
 });
