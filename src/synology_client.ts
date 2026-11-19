@@ -1,6 +1,17 @@
 import { config } from './config';
 
 /**
+ * A single post of a Synology Chat channel, as returned by the external `post_list` API.
+ */
+export interface SynologyPost {
+  postId: number;
+  userId: number;
+  username: string;
+  text: string;
+  timestamp: number;
+}
+
+/**
  * Delivers answers to Synology Chat via its webhook API: strips the Markdown formatting the
  * chat cannot render, chunks messages that exceed its length limit, and posts each chunk to
  * the requesting user in reading order.
@@ -33,6 +44,95 @@ export class SynologyClient {
       .replaceAll(/\*\*?([^*]+)\*\*?/gm, '$1')
       .replaceAll(/^#+(.*)$/gm, '$1')
       .trim();
+  }
+
+  /**
+   * Fetches the messages posted in a channel immediately before the given post via Synology
+   * Chat's external `post_list` API.
+   *
+   * @param channelId The channel to read.
+   * @param postId The post the history is relative to (everything before it is returned).
+   * @param prevCount How many previous posts to fetch (config.synology.history.prevCount).
+   * @param token The token to authenticate the API call (defaults to the client's token).
+   * @returns The fetched posts, in the order the API returned them.
+   * @throws When the HTTP call fails, the API reports an error, or the response is malformed.
+   */
+  async fetchPreviousMessages(
+    channelId: number,
+    postId: number,
+    prevCount: number,
+    token: string = this.token
+  ): Promise<SynologyPost[]> {
+    const url = new URL(this.baseUrl);
+    url.searchParams.append('api', 'SYNO.Chat.External');
+    url.searchParams.append('method', 'post_list');
+    url.searchParams.append('version', '2');
+    const response = await fetch(url.toString(), {
+      method: 'post',
+      body: new URLSearchParams([
+        [
+          'payload',
+          JSON.stringify({
+            token,
+            channel_id: channelId,
+            post_id: postId,
+            prev_count: prevCount,
+            next_count: 0
+          })
+        ]
+      ]),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: AbortSignal.timeout(config.synology.history.fetchTimeoutMs)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data: any = await response.json();
+    if (!data?.success) {
+      throw new Error(data?.error?.errors?.[0] || 'post_list request was not successful');
+    }
+    const rawPosts = data?.data?.posts || [];
+    const posts: Record<string, unknown>[] = Array.isArray(rawPosts)
+      ? rawPosts
+      : typeof rawPosts === 'object'
+        ? Object.keys(rawPosts).map(key => ({ ...rawPosts[key], post_id: Number(key) }))
+        : [];
+    return posts.map(post => ({
+      postId: Number(post['post_id']),
+      userId: Number(post['user_id']),
+      username: String(post['username'] || ''),
+      text: String(post['text'] || ''),
+      timestamp: Number(post['timestamp']) || 0
+    }));
+  }
+
+  /** Truncates a text to max characters, appending an ellipsis when it was cut. */
+  private static truncate(text: string, max: number): string {
+    return text.length > max ? text.slice(0, max) + '\u2026' : text;
+  }
+
+  /**
+   * Formats fetched channel posts as a transcript: the bot's own posts and slash-command
+   * invocations are dropped, the rest are ordered oldest-first as `username: text` lines.
+   *
+   * @param posts The fetched channel posts.
+   * @param botUserId The bot's own user id, whose posts are excluded from the transcript.
+   * @param slashPrefix The prefix that marks slash-command posts (defaults to config).
+   * @param maxCharsPerLine Per-message character cap for transcript lines (defaults to config).
+   * @returns The transcript lines joined by newlines; empty when nothing remains.
+   */
+  formatChannelHistory(
+    posts: SynologyPost[],
+    botUserId: number,
+    slashPrefix?: string,
+    maxCharsPerLine: number = config.synology.history.transcriptMaxCharsPerMessage
+  ): string {
+    const prefix = slashPrefix ?? config.synology.history.slashPrefix;
+    /** True for a real slash invocation: the exact prefix or the prefix followed by a word boundary. */
+    const isSlashCommand = (text: string) => text === prefix || text.startsWith(prefix + ' ');
+    return posts
+      .filter(post => post.userId !== botUserId && !isSlashCommand(post.text.trim()))
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map(post => `${post.username}: ${SynologyClient.truncate(post.text, maxCharsPerLine)}`)
+      .join('\n');
   }
 
   /**

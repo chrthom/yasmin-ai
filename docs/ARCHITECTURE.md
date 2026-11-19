@@ -45,6 +45,7 @@ src/
 │                       #   builder) - single source of truth for the people/<stem>.md <-> "Profile
 │                       #   of X" mapping, used by both the live agent and the nightly pipeline
 ├── synology_client.ts  # Synology Chat API client - formats and sends responses
+├── channel_history.ts  # Build, escape and strip ephemeral group-channel context
 ├── database/
 │   ├── connection.ts   # Connection pooling and execution with retry logic
 │   └── models/
@@ -98,8 +99,12 @@ src/
    - Filters out already loaded titles using the session's active conversation cache.
    - Wraps newly loaded context pieces in structured XML tags (`<context_entry title="...">...</context_entry>`) and prepends them to the prompt.
    - Calls the Mistral API with custom Tool Calling configuration and manages 12-hour session state.
-4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
-5. **Response** → Answers are sent back to Synology Chat via its API
+4. **Group channel history** → Group/slash requests with `channel_id` and `post_id` can include recent
+   channel posts, fetched via Synology `post_list`, in an ephemeral `<channel_history>` block. Bot and
+   slash posts are excluded; the nightly journal and handoff strip the block to keep third-party chatter
+   out of memory.
+5. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
+6. **Response** → Answers are sent back to Synology Chat via its API
 
 #### Memory writes: the live agent is read-only (memory)
 
@@ -251,6 +256,7 @@ Database operations also need:
 Optional settings (see Nightly Memory Pipeline above):
 
 - `PORT` - HTTP port (default `5000`)
+- `CHAT_BOT_USER_ID` - Optional Synology bot user id; excludes the bot's own replies from group channel history. If unset, filtering degrades and startup logs a warning.
 - `MEMORY_TZ` - IANA timezone the nightly job's schedule/watermark are computed in (default `Europe/Berlin`)
 - `NIGHTLY_HOUR` / `NIGHTLY_MINUTE` - Local scheduled time (default 23:00; clamped to 0–23 / 0–59)
 - `NIGHTLY_MAX_ITERATIONS` - Max nightly integrate tool-loop iterations (default 25, clamped to 1–200; malformed values use the default)
