@@ -287,6 +287,43 @@ describe('mistral_api', () => {
       expect(result.toolCalls).toEqual([{ id: 'tc-2', name: 'do_other', arguments: '{"b":2}' }]);
     });
 
+    it('defaults only missing flat fields and keeps object and malformed JSON arguments unchanged', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          outputs: [
+            { type: 'message.tool_calls' },
+            { type: 'function_call' },
+            { type: 'function.call', tool_call_id: '', id: 'fallback', name: '', arguments: '' },
+            { type: 'function_call', id: 'object', name: 'run', arguments: { x: 1 } },
+            { type: 'function.call', name: 'run', arguments: '{bad' }
+          ]
+        })
+      });
+
+      const result = await askAgent({ agentId: 'agent-1', inputs: [] });
+      expect(result.toolCalls).toEqual([
+        { id: '', name: '', arguments: '' },
+        { id: 'fallback', name: '', arguments: '' },
+        { id: 'object', name: 'run', arguments: { x: 1 } },
+        { id: '', name: 'run', arguments: '{bad' }
+      ]);
+    });
+
+    it.each([
+      { type: 'message.tool_calls', tool_calls: [{}] },
+      { type: 'message.tool_calls', tool_calls: null },
+      { type: 'message.output', content: 'hi', tool_calls: [{}] },
+      { type: 'function.call', arguments: null },
+      { type: 'function.call', name: 42 },
+      { type: 'function.call', arguments: [] }
+    ])('still rejects response fields disallowed by the nightly schema: %j', async output => {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ outputs: [output] }) });
+      await expect(askAgent({ agentId: 'agent-1', inputs: [] })).rejects.toThrow();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('posts to /conversations with agent_id/name when starting a new conversation', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -407,6 +444,29 @@ describe('mistral_api', () => {
       expect(secondBody.inputs).toEqual([
         { type: 'function.result', tool_call_id: 'tc-1', result: '{"ok":true}' }
       ]);
+    });
+
+    it('returns a parse error instead of executing a tool with malformed JSON', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'conv-1',
+            outputs: [{ type: 'function_call', id: 'tc-1', name: 'do_thing', arguments: '{bad' }]
+          })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ outputs: [{ type: 'message.output', content: 'done' }] })
+        });
+      const executeTool = jest.fn();
+      await runAgentToolLoop({ agentId: 'agent-1', initialInputs: [], maxIterations: 5, executeTool });
+      expect(executeTool).not.toHaveBeenCalled();
+      const input = JSON.parse(mockFetch.mock.calls[1][1].body).inputs[0];
+      expect(input.tool_call_id).toBe('tc-1');
+      expect(JSON.parse(input.result).error).toContain('arguments were not valid JSON');
     });
   });
 

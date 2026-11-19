@@ -757,6 +757,71 @@ describe('ChatAgent', () => {
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
     });
 
+    // Characterization: missing ids/names are pass-through artifacts, not the desired live contract.
+    it('characterizes missing flat fields and handles malformed JSON with the live tool error', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            outputs: [
+              { type: 'function_call' },
+              {
+                type: 'function.call',
+                tool_call_id: '',
+                id: 'fallback',
+                name: 'read_context_entry',
+                arguments: '{bad'
+              }
+            ]
+          })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ outputs: [{ type: 'message.output', content: 'done' }] })
+        });
+
+      await chatAgent.processRequest('Hello', 'christopher');
+      const inputs = JSON.parse(mockFetch.mock.calls[1][1].body).inputs;
+      expect(inputs[0]).not.toHaveProperty('tool_call_id');
+      expect(JSON.parse(inputs[0].result).error).toBe('Unsupported tool: undefined');
+      expect(inputs[1].tool_call_id).toBe('fallback');
+      expect(JSON.parse(inputs[1].result)).toEqual({ found: false, error: 'Title parameter is required' });
+    });
+
+    // Characterization: TypeError is existing behavior, not desired; future hardening may return tool errors.
+    it('characterizes note-claim release when a malformed nested tool call fails extraction', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      mockGetUndeliveredNotesForUser.mockResolvedValue([{ id: 7, fromUsername: 'anjali', content: 'Hi' }]);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ outputs: [{ type: 'message.tool_calls', tool_calls: [{}] }] })
+      });
+
+      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow(TypeError);
+      expect(mockClaimNoteDelivery).toHaveBeenCalledWith(7, 'christopher');
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(7, 'christopher');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Characterization: args.title currently throws; hardening should preserve note safety, not this crash.
+    it('characterizes live failure when a known flat tool has no arguments', async () => {
+      jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
+      mockGetUndeliveredNotesForUser.mockResolvedValue([{ id: 8, fromUsername: 'anjali', content: 'Hi' }]);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ outputs: [{ type: 'function_call', name: 'read_context_entry' }] })
+      });
+
+      await expect(chatAgent.processRequest('Hello', 'christopher')).rejects.toThrow(TypeError);
+      expect(mockReleaseNoteDelivery).toHaveBeenCalledWith(8, 'christopher');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('read_context_entry returns a pointer, not the full text, for an entry already injected this conversation', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValueOnce(undefined);
 
