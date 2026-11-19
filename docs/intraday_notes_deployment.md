@@ -5,7 +5,7 @@
 The `intraday_notes` table is the live agent's cross-person note cache: notes staged via the
 `share_note` tool are delivered — exactly once per recipient — with the recipient's next user
 input, and the nightly job consolidates still-undelivered notes and resets the table once a day.
-See `AGENTS.md`, "Cross-person notes: the intraday_notes cache" for the design.
+See `docs/ARCHITECTURE.md`, "Cross-person notes: the intraday_notes cache" for the design.
 
 ---
 
