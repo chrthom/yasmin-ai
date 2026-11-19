@@ -2,6 +2,7 @@ import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
 import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
+import { isDialogueMessage } from '../mistral/transcript';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
@@ -10,21 +11,8 @@ import { IntradayNote } from '../database/models/intraday_notes.model';
 export type { StagedUpdate };
 
 // ---------------------------------------------------------------------------
-// Shared transcript helpers
+// Journal transcript helpers
 // ---------------------------------------------------------------------------
-
-/** Re-exported for callers that only need the message shape, without redefining it. */
-export type RawConversationMessage = ConversationMessage;
-
-/**
- * Joins the text parts of a single message's content (string, or array of {type, text} parts).
- *
- * @param content The raw message content of unknown shape.
- * @returns The concatenated text parts, or an empty string for any other shape.
- */
-export function extractMessageText(content: unknown): string {
-  return extractContentText(content);
-}
 
 /**
  * Strips the `<previous_conversation>` block the live agent seeds a fresh conversation with
@@ -39,31 +27,12 @@ export function stripHandoffBlock(text: string): string {
 }
 
 /**
- * Checks whether a message row is actual human<->assistant dialogue. Internal plumbing isn't
- * conversation content: tool calls, function calls/results (including giant web_search reads),
- * system/service rows and errors should never reach the transcript that feeds memory.
- *
- * @param message The raw message row.
- * @returns true when the row is dialogue and should be kept in a transcript.
- */
-export function isDialogueMessage(message: ConversationMessage): boolean {
-  const t = message.type.toLowerCase();
-  return !(
-    t.includes('tool') ||
-    t.includes('function') ||
-    t.includes('system') ||
-    t.includes('service') ||
-    t.includes('error')
-  );
-}
-
-/**
  * Renders a conversation's messages into a plain "label: text" transcript, one line per message.
  * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized
  * message (e.g. an oversized user paste) can never blow up the downstream journal prompt.
  *
  * @param messages The conversation's raw message history.
- * @returns The capped transcript, with the handoff block stripped from user messages.
+ * @returns The capped transcript, with handoff blocks stripped from message text.
  */
 export function buildTranscript(messages: ConversationMessage[]): string {
   const lines: string[] = [];
@@ -72,7 +41,7 @@ export function buildTranscript(messages: ConversationMessage[]): string {
     if (!isDialogueMessage(message)) {
       continue;
     }
-    const text = stripHandoffBlock(extractMessageText(message.content));
+    const text = stripHandoffBlock(extractContentText(message.content));
     if (text.length === 0) {
       continue;
     }

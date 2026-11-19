@@ -1,6 +1,6 @@
 # Project Purpose & Semantics
 
-This document captures the *semantic* knowledge about Yasmin AI: what the project actually is, what
+This document captures the _semantic_ knowledge about Yasmin AI: what the project actually is, what
 its concepts mean, and which design principles any change should preserve. It complements `AGENTS.md`
 (architecture and how to work on the code) and the implementation docs in `docs/`; it does not repeat
 them.
@@ -23,7 +23,7 @@ The project's goal is not question answering but the **illusion of one continuou
 - she has her own interests, opinions and intentions, and moods and dreams,
 - she passes messages between family members like a person would.
 
-Everything in this codebase serves that illusion. A change that makes Yasmin feel *less* like one
+Everything in this codebase serves that illusion. A change that makes Yasmin feel _less_ like one
 continuous person works against the project even when it is technically cleaner.
 
 ---
@@ -93,8 +93,8 @@ nightly privacy stripping and the read-only, sensitive-free context cache keep t
 
 ### The handoff
 
-A conversation restart must be imperceptible: the handoff block is presented as *her memory of the
-earlier conversation*, so users never learn that a conversation was closed and reopened. The same
+A conversation restart must be imperceptible: the handoff block is presented as _her memory of the
+earlier conversation_, so users never learn that a conversation was closed and reopened. The same
 principle applies in reverse in the nightly journal, which strips handoff blocks so the same history
 is not journaled twice.
 
@@ -106,9 +106,11 @@ is not journaled twice.
    quietly, and errors inside the memory pipeline never turn into broken conversations.
 2. **In-persona truthfulness.** Dreams stay dreams, opinions stay interpretations, dated facts age.
    Within the persona she may interpret and weigh, but never invent facts.
-3. **Privacy is a hard boundary.** `[PRIVACY:SENSITIVE]` content never leaves local storage: it is
-   stripped before any upload, and the archive that keeps it is local-only and not searched by the
-   live agent.
+3. **Privacy is a hard boundary.** The nightly pipeline strips `[PRIVACY:SENSITIVE]` content from the
+   library and eager cache; the full archive is local and not searched by the live agent. This is not a
+   blanket prohibition on sending sensitive content to Mistral: pipeline-internal review/revision calls
+   can receive unstripped content, and the one-time bootstrap uploads existing context without stripping.
+   Inspect bootstrap inputs before running it. See `docs/ARCHITECTURE.md` for these boundaries.
 4. **Small, reviewable write paths.** All memory writes go through the nightly pipeline's
    propose, review and archive chain, are versioned, and the whole run is resumable: memory is too
    important to be left half-consolidated.
@@ -127,5 +129,5 @@ is not journaled twice.
 - Development follows the repo's dev-loop: feature branches, PRs into protected `main`, lint and tests
   in CI.
 
-See `AGENTS.md` for the architecture behind all of this, `docs/CONTEXT_CONVENTIONS.md` for the memory
-data model, and `docs/nightly_memory_processing_implementation.md` for the pipeline's full design.
+See `docs/ARCHITECTURE.md` for the architecture behind all of this, `docs/CONTEXT_CONVENTIONS.md` for
+the memory data model, and `docs/nightly_memory_processing_implementation.md` for the historical design.

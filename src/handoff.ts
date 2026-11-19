@@ -5,7 +5,8 @@ import {
   getConversationMessages,
   ConversationMessage
 } from './mistral/mistral_api';
-import { extractMessageText, isDialogueMessage } from './nightly/reflection';
+import { extractContentText } from './mistral/content';
+import { isDialogueMessage } from './mistral/transcript';
 import { PREVIOUS_CONVERSATION_CAPTURE_RE, SUMMARY_CAPTURE_RE, cleanStoredText, xmlBlock } from './protocol';
 
 /**
@@ -44,7 +45,7 @@ export const extractTurns = (messages: ConversationMessage[]): { turns: Turn[]; 
     }
     const role: 'user' | 'assistant' =
       message.role === 'user' || (!message.role && !message.type.includes('output')) ? 'user' : 'assistant';
-    const raw = extractMessageText(message.content);
+    const raw = extractContentText(message.content);
     if (role === 'user' && priorContext === undefined) {
       priorContext = PREVIOUS_CONVERSATION_CAPTURE_RE.exec(raw)?.[1]?.trim();
     }
