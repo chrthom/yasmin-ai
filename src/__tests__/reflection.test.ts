@@ -766,11 +766,20 @@ describe('reflection', () => {
   describe('per-person topic cooldown prompts', () => {
     it('instructs integratePrompt to stamp semantic cooldown dates strictly on people/<name>.md and retire answered topics', () => {
       const prompt = integratePrompt('2026-10-05');
-      expect(prompt).toContain('(besprochen am 2026-10-05)');
+      expect(prompt).toContain('(besprochen am YYYY-MM-DD)');
       expect(prompt).toContain('(neuer Aspekt am 2026-10-05: <kurzer Grund>)');
       expect(prompt).toContain('(fällig ab YYYY-MM-DD)');
       expect(prompt).toContain('STRICTLY in people/<name>.md ONLY');
       expect(prompt).toContain('NEVER replace an answered intention');
+    });
+
+    it('uses journal discussion dates for backlog takeaways and deadline follow-ups instead of the processing date', () => {
+      const prompt = integratePrompt('2026-10-20');
+      expect(prompt).toContain('For BOTH durable takeaways and retained deadline follow-ups');
+      expect(prompt).toContain("the latest date in that journal's chatDates header if present");
+      expect(prompt).toContain("NEVER the processing day's date when chatDates is available");
+      expect(prompt).toContain('preserve an unanswered follow-up even if its deadline has already arrived');
+      expect(prompt).not.toContain('(besprochen am 2026-10-20)');
     });
 
     it('permits grounded topic-cooldown date tags on people/<name>.md during review while forbidding them in family/topics', () => {

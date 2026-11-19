@@ -402,6 +402,30 @@ function stripStaleNewAspectTags(text: string, besprochenDate: string): string {
 }
 
 /**
+ * Removes deadline annotations already covered by the latest discussion from the compaction view,
+ * so the live agent cannot treat an expired `fällig ab` date as a cooldown override.
+ *
+ * @param text The item text to clean.
+ * @param besprochenDate The latest discussed date on the item.
+ * @returns Text without deadlines on or before the latest discussion.
+ */
+function stripStaleDueTags(text: string, besprochenDate: string): string {
+  return text
+    .replace(/\s*\(\s*f(?:ä|ae)llig\s+ab\s+(\d{4}-\d{2}-\d{2})\s*\)/gi, (full, date: string) =>
+      date <= besprochenDate ? '' : full
+    )
+    .replace(/\(\s*f(?:ä|ae)llig\s+ab\s+(\d{4}-\d{2}-\d{2})\s*[,;]\s*/gi, (full, date: string) =>
+      date <= besprochenDate ? '(' : full
+    )
+    .replace(/\s*[,;]\s*f(?:ä|ae)llig\s+ab\s+(\d{4}-\d{2}-\d{2})\b/gi, (full, date: string) =>
+      date <= besprochenDate ? '' : full
+    )
+    .replace(FAELLIG_AB_DATE_RE, (full, date: string) =>
+      date <= besprochenDate ? 'keine offene Fälligkeit' : full
+    );
+}
+
+/**
  * Rewrites `(besprochen am YYYY-MM-DD)` on an item that carries a future `fällig ab` deadline into
  * explicit date-gated restraint guidance, keeping the item in the eager cache so the live agent can
  * still act on the deadline when it arrives after quiet nights (when Phases 2-9 do not re-run).
@@ -472,13 +496,14 @@ function transformItem(
   activeChatDates: ReadonlySet<string>,
   runDate: string
 ): string[] | null {
-  const itemText = itemLines.join('\n');
-  const besprochenDates = collectDates(BESPROCHEN_TAG_RE, itemText, 2);
+  const rawItemText = itemLines.join('\n');
+  const besprochenDates = collectDates(BESPROCHEN_TAG_RE, rawItemText, 2);
   if (besprochenDates.length === 0) {
     return itemLines;
   }
 
   const besprochenDate = besprochenDates.reduce((max, d) => (d > max ? d : max));
+  const itemText = stripStaleDueTags(rawItemText, besprochenDate);
   const neuerAspektDates = collectDates(NEUER_ASPEKT_DATE_RE, itemText, 1);
   const faelligDates = collectDates(FAELLIG_AB_DATE_RE, itemText, 1);
 
@@ -489,7 +514,7 @@ function transformItem(
   const isDueNow = faelligDates.some(d => d > besprochenDate && d <= runDate);
 
   if (hasFreshNewAspect || isDueNow) {
-    return itemLines;
+    return itemText.split('\n');
   }
 
   // Override 2b: a future post-discussion target date must NOT be stripped from the eager cache,

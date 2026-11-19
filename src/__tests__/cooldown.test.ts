@@ -355,6 +355,61 @@ describe('cooldown', () => {
       expect(onDue).not.toContain('Alte Frist schon besprochen');
     });
 
+    it.each([
+      '(besprochen am 2026-10-08) (fällig ab 2026-10-03)',
+      '(besprochen am 2026-10-08, fällig ab 2026-10-03)',
+      '(fällig ab 2026-10-03, besprochen am 2026-10-08)',
+      '(Status: open; fällig ab 2026-10-03; besprochen am 2026-10-08)',
+      '(besprochen am 2026-10-08, fällig ab 2026-10-08)',
+      '(besprochen am 2026-10-08) – fällig ab 2026-10-03'
+    ])('removes stale live-chat deadline overrides from retained cooldown items: %s', tags => {
+      const input = samplePersonProfile({
+        ideas: `- Projekt ${tags}`,
+        openTopics: `- Nach dem Projekt fragen ${tags}`
+      });
+
+      for (const days of [1, 2, 3, 4, 5]) {
+        const dates = new Set(
+          Array.from({ length: days + 1 }, (_, i) => `2026-10-${String(8 + i).padStart(2, '0')}`)
+        );
+        const result = applyPersonTopicCooldown(input, dates, '2026-10-20');
+        expect(result).toContain('- Projekt');
+        expect(result).toContain('- Nach dem Projekt fragen');
+        expect(result).not.toContain('fällig ab');
+        if (days < COOLDOWN_ACTIVE_DAYS) {
+          expect(result).toContain('Zurückhaltung, nur bei neuem Aspekt');
+        }
+        expect(result).not.toContain('(,');
+        expect(result).not.toContain(', )');
+      }
+    });
+
+    it('cleans stale deadlines even when a fresh aspect or valid reached deadline retains the item', () => {
+      const input = samplePersonProfile({
+        openTopics:
+          '- Projekt (besprochen am 2026-10-08, fällig ab 2026-10-03) ' +
+          '(neuer Aspekt am 2026-10-09: neues Angebot)',
+        intentions:
+          '- Projekt fragen (besprochen am 2026-10-08, fällig ab 2026-10-08) ' + '(fällig ab 2026-10-10)'
+      });
+      const result = applyPersonTopicCooldown(input, new Set(['2026-10-08']), '2026-10-10');
+      expect(result).toContain('- Projekt (besprochen am 2026-10-08)');
+      expect(result).toContain('(neuer Aspekt am 2026-10-09: neues Angebot)');
+      expect(result).toContain('- Projekt fragen (besprochen am 2026-10-08) (fällig ab 2026-10-10)');
+      expect(result).not.toContain('fällig ab 2026-10-03');
+      expect(result).not.toContain('fällig ab 2026-10-08');
+    });
+
+    it('keeps valid future deadlines while removing stale sibling deadline clauses', () => {
+      const input =
+        "## Yasmin's Intentions\n" +
+        '- Projekt fragen (fällig ab 2026-10-03, besprochen am 2026-10-08, fällig ab 2026-10-12)';
+      const result = applyPersonTopicCooldown(input, new Set(['2026-10-08']), '2026-10-09');
+      expect(result).toContain('Zurückhaltung bis 2026-10-12');
+      expect(result).toContain('fällig ab 2026-10-12');
+      expect(result).not.toContain('fällig ab 2026-10-03');
+    });
+
     it('strips multi-line bullets and blank-separated indented continuations / nested sub-bullets without leaving orphans', () => {
       const input = samplePersonProfile({
         openTopics: [
