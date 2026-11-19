@@ -186,20 +186,20 @@ Non-events by design:
 
 ## Post-step state machine (gates and post-steps, no agent involvement)
 
-| Post-step   | Condition                                                                       | Action                                                                                                                                                                   |
-| ----------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| reviewer    | `Verdict: CHANGES_NEEDED`                                                       | dispatch the fixer with the posted review's id (a direct chain: no GitHub event carries the review id; one of the chained dispatches enumerated in Non-events by design) |
-| reviewer    | `Verdict: NEEDS_HUMAN`                                                          | label `needs-human` + marker escalation comment `@$REPO_OWNER` (the `github.repository_owner`-derived mention every escalation template uses)                            |
-| reviewer    | head SHA moved since review start                                               | re-dispatch reviewer (stale review is not acted on)                                                                                                                      |
-| reviewer    | head-SHA freshness poll errors                                                  | post the review on the reviewed SHA + `::warning` (fail open; the stale-head protection is best-effort)                                                                  |
-| fixer gate  | advisory poll errors (head SHA, mergeability, CI state; pre-agent)              | `::warning` + proceed (fail open — the fixer re-checks live; a skip would strand the reviewer's red-CI dispatch)                                                          |
-| fixer gate  | essential poll errors (review object, head branch, resume review id; pre-agent) | bounded retry, then label `needs-human` + marker escalation comment (never a silent no-findings degradation that strands findings)                                       |
-| fixer       | outcome `FIXED` with a moved head (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                                                       |
-| fixer       | outcome `FIXED` with an unchanged head (findings verified resolved, or a failed push) | chain the reviewer (its per-head marker dedupe bounds the duplicate; never an escalation — parking resolved PRs for no reason)                                          |
-| fixer       | outcome `FIXED` with an unknown head (freshness poll failed on either side)     | chain the reviewer as if the head were unchanged + `::warning` (fail open; a genuinely pushed fix is covered by its own `synchronize`)                                   |
-| fixer       | outcome `WALL:`/budget stop                                                     | label `needs-human` + escalation comment                                                                                                                                 |
-| implementer | outcome `finished`                                                              | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review                                                                 |
-| implementer | outcome `NO_PR`                                                                 | comment questions on the issue + label `needs-human`                                                                                                                     |
+| Post-step   | Condition                                                                                         | Action                                                                                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| reviewer    | `Verdict: CHANGES_NEEDED`                                                                         | dispatch the fixer with the posted review's id (a direct chain: no GitHub event carries the review id; one of the chained dispatches enumerated in Non-events by design) |
+| reviewer    | `Verdict: NEEDS_HUMAN`                                                                            | label `needs-human` + marker escalation comment `@$REPO_OWNER` (the `github.repository_owner`-derived mention every escalation template uses)                            |
+| reviewer    | head SHA moved since review start                                                                 | re-dispatch reviewer (stale review is not acted on)                                                                                                                      |
+| reviewer    | head-SHA freshness poll errors                                                                    | post the review on the reviewed SHA + `::warning` (fail open; the stale-head protection is best-effort)                                                                  |
+| fixer gate  | advisory poll errors (head SHA, mergeability, CI state; pre-agent)                                | `::warning` + proceed (fail open — the fixer re-checks live; a skip would strand the reviewer's red-CI dispatch)                                                         |
+| fixer gate  | essential poll errors (review object, head branch, resume review id; pre-agent)                   | bounded retry, then label `needs-human` + marker escalation comment (never a silent no-findings degradation that strands findings)                                       |
+| fixer       | outcome `FIXED` with a moved head (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                                                                      |
+| fixer       | outcome `FIXED` with an unchanged head (findings verified resolved, or a failed push)             | chain the reviewer (its per-head marker dedupe bounds the duplicate; never an escalation — parking resolved PRs for no reason)                                           |
+| fixer       | outcome `FIXED` with an unknown head (freshness poll failed on either side)                       | chain the reviewer as if the head were unchanged + `::warning` (fail open; a genuinely pushed fix is covered by its own `synchronize`)                                   |
+| fixer       | outcome `WALL:`/budget stop                                                                       | label `needs-human` + escalation comment                                                                                                                                 |
+| implementer | outcome `finished`                                                                                | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review                                                                 |
+| implementer | outcome `NO_PR`                                                                                   | comment questions on the issue + label `needs-human`                                                                                                                     |
 
 The reviewer is never called twice for the same work: dispatches on the same PR serialize in
 the shared `dev-loop-pr-<N>` concurrency group, the head-SHA marker dedupe makes at most one
@@ -355,9 +355,9 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   silent full-loop stall, because the loop's escalation machinery lives in that very
   workflow (observed live: a merge commit that pushed the inline version over the cap left
   the head without any Reviewer check-run until the next push). Future growth targets the
-   script file, never the YAML scalar. The shared installer/watchdog also lives in
-   `opencode-runner.sh`, keeping the three role workflows' `run:` blocks short; it is
-   executed from a trusted-main snapshot rather than the mutable PR checkout (see above).
+  script file, never the YAML scalar. The shared installer/watchdog also lives in
+  `opencode-runner.sh`, keeping the three role workflows' `run:` blocks short; it is
+  executed from a trusted-main snapshot rather than the mutable PR checkout (see above).
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
   prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
