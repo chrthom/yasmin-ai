@@ -36,7 +36,7 @@ run_watchdog() {
   streak=0
   steps=0
   tokens=0
-  jq -c '
+  jq --unbuffered -c '
     select(.type == "tool_use" or .type == "step_start" or .type == "step_finish")
     | if .type == "tool_use" then {
           k: "tool",
@@ -61,7 +61,7 @@ run_watchdog() {
           steps=$((steps + 1))
           if [ "$steps" -ge "$MAX_TURNS" ]; then
             echo "watchdog: step limit $MAX_TURNS reached - killing opencode"
-            pkill -TERM -f 'opencode run' || true
+            kill -TERM "$1" || true
             exit 99
           fi
           ;;
@@ -70,7 +70,7 @@ run_watchdog() {
           tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b | floor')
           if [ "$tokens" -ge "$MAX_TOKENS" ]; then
             echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
-            pkill -TERM -f 'opencode run' || true
+            kill -TERM "$1" || true
             exit 99
           fi
           ;;
@@ -82,7 +82,7 @@ run_watchdog() {
             echo "watchdog: failed tool call streak = $streak"
             if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
               echo "watchdog: $streak consecutive failed tool calls - killing opencode"
-              pkill -TERM -f 'opencode run' || true
+              kill -TERM "$1" || true
               exit 99
             fi
           elif [ "$status" = "completed" ]; then
@@ -95,13 +95,23 @@ run_watchdog() {
 
 set -o pipefail
 set +e
-timeout --signal=TERM --kill-after=60 "$TIME_LIMIT_SEC" \
+# The process substitution execs timeout, so $! identifies only this run's
+# supervisor. TERM makes timeout signal its child process group, not bash -c.
+exec {stream_fd}< <(exec timeout --signal=TERM --kill-after=60 "$TIME_LIMIT_SEC" \
   opencode run --standalone --format json --auto --model mistral/zai-glm-5-3 \
     "$(cat "$2")" \
-  2> out/opencode.stderr \
-  | tee out/stream.ndjson \
-  | run_watchdog
+  2> out/opencode.stderr)
+agent_pid=$!
+tee out/stream.ndjson <&"$stream_fd" | run_watchdog "$agent_pid"
 rc=$?
+exec {stream_fd}<&-
+wait "$agent_pid"
+agent_rc=$?
+# Preserve the rightmost stream/watchdog failure (especially 99), otherwise
+# report the agent/timeout status just as the original pipefail pipeline did.
+if [ "$rc" = "0" ]; then
+  rc=$agent_rc
+fi
 set -e
 echo "rc=$rc" >> "$GITHUB_OUTPUT"
 echo "--- opencode stderr ---"

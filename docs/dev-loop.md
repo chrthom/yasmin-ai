@@ -19,10 +19,9 @@ GitHub event
         ▼
 role workflow (reviewer / fixer / implementer)
   pre-step: gate + dedupe (dev-loop label, draft, needs-human, head SHA, iteration cap)
-  job:      checkout → Node 22 → npm ci → render prompt (budget injected) →
-            timeout --signal=TERM --kill-after=60 <time-limit> opencode run --standalone
-            --format json --auto --model mistral/zai-glm-5-3 "$(cat out/<role>.rendered.md)"
-            (with a failure-streak / step / token watchdog on the stream)
+  job:      checkout → Node 22 → npm ci → fetch trusted-main runner snapshot →
+             shared runner install → render prompt (budget injected) → shared runner run
+             (timeout + failure-streak / step / token watchdog on the JSON stream)
   post-step: deterministic state machine from out/stream.ndjson + out/opencode.stderr
              (labels, escalation, failure classification)
 ```
@@ -31,6 +30,46 @@ Agents never change PR state (draft/ready/labels) themselves: every state transi
 workflow post-step, auditable in the run log, enforceable in code. There is **no draft/ready
 state machine**: the loop does not flip PRs between draft and ready. Draft status is a human
 parking brake — draft PRs are simply never touched by the loop.
+
+### Trusted shared runner and rollout
+
+The three role workflows fetch `.github/dev-loop/scripts/opencode-runner.sh` using the
+GitHub raw contents API with **`ref=main`**, after `npm ci` and before installation or any
+agent execution. The fetch prefers `DEV_LOOP_TOKEN_READONLY`, falling back to
+`DEV_LOOP_TOKEN`. It writes a snapshot to `$RUNNER_TEMP/dev-loop-opencode-runner.sh`,
+outside the checkout, and checks that it is nonempty with a shebang. Fetch or validation
+failure stops before the agent; there is no fallback to the PR's copy.
+
+Each invocation loads the snapshot into `runner` and executes `bash -eo pipefail -c
+"$runner" -- install` or `-- run out/<role>.rendered.md`. The active watchdog is thus
+already loaded before the agent can modify files. The shared script owns the pinned-v2
+installer/version check, optional websearch config, OpenCode invocation, timeout, JSON
+watchdog and output handling; workflows still own role-specific gates, credentials,
+budgets, prompt rendering, artifacts and post-processing.
+
+The watchdog signals the PID of this run's `timeout` supervisor, which forwards TERM to
+the agent's process group. It never matches process command-line text (the runner itself
+contains the OpenCode invocation in its `bash -c` argv). JSON filtering is unbuffered so
+limits interrupt a live stream. A watchdog stop preserves `rc=99` and
+`stopped_by_watchdog=true`, dumps stderr and exits the step successfully; a wall-clock
+timeout stays `rc=124`, and ordinary agent failures retain their exit code.
+
+**Compatibility contract:** the runner follows `main` at fetch time, while `MAX_TURNS`,
+`MAX_TOKENS`, `MAX_DENIED_STREAK`, `TIME_LIMIT_SEC`, `OPENCODE_VERSION`,
+`OPENCODE_CONFIG_DIR`, credentials and `GITHUB_OUTPUT` are supplied by the branch's
+workflow. The same applies to `out/<role>.rendered.md`, `out/stream.ndjson`,
+`out/opencode.stderr` and the `rc` / `stopped_by_watchdog` output names consumed by
+artifacts and post-steps. Future env/file/output contract changes must land on `main`
+first with backward-compatible support, before workflows on older branches or in-flight
+PRs begin using the new contract. An in-progress invocation keeps its loaded snapshot.
+
+**Initial rollout:** these modified workflows cannot run the agent until the runner file
+is merged to `main`; beforehand the fetch returns HTTP 404. Merge the runner and its
+workflow consumers together before dispatching feature-ref workflows. Pre-merge runs
+that do reach the fetch may produce expected pre-agent failure / `needs-human` noise;
+that is not a reason to use the untrusted PR copy. After merge, smoke-test implementer,
+reviewer and fixer on opted-in items. No end-to-end agent run has yet validated this
+initial rollout.
 
 ## Opt-in: the `dev-loop` label
 
@@ -316,7 +355,9 @@ Stays a pure gate: format-auto-fix, lint, typecheck, tests — unchanged. Additi
   silent full-loop stall, because the loop's escalation machinery lives in that very
   workflow (observed live: a merge commit that pushed the inline version over the cap left
   the head without any Reviewer check-run until the next push). Future growth targets the
-  script file, never the YAML scalar.
+   script file, never the YAML scalar. The shared installer/watchdog also lives in
+   `opencode-runner.sh`, keeping the three role workflows' `run:` blocks short; it is
+   executed from a trusted-main snapshot rather than the mutable PR checkout (see above).
 - **Red CI heads skip the review**: the reviewer's CI gate dispatches the fixer directly
   (`review_id=none` sentinel = no-findings run: conflicts and/or failing CI checks; the fixer
   prompt fetches the failing check logs). An auto-format push never reaches the fixer this way —
@@ -385,6 +426,8 @@ allocated, and the gate re-checks the live issue state, so the `workflow_dispatc
                                            an inline run: scalar - GitHub caps run: at 21,000 chars
                                            and the inline version sat within ~3.3k of it; the env:
                                            block bridges expression contexts)
+.github/dev-loop/scripts/opencode-runner.sh shared installer, timeout, watchdog and outputs;
+                                           fetched from trusted main, never run from the PR copy
 docs/dev-loop.md                           this plan / runbook
 ```
 
@@ -402,36 +445,53 @@ steps:
   - uses: actions/checkout@v4
   - uses: actions/setup-node@v4         # node 22, npm cache (mirrors ci.yml)
   - run: npm ci
-  - run: curl -fsSL https://opencode.ai/install | bash
-  - run: render .github/dev-loop/prompts/<role>.md with the budget values, then:
-        timeout --signal=TERM --kill-after=60 <time-limit> \
-          opencode run --standalone --format json --auto --model mistral/zai-glm-5-3 \
-          "$(cat out/<role>.rendered.md)" \
-          2> out/opencode.stderr | tee out/stream.ndjson | <watchdog>
-        env:
-          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
-          DEV_LOOP_ARGS: <pr/issue number, branch, review id>
-          OPENCODE_CONFIG_DIR: <job-local dir>   # env var must be the only credential source
-          OPENCODE_DISABLE_AUTOUPDATE: 'true'
-          NO_PROXY: 127.0.0.1,localhost         # managed service binds a loopback port
-            (verified against opencode v2.0.26: `run` is the non-interactive mode,
-            `--standalone` avoids the shared managed-service port state on the runner,
-            `--format json` emits the live JSON event stream the watchdog and the
-            post-step consume — event types step_start / step_finish / text /
-            tool_use, with per-step `cost` and `tokens` (incl. cache read/write) on
-            step_finish, so no export file is needed for outcome/cost. The installed
-            opencode version must be pinned and verified: the CLI surface moved
-            substantially between majors (v1.19 vs v2.0 — auth flags, provider
-            config env vars, service architecture))
-  - uses: actions/upload-artifact@v4     # out/export.json + out/stream.ndjson + stderr:
+  - name: Fetch trusted opencode runner
+    env:
+      GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN_READONLY || secrets.DEV_LOOP_TOKEN }}
+    run: |
+      gh api -H 'Accept: application/vnd.github.raw+json' \
+        "repos/${GITHUB_REPOSITORY}/contents/.github/dev-loop/scripts/opencode-runner.sh?ref=main" \
+        > "$RUNNER_TEMP/dev-loop-opencode-runner.sh"
+      test -s "$RUNNER_TEMP/dev-loop-opencode-runner.sh" && head -1 "$RUNNER_TEMP/dev-loop-opencode-runner.sh" | grep -q '^#!' || {
+        echo "::error::Trusted opencode runner snapshot is empty or lacks a shebang"
+        exit 1
+      }
+  - name: Install opencode
+    env:
+      OPENCODE_VERSION: '2.0.26'
+    run: |
+      runner="$(cat "$RUNNER_TEMP/dev-loop-opencode-runner.sh")"
+      bash -eo pipefail -c "$runner" -- install
+  - name: Run opencode role
+    run: |
+      # Render .github/dev-loop/prompts/<role>.md with the budget values first.
+      runner="$(cat "$RUNNER_TEMP/dev-loop-opencode-runner.sh")"
+      bash -eo pipefail -c "$runner" -- run out/<role>.rendered.md
+    env:  # illustrative; use each workflow's actual role budgets and credentials
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}  # reviewer prefers READONLY || TOKEN
+      DEV_LOOP_ARGS: <pr/issue number, branch, review id>
+      OPENCODE_CONFIG_DIR: <job-local dir>   # env var must be the only credential source
+      OPENCODE_DISABLE_AUTOUPDATE: 'true'
+      NO_PROXY: 127.0.0.1,localhost         # managed service binds a loopback port
+      MAX_TURNS: '400'
+      MAX_TOKENS: '4000000'
+      MAX_DENIED_STREAK: '3'
+      TIME_LIMIT_SEC: '3600'
+  - uses: actions/upload-artifact@v4     # rendered prompt + out/stream.ndjson + stderr:
                                          # outcome, stop reason, cost, final message
   - run: <post-step: state machine per table above, using the PAT>
 ```
 
-The reviewer posts its review **from the post-step** (reads the agent's verdict out of
-`out/stream.ndjson` — the last assistant message — plus `out/export.json` for outcome and
-cost, composes the marker-prefixed JSON, `gh api` posts it), so the agent never needs
+The invocation is verified against OpenCode v2.0.26: `run` is non-interactive,
+`--standalone` avoids shared managed-service port state, and `--format json` emits live
+`step_start` / `step_finish` / `text` / `tool_use` events. Per-step `cost` and `tokens`
+(including cache read/write) appear on `step_finish`, so no export file is needed. The
+shared installer pins and verifies the version because the CLI surface changed
+substantially between majors (auth flags, provider config and service architecture).
+
+The reviewer posts its review **from the post-step** (reads the agent's verdict and cost
+out of `out/stream.ndjson`, composes the marker-prefixed JSON, `gh api` posts it), so the agent never needs
 review-writing API access.
 
 ## Secrets & settings

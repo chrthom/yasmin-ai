@@ -329,11 +329,15 @@ jobs:
       - name: Fetch trusted opencode runner
         if: steps.gate.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN_READONLY || secrets.DEV_LOOP_TOKEN }}
         run: |
           gh api -H 'Accept: application/vnd.github.raw+json' \
             "repos/${GITHUB_REPOSITORY}/contents/.github/dev-loop/scripts/opencode-runner.sh?ref=main" \
             > "$RUNNER_TEMP/dev-loop-opencode-runner.sh"
+          test -s "$RUNNER_TEMP/dev-loop-opencode-runner.sh" && head -1 "$RUNNER_TEMP/dev-loop-opencode-runner.sh" | grep -q '^#!' || {
+            echo "::error::Trusted opencode runner snapshot is empty or lacks a shebang"
+            exit 1
+          }
 
       - name: Install opencode
         if: steps.gate.outputs.skip != 'true'

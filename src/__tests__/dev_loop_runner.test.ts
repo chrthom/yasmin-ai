@@ -18,17 +18,13 @@ beforeEach(() => {
     `#!/usr/bin/env bash
 printf '%s\n' "$@" > "$MOCK_ARGS"
 printf '%s\n' "$$" > "$MOCK_PID"
+trap 'echo "mock terminated" >&2; exit 143' TERM
 if [ "${'${MOCK_REPLACE:-}'}" = 1 ]; then printf 'exit 42\n' > "$MOCK_SNAPSHOT"; fi
 cat "$MOCK_STREAM"
 echo 'mock stderr' >&2
-if [ "${'${MOCK_SLEEP:-}'}" = 1 ]; then exec sleep 5; fi
+if [ "${'${MOCK_SLEEP:-}'}" = 1 ]; then sleep 5 & wait $!; fi
 exit "${'${MOCK_RC:-0}'}"
 `,
-    { mode: 0o755 }
-  );
-  writeFileSync(
-    join(sandbox, 'bin/pkill'),
-    '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$MOCK_KILLS"\nif [ "${MOCK_KILL_LIVE:-}" = 1 ]; then kill -TERM "$(cat "$MOCK_PID")"; fi\n',
     { mode: 0o755 }
   );
 });
@@ -58,7 +54,6 @@ const run = (stream: string, overrides: Record<string, string> = {}) => {
     TIME_LIMIT_SEC: '5',
     MOCK_ARGS: join(sandbox, 'args'),
     MOCK_STREAM: join(sandbox, 'stream'),
-    MOCK_KILLS: join(sandbox, 'kills'),
     MOCK_PID: join(sandbox, 'pid'),
     MOCK_SNAPSHOT: join(sandbox, 'snapshot'),
     ...overrides
@@ -117,10 +112,13 @@ test.each([
   ['steps', step() + step(), { MAX_TURNS: '2' }, 'step limit 2'],
   ['weighted tokens', tokens(5, 2, 1, 10) + tokens(0, 0, 0, 10), { MAX_TOKENS: '10' }, 'token limit 10']
 ])('watchdog stops on %s and emits the exact outputs', (_name, stream, limits, message) => {
-  const { result, output } = run(stream, limits);
+  const { result, output } = run(stream, { ...limits, MOCK_SLEEP: '1', TIME_LIMIT_SEC: '3' });
   expect(output).toBe('rc=99\nstopped_by_watchdog=true\n');
   expect(result.stdout).toContain(message);
-  expect(readFileSync(join(sandbox, 'kills'), 'utf8')).toBe('-TERM -f opencode run\n');
+  expect(result.stdout).toContain('--- opencode stderr ---');
+  expect(result.stdout).toContain('mock terminated');
+  const agentPid = Number(readFileSync(join(sandbox, 'pid'), 'utf8'));
+  expect(() => process.kill(agentPid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
   expect(readFileSync(join(sandbox, 'out/stream.ndjson'), 'utf8')).toBe(stream);
 });
 
@@ -132,8 +130,7 @@ test('watchdog interrupts a live stream before the timeout', () => {
   const { output } = run(step().repeat(1000), {
     MAX_TURNS: '1',
     TIME_LIMIT_SEC: '3',
-    MOCK_SLEEP: '1',
-    MOCK_KILL_LIVE: '1'
+    MOCK_SLEEP: '1'
   });
   expect(output).toBe('rc=99\nstopped_by_watchdog=true\n');
 });
@@ -158,6 +155,34 @@ test('a missing snapshot fails before starting the agent', () => {
   expect(result.status).not.toBe(0);
   expect(readFileSync(join(sandbox, 'output'), 'utf8')).toBe('');
 });
+
+test.each(['', 'not a shell script\n', '#!/usr/bin/env bash\nexit 0\n'])(
+  'fetch step rejects invalid snapshots before agent execution: %j',
+  snapshot => {
+    writeFileSync(join(sandbox, 'bin/gh'), '#!/usr/bin/env bash\ncat "$MOCK_SNAPSHOT"\n', {
+      mode: 0o755
+    });
+    writeFileSync(join(sandbox, 'snapshot'), snapshot);
+    const yaml = readFileSync(join(root, '.github/workflows/dev-loop-review.yml'), 'utf8');
+    const fetchStep = yaml.slice(yaml.indexOf('- name: Fetch trusted opencode runner'));
+    const script = fetchStep.split('run: |\n')[1].split('\n      - name:')[0];
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', script], {
+      cwd: sandbox,
+      env: {
+        ...process.env,
+        PATH: `${join(sandbox, 'bin')}:${process.env['PATH']}`,
+        RUNNER_TEMP: sandbox,
+        MOCK_SNAPSHOT: join(sandbox, 'snapshot'),
+        GITHUB_REPOSITORY: 'chrthom/yasmin-ai'
+      },
+      encoding: 'utf8'
+    });
+    expect(result.status).toBe(snapshot.startsWith('#!') ? 0 : 1);
+    if (!snapshot.startsWith('#!')) {
+      expect(result.stdout).toContain('Trusted opencode runner snapshot is empty or lacks a shebang');
+    }
+  }
+);
 
 test('installer uses the pinned version and fails on a mismatched binary', () => {
   writeFileSync(join(sandbox, 'bin/curl'), '#!/usr/bin/env bash\nprintf "exit 0\\n"\n', { mode: 0o755 });
@@ -202,6 +227,12 @@ test.each([
     expect(agent).toBeGreaterThan(install);
     expect(artifact).toBeGreaterThan(agent);
     expect(yaml.slice(fetch, install)).toContain('opencode-runner.sh?ref=main');
+    expect(yaml.slice(fetch, install)).toContain(
+      'GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN_READONLY || secrets.DEV_LOOP_TOKEN }}'
+    );
+    expect(yaml.slice(fetch, install)).toContain(
+      'Trusted opencode runner snapshot is empty or lacks a shebang'
+    );
     expect(yaml.slice(install, agent)).toContain(
       'runner="$(cat "$RUNNER_TEMP/dev-loop-opencode-runner.sh")"'
     );
