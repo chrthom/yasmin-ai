@@ -12,10 +12,9 @@ jest.mock('../config', () => ({
 import { MemoryArchiveRow } from '../database/models/memory_archive.model';
 import {
   COOLDOWN_ACTIVE_DAYS,
-  EMPTY_COOLDOWN_SECTION_PLACEHOLDER,
-  applyPersonTopicCooldown,
   extractConversationUserDates,
   extractPersonActiveChatDates,
+  formatActiveChatDatesForPrompt,
   formatCooldownDate,
   parseJournalChatDates,
   stampJournalChatDates,
@@ -33,41 +32,6 @@ function archiveRow(filePath: string, content: string, createdAt: Date): MemoryA
     syncedAt: null,
     createdAt
   };
-}
-
-function samplePersonProfile(overrides?: {
-  ideas?: string;
-  happenings?: string;
-  openTopics?: string;
-  intentions?: string;
-}): string {
-  return [
-    '## Core Facts',
-    '- Zara ist Yasmins ältere Schwester.',
-    '',
-    '## Current Attitude',
-    '- Entspannt und gut gelaunt.',
-    '',
-    '## Ideas, Interests & Goals',
-    overrides?.ideas ?? '- Töpferkurs in Altona (besprochen am 2026-10-05)\n- Liest gerne Science-Fiction',
-    '',
-    '## Recent Happenings',
-    overrides?.happenings ?? '- Am 2026-10-05 hat Zara von ihrer neuen Schale erzählt.',
-    '',
-    '## Open Topics',
-    overrides?.openTopics ??
-      '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)\n- Geschenkidee für Papa',
-    '',
-    '## Communication Style',
-    '- Locker, direkt, gerne mit trockenem Humor.',
-    '',
-    "## Yasmin's View",
-    '- Meine Einschätzung (Konfidenz: mittel, Tendenz: stable): Zara ist kreativ und verlässlich.',
-    '',
-    "## Yasmin's Intentions",
-    overrides?.intentions ??
-      '- Nach dem Töpferkurs fragen (Status: open, besprochen am 2026-10-05)\n- Ihr einen Sci-Fi-Roman vorschlagen (Status: open)'
-  ].join('\n');
 }
 
 describe('cooldown', () => {
@@ -193,267 +157,20 @@ describe('cooldown', () => {
     });
   });
 
-  describe('applyPersonTopicCooldown', () => {
-    it('returns content byte-identically when no besprochen-am marker is present', () => {
-      const plain = '## Core Facts\n- Mag Katzen.\n\n## Open Topics\n- Neues Fahrrad\n';
-      expect(applyPersonTopicCooldown(plain, new Set(['2026-10-05']), '2026-10-10')).toBe(plain);
-    });
-
-    it('at 0 subsequent active days (even weeks later on the calendar): strips from Open Topics & Intentions and marks Pause in Ideas', () => {
-      const input = samplePersonProfile();
-      // Zara last chatted on 2026-10-05; today is 2026-10-20, but Zara had 0 chats since 2026-10-05.
-      const result = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-20');
-
-      expect(result).toContain(
-        '- Töpferkurs in Altona (zuletzt im letzten Gespräch besprochen – Pause, nicht von selbst anfangen außer bei neuem Aspekt)'
-      );
-      expect(result).toContain('- Liest gerne Science-Fiction');
-      // Stripped from both Open Topics and Yasmin's Intentions:
-      expect(result).not.toContain('Neue Glasur beim Töpferkurs');
-      expect(result).not.toContain('Nach dem Töpferkurs fragen');
-      // Unrelated open topics and intentions survive:
-      expect(result).toContain('- Geschenkidee für Papa');
-      expect(result).toContain('- Ihr einen Sci-Fi-Roman vorschlagen (Status: open)');
-      // Recent Happenings stays untouched:
-      expect(result).toContain('- Am 2026-10-05 hat Zara von ihrer neuen Schale erzählt.');
-    });
-
-    it('inserts the empty-section placeholder when cooldown strips every item in Open Topics or Intentions', () => {
-      const input = samplePersonProfile({
-        openTopics: '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)',
-        intentions: '- Nach dem Töpferkurs fragen (besprochen am 2026-10-05)'
-      });
-
-      const result = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-06');
-
-      expect(result).toContain(`## Open Topics\n${EMPTY_COOLDOWN_SECTION_PLACEHOLDER}`);
-      expect(result).toContain(`## Yasmin's Intentions\n${EMPTY_COOLDOWN_SECTION_PLACEHOLDER}`);
-    });
-
-    it('at 1 subsequent active day: uses singular "vor 1 Gesprächstag", keeps Open Topics with restraint, still strips Intentions', () => {
-      const input = samplePersonProfile();
-      const activeDates = new Set(['2026-10-05', '2026-10-08']);
-
-      const result = applyPersonTopicCooldown(input, activeDates, '2026-10-08');
-
-      expect(result).toContain(
-        '- Töpferkurs in Altona (vor 1 Gesprächstag besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-      );
-      expect(result).toContain(
-        '- Neue Glasur beim Töpferkurs (vor 1 Gesprächstag besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-      );
-      expect(result).not.toContain('Nach dem Töpferkurs fragen');
-    });
-
-    it('at 2..4 subsequent active days: uses plural "vor N Gesprächstagen" and still strips Intentions', () => {
-      const input = samplePersonProfile();
-      const activeDates = new Set(['2026-10-05', '2026-10-06', '2026-10-08', '2026-10-11', '2026-10-14']);
-
-      const result = applyPersonTopicCooldown(input, activeDates, '2026-10-14');
-
+  describe('formatActiveChatDatesForPrompt', () => {
+    it('formats empty sets as "(none recorded yet)" and sorts/deduplicates up to 2 * COOLDOWN_ACTIVE_DAYS dates', () => {
       expect(COOLDOWN_ACTIVE_DAYS).toBe(5);
-      expect(result).toContain(
-        '- Töpferkurs in Altona (vor 4 Gesprächstagen besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-      );
-      expect(result).toContain(
-        '- Neue Glasur beim Töpferkurs (vor 4 Gesprächstagen besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-      );
-      expect(result).not.toContain('Nach dem Töpferkurs fragen');
-    });
-
-    it('at >= 5 subsequent active days: lifts cooldown in all sections and rewrites tag to "(am YYYY-MM-DD)"', () => {
-      const input = samplePersonProfile();
-      const activeDates = new Set([
-        '2026-10-05',
-        '2026-10-06',
-        '2026-10-07',
-        '2026-10-08',
-        '2026-10-09',
-        '2026-10-10'
-      ]);
-
-      const result = applyPersonTopicCooldown(input, activeDates, '2026-10-10');
-
-      expect(result).toContain('- Töpferkurs in Altona (am 2026-10-05)');
-      expect(result).toContain('- Neue Glasur beim Töpferkurs (am 2026-10-05)');
-      expect(result).toContain('- Nach dem Töpferkurs fragen (Status: open, am 2026-10-05)');
-      expect(result).not.toContain('Pause');
-      expect(result).not.toContain('Zurückhaltung');
-    });
-
-    it('override 1 (neuer Aspekt >= besprochen date): keeps bullet intact across all sections even at 0 active days', () => {
-      const input = samplePersonProfile({
-        openTopics:
-          '- Töpferkurs (besprochen am 2026-10-05) (neuer Aspekt am 2026-10-06: Mama (Anjali) möchte auch mitkommen)',
-        intentions:
-          '- Zara erzählen, dass Mama mit zum Töpferkurs will (besprochen am 2026-10-05, neuer Aspekt am 2026-10-06: Anjali fragte danach)'
-      });
-
-      const result = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-06');
-
-      expect(result).toContain(
-        '- Töpferkurs (besprochen am 2026-10-05) (neuer Aspekt am 2026-10-06: Mama (Anjali) möchte auch mitkommen)'
-      );
-      expect(result).toContain(
-        '- Zara erzählen, dass Mama mit zum Töpferkurs will (besprochen am 2026-10-05, neuer Aspekt am 2026-10-06: Anjali fragte danach)'
+      expect(formatActiveChatDatesForPrompt([])).toBe('(none recorded yet)');
+      expect(formatActiveChatDatesForPrompt(['2026-10-08', '2026-10-05', '2026-10-08'])).toBe(
+        '2026-10-05, 2026-10-08'
       );
     });
 
-    it('stale neuer Aspekt (< besprochen date) does NOT override cooldown and is cleaned up from rewritten bullets', () => {
-      const input = samplePersonProfile({
-        ideas:
-          '- Töpferkurs (besprochen am 2026-10-08) (neuer Aspekt am 2026-10-06: Mama (Anjali) wollte mitkommen)',
-        openTopics: '- Ausflug (neuer Aspekt am 2026-10-06: Papa (Chris) fragte, besprochen am 2026-10-07)',
-        intentions:
-          '- Nach Töpferkurs fragen (besprochen am 2026-10-08, neuer Aspekt am 2026-10-06: erledigt)'
-      });
-
-      const result = applyPersonTopicCooldown(
-        input,
-        new Set(['2026-10-05', '2026-10-07', '2026-10-08']),
-        '2026-10-08'
+    it('bounds long histories to the most recent 2 * COOLDOWN_ACTIVE_DAYS dates with an earlier-count note', () => {
+      const twelveDates = Array.from({ length: 12 }, (_, i) => `2026-10-${String(i + 1).padStart(2, '0')}`);
+      expect(formatActiveChatDatesForPrompt(twelveDates)).toBe(
+        '2026-10-03, 2026-10-04, 2026-10-05, 2026-10-06, 2026-10-07, 2026-10-08, 2026-10-09, 2026-10-10, 2026-10-11, 2026-10-12 (plus 2 earlier active chat days)'
       );
-
-      expect(result).toContain(
-        '- Töpferkurs (zuletzt im letzten Gespräch besprochen – Pause, nicht von selbst anfangen außer bei neuem Aspekt)'
-      );
-      expect(result).toContain(
-        '- Ausflug (vor 1 Gesprächstag besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-      );
-      expect(result).not.toContain('neuer Aspekt am 2026-10-06');
-      expect(result).not.toContain('Anjali');
-      expect(result).not.toContain('Nach Töpferkurs fragen');
-    });
-
-    it('override 2 (fällig ab): retains future deadlines with date-gated restraint, lifts once dueDate <= runDate, and strips pre-discussion deadlines', () => {
-      const input = samplePersonProfile({
-        openTopics: '- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)',
-        intentions:
-          '- Fragen wie die Mathe-Klausur lief (besprochen am 2026-10-05, fällig ab 2026-10-09)\n' +
-          '- Alte Frist schon besprochen (besprochen am 2026-10-05, fällig ab 2026-10-03)'
-      });
-
-      // Before due date (2026-10-07): future fällig-ab items stay in the eager cache with explicit
-      // date-gated restraint so quiet nights cannot strand the follow-up; stale pre-discussion
-      // deadline (2026-10-03 <= 2026-10-05) is still stripped by cooldown.
-      const beforeDue = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-07');
-      expect(beforeDue).toContain(
-        '- Mathe-Klausur am Freitag (am 2026-10-05 besprochen – Zurückhaltung bis 2026-10-09, erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen) (fällig ab 2026-10-09)'
-      );
-      expect(beforeDue).toContain(
-        '- Fragen wie die Mathe-Klausur lief (am 2026-10-05 besprochen – Zurückhaltung bis 2026-10-09, erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen, fällig ab 2026-10-09)'
-      );
-      expect(beforeDue).not.toContain('Alte Frist schon besprochen');
-
-      // On due date (2026-10-09): restraint lifts completely, stale 2026-10-03 deadline stays stripped.
-      const onDue = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-09');
-      expect(onDue).toContain('- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)');
-      expect(onDue).toContain(
-        '- Fragen wie die Mathe-Klausur lief (besprochen am 2026-10-05, fällig ab 2026-10-09)'
-      );
-      expect(onDue).not.toContain('Zurückhaltung bis 2026-10-09');
-      expect(onDue).not.toContain('Alte Frist schon besprochen');
-    });
-
-    it.each([
-      '(besprochen am 2026-10-08) (fällig ab 2026-10-03)',
-      '(besprochen am 2026-10-08, fällig ab 2026-10-03)',
-      '(fällig ab 2026-10-03, besprochen am 2026-10-08)',
-      '(Status: open; fällig ab 2026-10-03; besprochen am 2026-10-08)',
-      '(besprochen am 2026-10-08, fällig ab 2026-10-08)',
-      '(besprochen am 2026-10-08) – fällig ab 2026-10-03'
-    ])('removes stale live-chat deadline overrides from retained cooldown items: %s', tags => {
-      const input = samplePersonProfile({
-        ideas: `- Projekt ${tags}`,
-        openTopics: `- Nach dem Projekt fragen ${tags}`
-      });
-
-      for (const days of [1, 2, 3, 4, 5]) {
-        const dates = new Set(
-          Array.from({ length: days + 1 }, (_, i) => `2026-10-${String(8 + i).padStart(2, '0')}`)
-        );
-        const result = applyPersonTopicCooldown(input, dates, '2026-10-20');
-        expect(result).toContain('- Projekt');
-        expect(result).toContain('- Nach dem Projekt fragen');
-        expect(result).not.toContain('fällig ab');
-        if (days < COOLDOWN_ACTIVE_DAYS) {
-          expect(result).toContain('Zurückhaltung, nur bei neuem Aspekt');
-        }
-        expect(result).not.toContain('(,');
-        expect(result).not.toContain(', )');
-      }
-    });
-
-    it('cleans stale deadlines even when a fresh aspect or valid reached deadline retains the item', () => {
-      const input = samplePersonProfile({
-        openTopics:
-          '- Projekt (besprochen am 2026-10-08, fällig ab 2026-10-03) ' +
-          '(neuer Aspekt am 2026-10-09: neues Angebot)',
-        intentions:
-          '- Projekt fragen (besprochen am 2026-10-08, fällig ab 2026-10-08) ' + '(fällig ab 2026-10-10)'
-      });
-      const result = applyPersonTopicCooldown(input, new Set(['2026-10-08']), '2026-10-10');
-      expect(result).toContain('- Projekt (besprochen am 2026-10-08)');
-      expect(result).toContain('(neuer Aspekt am 2026-10-09: neues Angebot)');
-      expect(result).toContain('- Projekt fragen (besprochen am 2026-10-08) (fällig ab 2026-10-10)');
-      expect(result).not.toContain('fällig ab 2026-10-03');
-      expect(result).not.toContain('fällig ab 2026-10-08');
-    });
-
-    it('keeps valid future deadlines while removing stale sibling deadline clauses', () => {
-      const input =
-        "## Yasmin's Intentions\n" +
-        '- Projekt fragen (fällig ab 2026-10-03, besprochen am 2026-10-08, fällig ab 2026-10-12)';
-      const result = applyPersonTopicCooldown(input, new Set(['2026-10-08']), '2026-10-09');
-      expect(result).toContain('Zurückhaltung bis 2026-10-12');
-      expect(result).toContain('fällig ab 2026-10-12');
-      expect(result).not.toContain('fällig ab 2026-10-03');
-    });
-
-    it('strips multi-line bullets and blank-separated indented continuations / nested sub-bullets without leaving orphans', () => {
-      const input = samplePersonProfile({
-        openTopics: [
-          '- Töpferkurs in Altona (zuletzt besprochen am 2026-10-05)',
-          '',
-          '  Sie probiert nächste Woche eine blaue Glasur aus.',
-          '',
-          '  - Foto zeigen lassen',
-          '    - Auch die Schale von letzter Woche',
-          '',
-          '- Sommerurlaub in Italien'
-        ].join('\n'),
-        intentions: [
-          '- Nach dem Töpferkurs fragen (besprochen am 2026-10-05)',
-          '',
-          '  - Foto der Glasur zeigen lassen'
-        ].join('\n')
-      });
-
-      const stripped = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-05');
-
-      expect(stripped).not.toContain('blaue Glasur');
-      expect(stripped).not.toContain('Foto zeigen lassen');
-      expect(stripped).not.toContain('Schale von letzter Woche');
-      expect(stripped).not.toContain('Foto der Glasur');
-      expect(stripped).toContain('- Sommerurlaub in Italien');
-      expect(stripped).toContain(`## Yasmin's Intentions\n${EMPTY_COOLDOWN_SECTION_PLACEHOLDER}`);
-
-      // When kept at 1 subsequent active day in Open Topics, blank-separated children stay attached and intact:
-      const kept = applyPersonTopicCooldown(input, new Set(['2026-10-05', '2026-10-08']), '2026-10-08');
-      expect(kept).toContain(
-        [
-          '- Töpferkurs in Altona (vor 1 Gesprächstag besprochen – Zurückhaltung, nur bei neuem Aspekt)',
-          '',
-          '  Sie probiert nächste Woche eine blaue Glasur aus.',
-          '',
-          '  - Foto zeigen lassen',
-          '    - Auch die Schale von letzter Woche',
-          '',
-          '- Sommerurlaub in Italien'
-        ].join('\n')
-      );
-      // In Intentions at 1 subsequent active day, parent + blank-separated sub-bullet are still stripped cleanly:
-      expect(kept).not.toContain('Foto der Glasur');
     });
   });
 });

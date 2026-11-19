@@ -46,7 +46,8 @@ import {
   runReview,
   reviseProposal,
   CompactKind,
-  ExistingTopic
+  ExistingTopic,
+  PersonCompactContext
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import {
@@ -68,7 +69,6 @@ import { pathToTitle } from './mapping';
 import { personNameFromTitle, sanitizeForPath } from '../strings';
 import { decayMoodFile, MOOD_FILE_PATH, parseMood, stampMoodUpdatedAt, stripMoodHeader } from './mood';
 import {
-  applyPersonTopicCooldown,
   extractConversationUserDates,
   extractPersonActiveChatDates,
   formatCooldownDate,
@@ -801,6 +801,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         // eager entry of its own -- pathToTitle maps it to null, so only this fold-in brings it
         // into the cache.
         let compactSource = stripped;
+        let personContext: PersonCompactContext | undefined;
         if (kind === 'yasmin') {
           const moodRow = await getCurrentVersion(MOOD_FILE_PATH);
           if (moodRow) {
@@ -848,16 +849,16 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             }
           }
         } else if (kind === 'person' && personName !== undefined) {
-          // Per-person topic cooldown is applied to the compaction view only (never written back
-          // to memory_archive, avoiding nightly version/upload churn): active chat days are counted
+          // Per-person topic cooldown is evaluated during Phase-7 compaction (never written back to
+          // memory_archive, avoiding nightly version/upload churn): active chat days are extracted
           // strictly from this person's own archived journals.
           const activeChatDates = extractPersonActiveChatDates(
             allCurrentVersions,
             sanitizeForPath(personName)
           );
-          compactSource = applyPersonTopicCooldown(stripped, activeChatDates, runDateStr);
+          personContext = { runDate: runDateStr, activeChatDates };
         }
-        let compacted = await runCompact(kind, personName, compactSource);
+        let compacted = await runCompact(kind, personName, compactSource, personContext);
 
         if (compacted.trim().length === 0) {
           // An empty source file simply has nothing to compact -- log and move on rather than

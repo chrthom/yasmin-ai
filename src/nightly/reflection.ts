@@ -3,6 +3,7 @@ import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
 import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
 import { isOverCap, truncateToCap } from './privacy';
+import { formatActiveChatDatesForPrompt } from './cooldown';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
 import { IntradayNote } from '../database/models/intraday_notes.model';
@@ -678,18 +679,28 @@ export async function reviseProposal(
 /** Which kind of long-term file a Phase-7 compaction prompt is built for. */
 export type CompactKind = 'person' | 'yasmin' | 'family';
 
+/** Per-person cooldown context passed into Phase-7 person compaction. */
+export interface PersonCompactContext {
+  /** Current nightly run date (`YYYY-MM-DD` in `MEMORY_TZ`). */
+  runDate: string;
+  /** Distinct `YYYY-MM-DD` dates on which this specific person had active conversations. */
+  activeChatDates: Iterable<string>;
+}
+
 /**
  * Builds the Phase-7 compaction prompt for a given kind of long-term file
  *
  * @param kind Which kind of long-term file is being compacted.
  * @param personName The person's name, required for kind 'person' (undefined otherwise).
  * @param strippedContent The file's privacy-stripped current content.
+ * @param personContext Optional per-person active conversation dates + runDate for topic cooldown.
  * @returns The rendered compaction prompt.
  */
 export function compactPrompt(
   kind: CompactKind,
   personName: string | undefined,
-  strippedContent: string
+  strippedContent: string,
+  personContext?: PersonCompactContext
 ): string {
   const cap = String(config.nightly.eagerMaxChars);
   const headerName: Record<CompactKind, string> = {
@@ -697,7 +708,12 @@ export function compactPrompt(
     yasmin: 'compact_yasmin_prompt.txt',
     family: 'compact_family_prompt.txt'
   };
-  const header = renderPrompt(headerName[kind], { cap, personName: personName ?? '' });
+  const header = renderPrompt(headerName[kind], {
+    cap,
+    personName: personName ?? '',
+    runDate: personContext?.runDate ?? formatRunDate(new Date()),
+    activeChatDates: formatActiveChatDatesForPrompt(personContext?.activeChatDates ?? [])
+  });
   return header + renderPrompt('compact_footer.txt', { content: strippedContent });
 }
 
@@ -707,18 +723,20 @@ export function compactPrompt(
  * @param kind Which kind of long-term file is being compacted.
  * @param personName The person's name, required for kind 'person' (undefined otherwise).
  * @param strippedContent The file's privacy-stripped current content.
+ * @param personContext Optional per-person active conversation dates + runDate for topic cooldown.
  * @returns The compacted content, within the eager-cache cap.
  */
 export async function runCompact(
   kind: CompactKind,
   personName: string | undefined,
-  strippedContent: string
+  strippedContent: string,
+  personContext?: PersonCompactContext
 ): Promise<string> {
   const cap = config.nightly.eagerMaxChars;
 
   const first = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: compactPrompt(kind, personName, strippedContent) }],
+    inputs: [{ role: 'user', content: compactPrompt(kind, personName, strippedContent, personContext) }],
     store: false
   });
   let text = first.outputText.trim();
@@ -729,7 +747,7 @@ export async function runCompact(
   }
 
   const tighterPrompt =
-    compactPrompt(kind, personName, strippedContent) +
+    compactPrompt(kind, personName, strippedContent, personContext) +
     '\n\nYou are still over the ' +
     cap +
     ' character limit -- cut it down further, keep only what is essential.';

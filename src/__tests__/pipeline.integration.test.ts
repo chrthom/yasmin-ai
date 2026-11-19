@@ -2117,7 +2117,7 @@ describe('nightly pipeline integration', () => {
   // -------------------------------------------------------------------------
   // Phase-7 per-person topic cooldown (zero archive churn, per-person active days)
   // -------------------------------------------------------------------------
-  it('cooldown: Phase 7 strips/rewrites people/<name>.md using ONLY that person’s active chat days without mutating memory_archive', async () => {
+  it('cooldown: Phase 7 passes ONLY that person’s active chat days into person compaction without mutating memory_archive', async () => {
     const rawAliceProfile = [
       '## Core Facts',
       '- Alice wohnt in Hamburg.',
@@ -2156,14 +2156,8 @@ describe('nightly pipeline integration', () => {
       call => call[0] === 'person' && call[1] === 'Alice'
     );
     expect(aliceCompactCall).toBeDefined();
-    const compactSource: string = aliceCompactCall![2];
-    expect(compactSource).toContain(
-      '- Töpferkurs in Altona (zuletzt im letzten Gespräch besprochen – Pause, nicht von selbst anfangen außer bei neuem Aspekt)'
-    );
-    expect(compactSource).not.toContain('Neue Glasur beim Töpferkurs');
-    expect(compactSource).not.toContain('Nach dem Töpferkurs fragen');
-    expect(compactSource).toContain('## Open Topics\n- (aktuell keine)');
-    expect(compactSource).toContain("## Yasmin's Intentions\n- (aktuell keine)");
+    expect(aliceCompactCall![2]).toBe(rawAliceProfile);
+    expect([...aliceCompactCall![3].activeChatDates].sort()).toEqual(['2026-10-05']);
 
     // Zero archive churn: people/alice.md in memory_archive stays at v1 with its static date tag.
     const archivedAlice = await archive.getCurrentVersion('people/alice.md');
@@ -2172,16 +2166,7 @@ describe('nightly pipeline integration', () => {
   });
 
   it('cooldown: Phase 7 counts subsequent active conversation days for that person including tonight’s new journal', async () => {
-    const rawAliceProfile = [
-      '## Ideas, Interests & Goals',
-      '- Töpferkurs in Altona (besprochen am 2026-10-05)',
-      '',
-      '## Open Topics',
-      '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)',
-      '',
-      "## Yasmin's Intentions",
-      '- Nach dem Töpferkurs fragen (Status: open, besprochen am 2026-10-05)'
-    ].join('\n');
+    const rawAliceProfile = '## Ideas, Interests & Goals\n- Töpferkurs in Altona (besprochen am 2026-10-05)';
 
     await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
     await archive.seed('journals/alice/conv-a1.md', 'Tag 0', new Date('2026-10-05T18:00:00Z'));
@@ -2199,31 +2184,20 @@ describe('nightly pipeline integration', () => {
       call => call[0] === 'person' && call[1] === 'Alice'
     );
     expect(aliceCompactCall).toBeDefined();
-    const compactSource: string = aliceCompactCall![2];
-    expect(compactSource).toContain(
-      '- Töpferkurs in Altona (vor 2 Gesprächstagen besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-    );
-    expect(compactSource).toContain(
-      '- Neue Glasur beim Töpferkurs (vor 2 Gesprächstagen besprochen – Zurückhaltung, nur bei neuem Aspekt)'
-    );
-    expect(compactSource).not.toContain('Nach dem Töpferkurs fragen');
+    const personContext = aliceCompactCall![3];
+    expect([...personContext.activeChatDates].sort()).toEqual([
+      '2026-10-05',
+      '2026-10-08',
+      personContext.runDate
+    ]);
   });
 
-  it('cooldown (backlog): Phase 2 persists real user-message chatDates so a multi-day backlog consolidated in one run advances cooldown accurately without leaking chatDates to RAG', async () => {
-    const rawAliceProfile = [
-      '## Ideas, Interests & Goals',
-      '- Töpferkurs in Altona (besprochen am 2026-10-05)',
-      '',
-      '## Open Topics',
-      '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)',
-      '',
-      "## Yasmin's Intentions",
-      '- Nach dem Töpferkurs fragen (Status: open, besprochen am 2026-10-05)'
-    ].join('\n');
+  it('cooldown (backlog): Phase 2 persists real user-message chatDates so a multi-day backlog consolidated in one run passes every real chat date into Phase 7 without leaking chatDates to RAG', async () => {
+    const rawAliceProfile = '## Ideas, Interests & Goals\n- Töpferkurs in Altona (besprochen am 2026-10-05)';
 
     await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
 
-    // Four backlog conversations spanning 2026-10-05 .. 2026-10-10 (including a two-day conversation
+    // Five backlog conversations spanning 2026-10-05 .. 2026-10-10 (including a two-day conversation
     // conv-b2 across 2026-10-06 and 2026-10-07) are all consolidated together in ONE nightly run, so
     // every journal row receives the same collectedAt timestamp.
     mockListConversations.mockResolvedValueOnce([
@@ -2272,20 +2246,22 @@ describe('nightly pipeline integration', () => {
     expect(uploadedMultiDay).toBeDefined();
     expect(uploadedMultiDay![1]).toBe('Alice plauderte über den Alltag.');
 
-    // Phase 7 counted all 5 subsequent active chat days (2026-10-06..2026-10-10) -> cooldown lifted!
+    // Phase 7 passes all 6 distinct user-message dates (5 subsequent days after 2026-10-05) to compaction:
     const aliceCompactCall = mockRunCompact.mock.calls.find(
       call => call[0] === 'person' && call[1] === 'Alice'
     );
     expect(aliceCompactCall).toBeDefined();
-    const compactSource: string = aliceCompactCall![2];
-    expect(compactSource).toContain('- Töpferkurs in Altona (am 2026-10-05)');
-    expect(compactSource).toContain('- Neue Glasur beim Töpferkurs (am 2026-10-05)');
-    expect(compactSource).toContain('- Nach dem Töpferkurs fragen (Status: open, am 2026-10-05)');
-    expect(compactSource).not.toContain('Pause');
-    expect(compactSource).not.toContain('Zurückhaltung');
+    expect([...aliceCompactCall![3].activeChatDates].sort()).toEqual([
+      '2026-10-05',
+      '2026-10-06',
+      '2026-10-07',
+      '2026-10-08',
+      '2026-10-09',
+      '2026-10-10'
+    ]);
   });
 
-  it('cooldown (fällig ab across quiet nights): future due-date follow-ups survive consecutive skipped quiet runs and are ready for live chat on the due date', async () => {
+  it('cooldown (fällig ab across quiet nights): future due-date follow-ups survive consecutive skipped quiet runs and live chat receives Today is YYYY-MM-DD', async () => {
     const contextCache = new Map<string, string>();
     mockUpsertContextEntry.mockImplementation(async (title: string, content: string) => {
       const existed = contextCache.has(title);
@@ -2304,17 +2280,22 @@ describe('nightly pipeline integration', () => {
       }
       return null;
     });
-    mockRunCompact.mockImplementation(async (_kind: any, _name: any, source: string) => source);
+    mockRunCompact.mockImplementation(async (_kind: any, _name: any, source: string, ctx?: any) => {
+      if (ctx?.runDate && ctx.runDate < '2026-10-09') {
+        return source.replace(
+          '(besprochen am 2026-10-05) (fällig ab 2026-10-09)',
+          '(Zurückhaltung bis 2026-10-09 – erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen) (fällig ab 2026-10-09)'
+        );
+      }
+      return source;
+    });
 
     const rawZaraProfile = [
       '## Core Facts',
       '- Zara ist Yasmins ältere Schwester.',
       '',
       '## Open Topics',
-      '- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)',
-      '',
-      "## Yasmin's Intentions",
-      '- Fragen wie die Mathe-Klausur lief (besprochen am 2026-10-05, fällig ab 2026-10-09)'
+      '- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)'
     ].join('\n');
 
     jest.useFakeTimers();
@@ -2339,6 +2320,8 @@ describe('nightly pipeline integration', () => {
       const night1 = await runNightlyPipeline();
       expect(night1.status).toBe('completed');
       expect(mockRunCompact).toHaveBeenCalledTimes(1);
+      expect(mockRunCompact.mock.calls[0][3].runDate).toBe('2026-10-05');
+      expect([...mockRunCompact.mock.calls[0][3].activeChatDates]).toEqual(['2026-10-05']);
 
       const cachedAfterNight1 = contextCache.get('Profile of Zara') ?? '';
       expect(cachedAfterNight1).toContain('Mathe-Klausur am Freitag');
@@ -2381,12 +2364,11 @@ describe('nightly pipeline integration', () => {
         new Date('2026-10-09T14:00:00Z')
       );
       expect(onDueContext.formattedContext).toContain('Mathe-Klausur am Freitag');
-      expect(onDueContext.formattedContext).toContain('Fragen wie die Mathe-Klausur lief');
       expect(onDueContext.formattedContext).toContain('fällig ab 2026-10-09');
       expect(onDueContext.formattedContext).toContain('You are talking to zara. Today is 2026-10-09.');
 
       // When a non-quiet nightly run executes on 2026-10-09 (e.g. Bob chatted while Zara had 0 new chats),
-      // Phase 7 lifts the Zurückhaltung tag on Zara's due follow-ups completely.
+      // Phase 7 passes runDate=2026-10-09 so Zara's due follow-ups lose their Zurückhaltung cue.
       jest.setSystemTime(new Date('2026-10-09T21:00:00Z'));
       mockListConversations.mockResolvedValueOnce([conversation('conv-bob-due', 'Bob')]);
       mockGetConversationMessages.mockResolvedValueOnce([]);
@@ -2395,10 +2377,11 @@ describe('nightly pipeline integration', () => {
 
       const dueNight = await runNightlyPipeline();
       expect(dueNight.status).toBe('completed');
+      const zaraDueCompactCall = mockRunCompact.mock.calls.filter(
+        call => call[0] === 'person' && call[1] === 'Zara'
+      )[1];
+      expect(zaraDueCompactCall[3].runDate).toBe('2026-10-09');
       const cachedAfterDueNight = contextCache.get('Profile of Zara') ?? '';
-      expect(cachedAfterDueNight).toContain(
-        '- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)'
-      );
       expect(cachedAfterDueNight).not.toContain('Zurückhaltung bis 2026-10-09');
     } finally {
       jest.useRealTimers();

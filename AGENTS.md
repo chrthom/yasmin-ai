@@ -93,10 +93,8 @@ src/
 │   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
 │   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
 │   │                  #   overrides the agent's updatedAt
-│   ├── cooldown.ts    # Per-person 5-active-chat-day topic cooldown applied to people/<name>.md
-│   │                  #   before Phase-7 compaction (counts persisted journal chatDates, strips/rewrites
-│   │                  #   (besprochen am ...) markers, retains future fällig-ab deadlines with restraint,
-│   │                  #   zero archive churn)
+│   ├── cooldown.ts    # Per-person active-chat-date extraction & journal chatDates header helpers
+│   │                  #   feeding the 5-active-chat-day topic cooldown in Phase-7 person compaction
 │   └── mapping.ts     # Table-driven mapping between verbose file paths and context_entries titles
 ├── services/
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
@@ -238,11 +236,11 @@ At a high level, each run:
 7. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
    so the small, fast, sensitive-free eager set always reflects the latest long-term memory. For
-   `people/<name>.md`, `cooldown.ts` first applies a deterministic 5-active-conversation-day topic cooldown
-   derived from that person's own persisted `journals/<slug>/*.md` `chatDates` (stripping recently discussed items from
-   `Yasmin's Intentions` / `Open Topics`, retaining future `fällig ab` deadlines with date-gated restraint, and rewriting
-   `(besprochen am YYYY-MM-DD)` into pause/restraint cues unless overridden by a newer `neuer Aspekt` or reached `fällig ab`
-   date, without mutating `memory_archive`).
+   `people/<name>.md`, `cooldown.ts` extracts that person's distinct active conversation dates from
+   persisted `journals/<slug>/*.md` `chatDates` headers and passes them (with `runDate`) into the Phase-7
+   person compaction prompt so recently discussed topics (`(besprochen am YYYY-MM-DD)`) observe a
+   5-active-conversation-day cooldown (retaining future `fällig ab` deadlines with date-gated restraint
+   and honoring `neuer Aspekt` / reached `fällig ab` overrides, with zero `memory_archive` churn).
    The `Profile of Yasmin` compaction additionally folds in the current mood and the most recent dream
    reflections (`self-reflection/dreams.md`) as soft evidence — dream-derived material is always marked as
    such (e.g. "aus einem Traum") and never promoted to standalone facts. That asymmetry is deliberate:

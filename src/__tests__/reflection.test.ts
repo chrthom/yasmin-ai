@@ -797,10 +797,16 @@ describe('reflection', () => {
       expect(personReview).toContain('reject cooldown tags placed in general/family.md or topics/*.md');
     });
 
-    it('tells person compaction (and only person compaction) to preserve cooldown cues and empty-section placeholders', () => {
-      const personCompact = compactPrompt('person', 'Alice', 'content');
+    it('tells person compaction (and only person compaction) to evaluate per-person active chat dates and cooldown rules', () => {
+      const personCompact = compactPrompt('person', 'Alice', 'content', {
+        runDate: '2026-10-08',
+        activeChatDates: ['2026-10-05', '2026-10-08']
+      });
+      expect(personCompact).toContain('Today is 2026-10-08.');
+      expect(personCompact).toContain('Active conversation dates with Alice: 2026-10-05, 2026-10-08.');
       expect(personCompact).toContain('zuletzt im letzten Gespräch besprochen – Pause');
       expect(personCompact).toContain('vor N Gesprächstagen besprochen – Zurückhaltung');
+      expect(personCompact).toContain('Zurückhaltung bis F – erst ab Fälligkeit');
       expect(personCompact).toContain('- (aktuell keine)');
 
       expect(compactPrompt('family', undefined, 'content')).not.toContain(
