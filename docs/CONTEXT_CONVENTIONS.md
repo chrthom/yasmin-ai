@@ -119,7 +119,7 @@ title not already eagerly loaded, so Yasmin knows what she can ask for.
 ## 4. Long-Term Memory Tier (Mistral Knowledge Library)
 
 `context_entries` only ever holds a small, compacted, sensitive-free cache. The nightly memory processing
-job (`src/nightly/`, see `AGENTS.md` → "Nightly Memory Pipeline") maintains a much deeper, verbose store
+job (`src/nightly/`, see `docs/ARCHITECTURE.md` → "Nightly Memory Pipeline") maintains a much deeper, verbose store
 that this cache is regenerated from every night:
 
 ```
@@ -145,7 +145,7 @@ that this cache is regenerated from every night:
 | **`general/family.md`**          | Family-wide notes: traditions, inside jokes, shared rules.                                                                                                                                                                      | `Family notes`                                      |
 
 (`journals/<name>/<conversation-id>.md` also lives in `memory_archive` as an intermediate artifact of the
-nightly pipeline, but has no mapping to a `context_entries` title or the Mistral library.)
+nightly pipeline. It has no mapping to a `context_entries` title, but can be uploaded to the Mistral library.)
 
 `self-reflection/dreams.md` — Yasmin's dated, append-only reflections on her dreams — likewise has no
 `context_entries` title of its own (it is RAG-searchable via the Mistral library), with one deliberate
@@ -167,9 +167,10 @@ See `docs/nightly_memory_processing_implementation.md` §6.1 (dream wiring note)
 - **Current status:** the library is populated nightly, and the live agent's system prompt (§2.1) tells it
   to search this library for deeper facts and past conversations from earlier days. Conversations from the
   current day are not in it yet.
-- **Privacy:** verbose files may contain a `[PRIVACY:SENSITIVE]` marker around sensitive passages. That
-  content is stripped before it's compacted into the `context_entries` eager cache, and also stripped before it's ever uploaded to the Mistral library in the first place —
-  it never leaves local storage (`memory_archive` keeps the unstripped version for versioning/audit only).
+- **Privacy:** verbose files may contain `[PRIVACY:SENSITIVE]` passages. The nightly pipeline strips them
+  before eager-cache compaction and library upload; `memory_archive` retains the full version. Internal
+  review/revision calls can receive unstripped content, and bootstrap uploads existing context directly.
+  Inspect bootstrap inputs first; see `docs/ARCHITECTURE.md` for the boundaries.
 
 ---
 
