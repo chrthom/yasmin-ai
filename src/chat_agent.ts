@@ -468,7 +468,6 @@ export class ChatAgent {
       }
 
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
-        userText,
         username,
         cached.loadedContextTitles
       );
