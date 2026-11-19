@@ -105,7 +105,11 @@ New (`+`) and changed (`~`) files, following existing conventions (`src/**` → 
 ~ src/chat_agent.ts                        remove update_context_entry + Session handling (read-only; done at cutover, §13)
 ~ src/services/context.service.ts          eager set: drop 'Session with X' (sender Profile + Yasmin + Family notes)
 - mistral_config/conversation/functions/update_context_entry.json   retired (agent read-only)
-+ src/nightly/pipeline.ts                 phase orchestrator
++ src/nightly/pipeline.ts                 phase orchestrator (delegates phases 4-7 below)
++ src/nightly/review_phase.ts             evidence review/revision + archive writes (Phase 4)
++ src/nightly/dream_phase.ts              resumable dream generation/reflection (Phase 5)
++ src/nightly/upload_phase.ts             privacy-stripped upload + library reconciliation (Phase 6)
++ src/nightly/eager_phase.ts              eager compaction + mood/dream fold-ins (Phase 7)
 + src/nightly/tools.ts                    integration tool set (stage_update, …)
 + src/nightly/reflection.ts              prompts + agent calls (journal, integrate, review, compact)
 + src/nightly/privacy.ts                 [PRIVACY:SENSITIVE] stripping, compaction cap
@@ -215,6 +219,19 @@ deleteDocument(docId: string): Promise<void>                     // DELETE …/d
 ---
 
 ## 6. Nightly pipeline (`src/nightly/pipeline.ts`)
+
+The shipped orchestrator delegates review/archive to `src/nightly/review_phase.ts`, dream generation
+and reflection to `src/nightly/dream_phase.ts`, upload/reconciliation to `src/nightly/upload_phase.ts`,
+and eager regeneration to `src/nightly/eager_phase.ts`. Locking, bounded snapshots, phase ordering,
+outbox reset, cleanup and final status/watermark decisions remain in `pipeline.ts`. Phase stamps also
+remain there except the dream success stamp, which stays inside its phase's error boundary so a
+failed dream does not overwrite the last successful phase. Direct phase tests live in
+`src/__tests__/nightly_phases.test.ts`; orchestration/privacy regressions remain in the integration suite.
+
+Known preserved edge (issue [#146](https://github.com/chrthom/yasmin-ai/issues/146)): failure to load the
+topic duplicate barrier skips topic proposals but leaves the note-clear guard true. Phase 8 may
+therefore clear note-derived topic evidence that was not archived; the extraction characterizes this
+existing behavior rather than changing it.
 
 Orchestrates phases; each writes `last_completed_phase` for resume. The caller (the scheduler, or the CLI entry point for a manual run) catches, marks `failed`/`partial`, releases lock; a failure just surfaces as an `ERROR` log line (§11) -- there is no separate alerting step.
 
