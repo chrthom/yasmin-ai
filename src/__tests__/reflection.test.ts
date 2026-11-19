@@ -648,16 +648,19 @@ describe('reflection', () => {
     it('describes the mood file, its header format, and the today-evidence rule', () => {
       const prompt = integratePrompt('2026-10-05');
       expect(prompt).toContain('self-reflection/mood.md');
-      expect(prompt).toContain('valence: <number>');
-      expect(prompt).toContain('halfLifeDays: <number>');
+      expect(prompt).toContain(
+        'valence: <number>\nenergy: <number>\nhalfLifeDays: <number>\nupdatedAt: <ISO date>'
+      );
       expect(prompt).toContain("requires TODAY's evidence");
+      expect(prompt).toContain('without a mood signal, do not stage it');
     });
 
     it("keeps the person template intact with the new Yasmin's View section", () => {
       const prompt = integratePrompt('2026-10-05');
       expect(prompt).toContain('8-section template');
       expect(prompt).toContain("Yasmin's View");
-      expect(prompt).toContain("Communication Style, Yasmin's View, Yasmin's Intentions");
+      expect(prompt).toContain('Communication Style guides how Yasmin speaks to the person');
+      expect(prompt).toContain("Yasmin's Intentions");
     });
 
     it('demands tentative first opinions with a tendency, never facts', () => {
@@ -670,6 +673,8 @@ describe('reflection', () => {
       const prompt = integratePrompt('2026-10-05');
       expect(prompt).toContain('2nd-3rd observed occurrence');
       expect(prompt).toContain('(growing/stable/declining)');
+      expect(prompt).toContain('evidence count');
+      expect(prompt).toContain('never fabricate events, statements or outcomes');
     });
 
     it('turns a due, unanswered goal into a proactive topic in the person profile', () => {
@@ -677,6 +682,17 @@ describe('reflection', () => {
       expect(prompt).toContain('status (open/done)');
       expect(prompt).toContain('proactive topic');
       expect(prompt).toContain('Yasmin wants to ask ...');
+    });
+
+    it('preserves task-specific output, privacy and forward-looking intention rules', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('call get_long_term_file first');
+      expect(prompt).toContain('COMPLETE new content');
+      expect(prompt).toContain('[PRIVACY:SENSITIVE] / [/PRIVACY:SENSITIVE] markers, each on its own line');
+      expect(prompt).toContain('Write all staged file content in German');
+      expect(prompt).toContain('one forward-looking idea');
+      expect(prompt).toContain("only when today's evidence actually supports it");
+      expect(prompt).toContain('reply with a short plain-text summary');
     });
   });
 

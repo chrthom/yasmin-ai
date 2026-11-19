@@ -1,8 +1,8 @@
 // Tests for the nightly dream phase (src/nightly/dream.ts).
 //
 // Mocking strategy mirrors reflection.test.ts: config and mistral_api are mocked so the tests
-// assert dream.ts's own logic (cadence, source selection, privacy, append-only reflections), not
-// prompt wording or HTTP plumbing.
+// assert dream.ts's own logic (cadence, source selection, privacy, append-only reflections) and
+// the safety/output contract shared by dedicated and fallback dream requests, not HTTP plumbing.
 
 jest.mock('../config', () => ({
   config: {
@@ -178,6 +178,34 @@ describe('nightly/dream', () => {
   });
 
   describe('runDream (stage 1)', () => {
+    it.each([
+      ['dedicated', 'dream-agent-1', 'dream-agent-1'],
+      ['fallback', '', 'nightly-agent-1']
+    ])(
+      'keeps the complete dream task contract for the %s agent',
+      async (_label, dreamAgentId, expectedId) => {
+        const { config } = jest.requireMock('../config') as { config: { mistral: { dreamAgentId: string } } };
+        const original = config.mistral.dreamAgentId;
+        config.mistral.dreamAgentId = dreamAgentId;
+        try {
+          mockAskAgent.mockResolvedValueOnce({ outputText: 'Traum', toolCalls: [], rawOutputs: [] });
+          await runDream([archiveRow('journals/alice/conv-1.md', 30, 'Memory')]);
+          const request = mockAskAgent.mock.calls[0][0];
+          expect(request.agentId).toBe(expectedId);
+          const prompt = request.inputs[0].content;
+          expect(prompt).toContain('ONLY of elements from these journals');
+          expect(prompt).toContain('Never invent people, places, objects, events, or facts');
+          expect(prompt).toContain('Do not include or hint at anything private or sensitive');
+          expect(prompt).toContain('in German, in first person (Yasmin dreaming)');
+          expect(prompt).toContain('ONLY the dream itself as plain prose');
+          expect(prompt).toContain('no title, no metadata, no markdown headings, no preamble');
+          expect(prompt).toContain('<<<BEGIN JOURNAL journals/alice/conv-1.md>>>\nMemory');
+        } finally {
+          config.mistral.dreamAgentId = original;
+        }
+      }
+    );
+
     it('throws on an empty reply so the phase degrades to partial and is retried', async () => {
       mockAskAgent.mockResolvedValueOnce({ outputText: '', toolCalls: [], rawOutputs: [] });
       await expect(runDream([archiveRow('journals/alice/conv-1.md', 30)])).rejects.toThrow('empty dream');
