@@ -287,8 +287,8 @@ class MemoryArchiveFake {
   }
 
   /** Test helper: seeds a pre-existing current version directly, bypassing the mocked entry point */
-  async seed(filePath: string, content: string): Promise<FakeArchiveRow> {
-    const { row } = await this.insertNextVersion(filePath, content);
+  async seed(filePath: string, content: string, createdAt?: Date): Promise<FakeArchiveRow> {
+    const { row } = await this.insertNextVersion(filePath, content, createdAt);
     return row;
   }
 
@@ -296,7 +296,8 @@ class MemoryArchiveFake {
 
   insertNextVersion = async (
     filePath: string,
-    content: string
+    content: string,
+    createdAt: Date = new Date()
   ): Promise<{ row: FakeArchiveRow; created: boolean }> => {
     const contentHash = hashOf(content);
     const current = this.currentFor(filePath);
@@ -313,7 +314,7 @@ class MemoryArchiveFake {
       version: current ? current.version + 1 : 1,
       mistralDocId: null,
       syncedAt: null,
-      createdAt: new Date()
+      createdAt
     };
     this.rows.push(row);
     return { row, created: true };
@@ -2099,5 +2100,100 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
     expect(mockClearIntradayNotes).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase-7 per-person topic cooldown (zero archive churn, per-person active days)
+  // -------------------------------------------------------------------------
+  it('cooldown: Phase 7 strips/rewrites people/<name>.md using ONLY that person’s active chat days without mutating memory_archive', async () => {
+    const rawAliceProfile = [
+      '## Core Facts',
+      '- Alice wohnt in Hamburg.',
+      '',
+      '## Ideas, Interests & Goals',
+      '- Töpferkurs in Altona (besprochen am 2026-10-05)',
+      '',
+      '## Open Topics',
+      '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)',
+      '',
+      "## Yasmin's Intentions",
+      '- Nach dem Töpferkurs fragen (Status: open, besprochen am 2026-10-05)'
+    ].join('\n');
+
+    await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
+    await archive.seed(
+      'journals/alice/conv-a1.md',
+      'Alice erzählte vom Töpferkurs.',
+      new Date('2026-10-05T19:00:00Z')
+    );
+    // Five active days for Bob + a dream file must NOT advance Alice's topic cooldown.
+    for (const day of ['06', '07', '08', '09', '10']) {
+      await archive.seed(`journals/bob/conv-b${day}.md`, 'Bob chat', new Date(`2026-10-${day}T12:00:00Z`));
+    }
+    await archive.seed('journals/dreams/2026-10-11.md', 'TRAUM', new Date('2026-10-11T22:00:00Z'));
+
+    // Tonight only Bob chats -> Alice still has 0 active conversation days since 2026-10-05.
+    mockListConversations.mockResolvedValueOnce([conversation('conv-bob-today', 'Bob')]);
+    mockRunJournal.mockResolvedValueOnce('Bob sprach heute über Fußball.');
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing staged', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+
+    const aliceCompactCall = mockRunCompact.mock.calls.find(
+      call => call[0] === 'person' && call[1] === 'Alice'
+    );
+    expect(aliceCompactCall).toBeDefined();
+    const compactSource: string = aliceCompactCall![2];
+    expect(compactSource).toContain(
+      '- Töpferkurs in Altona (zuletzt im letzten Gespräch besprochen – Pause, nicht von selbst anfangen außer bei neuem Aspekt)'
+    );
+    expect(compactSource).not.toContain('Neue Glasur beim Töpferkurs');
+    expect(compactSource).not.toContain('Nach dem Töpferkurs fragen');
+    expect(compactSource).toContain('## Open Topics\n- (aktuell keine)');
+    expect(compactSource).toContain("## Yasmin's Intentions\n- (aktuell keine)");
+
+    // Zero archive churn: people/alice.md in memory_archive stays at v1 with its static date tag.
+    const archivedAlice = await archive.getCurrentVersion('people/alice.md');
+    expect(archivedAlice?.version).toBe(1);
+    expect(archivedAlice?.content).toBe(rawAliceProfile);
+  });
+
+  it('cooldown: Phase 7 counts subsequent active conversation days for that person including tonight’s new journal', async () => {
+    const rawAliceProfile = [
+      '## Ideas, Interests & Goals',
+      '- Töpferkurs in Altona (besprochen am 2026-10-05)',
+      '',
+      '## Open Topics',
+      '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)',
+      '',
+      "## Yasmin's Intentions",
+      '- Nach dem Töpferkurs fragen (Status: open, besprochen am 2026-10-05)'
+    ].join('\n');
+
+    await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
+    await archive.seed('journals/alice/conv-a1.md', 'Tag 0', new Date('2026-10-05T18:00:00Z'));
+    await archive.seed('journals/alice/conv-a2.md', 'Tag 1', new Date('2026-10-08T18:00:00Z'));
+
+    // Tonight Alice chats again (on a distinct later date) without touching Töpferkurs -> 2 subsequent active days.
+    mockListConversations.mockResolvedValueOnce([conversation('conv-a3', 'Alice')]);
+    mockRunJournal.mockResolvedValueOnce('Alice sprach heute nur übers Wetter.');
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing staged', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+
+    const aliceCompactCall = mockRunCompact.mock.calls.find(
+      call => call[0] === 'person' && call[1] === 'Alice'
+    );
+    expect(aliceCompactCall).toBeDefined();
+    const compactSource: string = aliceCompactCall![2];
+    expect(compactSource).toContain(
+      '- Töpferkurs in Altona (vor 2 Gesprächstagen besprochen – Zurückhaltung, nur bei neuem Aspekt)'
+    );
+    expect(compactSource).toContain(
+      '- Neue Glasur beim Töpferkurs (vor 2 Gesprächstagen besprochen – Zurückhaltung, nur bei neuem Aspekt)'
+    );
+    expect(compactSource).not.toContain('Nach dem Töpferkurs fragen');
   });
 });

@@ -762,4 +762,44 @@ describe('reflection', () => {
       expect(compactPrompt('family', undefined, 'content')).not.toContain('My reflections on my dreams');
     });
   });
+
+  describe('per-person topic cooldown prompts', () => {
+    it('instructs integratePrompt to stamp semantic cooldown dates strictly on people/<name>.md and retire answered topics', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('(besprochen am 2026-10-05)');
+      expect(prompt).toContain('(neuer Aspekt am 2026-10-05: <kurzer Grund>)');
+      expect(prompt).toContain('(fällig ab YYYY-MM-DD)');
+      expect(prompt).toContain('STRICTLY in people/<name>.md ONLY');
+      expect(prompt).toContain('NEVER replace an answered intention');
+    });
+
+    it('permits grounded topic-cooldown date tags on people/<name>.md during review while forbidding them in family/topics', () => {
+      const personReview = reviewPrompt(
+        { path: 'people/alice.md', content: 'c', isNew: false },
+        'old',
+        '2026-10-01T00:00:00.000Z',
+        [],
+        0
+      );
+      expect(personReview).toContain('(besprochen am YYYY-MM-DD)');
+      expect(personReview).toContain('(neuer Aspekt am YYYY-MM-DD: ...)');
+      expect(personReview).toContain('(fällig ab YYYY-MM-DD)');
+      expect(personReview).toContain('do NOT reject for removing a discussed topic');
+      expect(personReview).toContain('reject cooldown tags placed in general/family.md or topics/*.md');
+    });
+
+    it('tells person compaction (and only person compaction) to preserve cooldown cues and empty-section placeholders', () => {
+      const personCompact = compactPrompt('person', 'Alice', 'content');
+      expect(personCompact).toContain('zuletzt im letzten Gespräch besprochen – Pause');
+      expect(personCompact).toContain('vor N Gesprächstagen besprochen – Zurückhaltung');
+      expect(personCompact).toContain('- (aktuell keine)');
+
+      expect(compactPrompt('family', undefined, 'content')).not.toContain(
+        'zuletzt im letzten Gespräch besprochen'
+      );
+      expect(compactPrompt('yasmin', undefined, 'content')).not.toContain(
+        'zuletzt im letzten Gespräch besprochen'
+      );
+    });
+  });
 });

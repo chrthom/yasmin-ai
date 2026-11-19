@@ -295,7 +295,11 @@ function perFileTypeReviewerRules(path: string): string {
       "Additional criteria for people/<name>.md: a statement in Yasmin's View is an opinion and must " +
       "never read as a fact -- it must be marked as Yasmin's interpretation with a confidence level, and " +
       "a first opinion is always tentative. A trait claim needs evidence, and a goal that today's " +
-      'journals show completed must be marked done or removed, not kept open. Reject if the section ' +
+      'journals show completed must be marked done or removed, not kept open. Per-person topic-cooldown ' +
+      'tags ("(besprochen am YYYY-MM-DD)", "(neuer Aspekt am YYYY-MM-DD: ...)", "(fällig ab YYYY-MM-DD)") ' +
+      'are valid when grounded in the evidence, and retiring answered items from Open Topics or ' +
+      "Yasmin's Intentions (leaving those sections empty when nothing fresh is open) is expected -- do " +
+      'NOT reject for removing a discussed topic instead of inventing a follow-up. Reject if the section ' +
       "structure (including Yasmin's View) is missing or reordered.\n"
     );
   }

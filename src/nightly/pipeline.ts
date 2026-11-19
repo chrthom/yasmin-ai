@@ -67,6 +67,7 @@ import {
 import { pathToTitle } from './mapping';
 import { personNameFromTitle, sanitizeForPath } from '../strings';
 import { decayMoodFile, MOOD_FILE_PATH, parseMood, stampMoodUpdatedAt, stripMoodHeader } from './mood';
+import { applyPersonTopicCooldown, extractPersonActiveChatDates, formatCooldownDate } from './cooldown';
 import {
   deleteConversation,
   deleteDocument,
@@ -752,6 +753,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       allCurrentVersions = [];
     }
 
+    const runDateStr = formatCooldownDate(collectedAt);
+
     for (const row of allCurrentVersions) {
       const title = pathToTitle(row.filePath);
       if (title === null) {
@@ -831,6 +834,15 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
               compactSource = compactSource + '\n\n' + DREAM_EVIDENCE_HEADER + '\n\n' + reflections;
             }
           }
+        } else if (kind === 'person' && personName !== undefined) {
+          // Per-person topic cooldown is applied to the compaction view only (never written back
+          // to memory_archive, avoiding nightly version/upload churn): active chat days are counted
+          // strictly from this person's own archived journals.
+          const activeChatDates = extractPersonActiveChatDates(
+            allCurrentVersions,
+            sanitizeForPath(personName)
+          );
+          compactSource = applyPersonTopicCooldown(stripped, activeChatDates, runDateStr);
         }
         let compacted = await runCompact(kind, personName, compactSource);
 

@@ -1,6 +1,6 @@
 # Project Purpose & Semantics
 
-This document captures the *semantic* knowledge about Yasmin AI: what the project actually is, what
+This document captures the _semantic_ knowledge about Yasmin AI: what the project actually is, what
 its concepts mean, and which design principles any change should preserve. It complements `AGENTS.md`
 (architecture and how to work on the code) and the implementation docs in `docs/`; it does not repeat
 them.
@@ -23,7 +23,7 @@ The project's goal is not question answering but the **illusion of one continuou
 - she has her own interests, opinions and intentions, and moods and dreams,
 - she passes messages between family members like a person would.
 
-Everything in this codebase serves that illusion. A change that makes Yasmin feel *less* like one
+Everything in this codebase serves that illusion. A change that makes Yasmin feel _less_ like one
 continuous person works against the project even when it is technically cleaner.
 
 ---
@@ -81,7 +81,11 @@ being rewritten, like a diary.
 Her opinions (the "Yasmin's View" sections of person profiles) are interpretations with a tendency,
 never facts about a person. Her intentions (follow-ups, goals) live in each person's profile and she
 brings them up on her own initiative when the moment fits. Together they make her an agent with a
-perspective, not a lookup table.
+perspective, not a lookup table. To keep her from sounding fixated by re-asking about the same topic
+every day, topics discussed with a person enter a per-person **5-active-conversation-day cooldown**
+(days without a chat with that person do not count): recently discussed topics become passive
+background memory that she only engages with when the person brings them up or when a genuinely new
+aspect or target date arises.
 
 ### Note passing
 
@@ -93,8 +97,8 @@ nightly privacy stripping and the read-only, sensitive-free context cache keep t
 
 ### The handoff
 
-A conversation restart must be imperceptible: the handoff block is presented as *her memory of the
-earlier conversation*, so users never learn that a conversation was closed and reopened. The same
+A conversation restart must be imperceptible: the handoff block is presented as _her memory of the
+earlier conversation_, so users never learn that a conversation was closed and reopened. The same
 principle applies in reverse in the nightly journal, which strips handoff blocks so the same history
 is not journaled twice.
 
