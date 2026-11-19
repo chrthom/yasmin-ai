@@ -11,6 +11,7 @@ import {
 import { buildHandoff, waitFor } from './handoff';
 import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 import { extractContentText } from './mistral/content';
+import { extractToolCalls } from './mistral/tool_calls';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 import { capitalizePreserveRest } from './strings';
 
@@ -35,6 +36,10 @@ interface MistralConversationResponseOutput {
   content: string | MistralConversationResponseOutputPart[];
   type: string;
   tool_calls?: MistralToolCall[];
+  tool_call_id?: string;
+  id?: string;
+  name?: string;
+  arguments?: string | object;
 }
 
 /** Response of POST /v1/conversations -- an initial send or a tool-result send. */
@@ -542,26 +547,11 @@ export class ChatAgent {
       const maxToolCalls = config.mistral.maxToolCalls;
 
       while (toolCallDetected && loopCount < maxToolCalls) {
-        const toolCalls: Array<{ id: string; name: string; arguments: any }> = [];
-
-        for (const o of responseOutputs) {
-          if (o.type === 'message.tool_calls' && o.tool_calls) {
-            for (const tc of o.tool_calls) {
-              toolCalls.push({
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments
-              });
-            }
-          } else if (o.type === 'function.call' || o.type === 'function_call') {
-            const flatCall = o as any;
-            toolCalls.push({
-              id: flatCall.tool_call_id || flatCall.id,
-              name: flatCall.name,
-              arguments: flatCall.arguments
-            });
-          }
-        }
+        const toolCalls = extractToolCalls(responseOutputs).map(({ id, name, arguments: args }) => ({
+          id,
+          name,
+          arguments: args
+        }));
 
         if (toolCalls.length > 0) {
           loopCount++;

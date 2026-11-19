@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { config } from '../config';
 import { extractContentText } from './content';
+import { extractToolCalls } from './tool_calls';
 
 // ---------------------------------------------------------------------------
 // Errors + retry
@@ -467,22 +468,11 @@ export async function askAgent(params: {
     .filter(t => t.length > 0)
     .join(' ');
 
-  // Tool calls can arrive either as a nested message.tool_calls entry, or as flat
-  // function.call / function_call entries -- handle both shapes (mirrors chat_agent.ts).
-  const toolCalls: AgentToolCall[] = [];
-  for (const o of outputs) {
-    if (o.type === 'message.tool_calls' && o.tool_calls) {
-      for (const tc of o.tool_calls) {
-        toolCalls.push({ id: tc.id, name: tc.function.name, arguments: tc.function.arguments });
-      }
-    } else if (o.type === 'function.call' || o.type === 'function_call') {
-      toolCalls.push({
-        id: o.tool_call_id || o.id || '',
-        name: o.name || '',
-        arguments: o.arguments ?? ''
-      });
-    }
-  }
+  const toolCalls: AgentToolCall[] = extractToolCalls(outputs).map(call => ({
+    id: call.source === 'flat' ? call.id || '' : call.id,
+    name: call.source === 'flat' ? call.name || '' : call.name,
+    arguments: call.source === 'flat' ? (call.arguments ?? '') : call.arguments
+  }));
 
   return {
     conversationId: data.conversation_id || data.id || conversationId || '',
