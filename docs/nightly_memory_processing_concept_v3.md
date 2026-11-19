@@ -1,7 +1,7 @@
 # Nightly Memory Processing Concept - v3.0
 
 **Version**: 3.0 — Mistral-Long-Term + MariaDB-Eager-Cache + Passive Backup
-**Status**: Historical concept document — superseded; the system described here is shipped. See `AGENTS.md` ("Nightly Memory Pipeline") for the shipped architecture.
+**Status**: Historical concept document — superseded; the system described here is shipped. See `docs/ARCHITECTURE.md` ("Nightly Memory Pipeline") for the shipped architecture.
 **Date**: 2026-07-06
 **Supersedes**: `nightly_memory_processing_concept_v2.md` (v2.0)
 
