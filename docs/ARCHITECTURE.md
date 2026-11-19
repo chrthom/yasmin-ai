@@ -83,6 +83,8 @@ src/
 └── __tests__/
     ├── app.test.ts
     ├── chat_agent.test.ts
+    ├── chat_agent.{process,notes}.test.ts # Focused live-agent suites
+    ├── fixtures/           # Shared isolated fixtures; excluded from Jest discovery
     ├── synology_client.test.ts
     ├── database.test.ts
     ├── intraday_notes.model.test.ts
@@ -91,7 +93,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, nightly_phases, context.model, bootstrap-memory, mood, dream
+                            #   pipeline{,.memory,.notes,.dream}.integration, nightly_phases, context.model, bootstrap-memory, mood, dream
 ```
 
 ### Data Flow

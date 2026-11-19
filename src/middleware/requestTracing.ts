@@ -8,19 +8,9 @@ import { randomUUID } from 'crypto';
 export function requestTracingMiddleware(req: Request, res: Response, next: NextFunction): void {
   const requestId = randomUUID();
 
-  // Attach request ID to the request object for use in controllers and services
   const requestWithId = req as RequestWithRequestId;
   requestWithId.requestId = requestId;
-
-  // Attach request ID to res.locals for use in response handlers
-  res.locals['requestId'] = requestId;
-
-  // Add request ID to response headers for client correlation
   res.set('X-Request-ID', requestId);
-
-  // Store start time for potential duration tracking
-  requestWithId.startTime = Date.now();
-
   next();
 }
 
@@ -29,7 +19,6 @@ export function requestTracingMiddleware(req: Request, res: Response, next: Next
  */
 export interface RequestWithRequestId extends Request {
   requestId: string;
-  startTime?: number;
 }
 
 /**
@@ -37,17 +26,6 @@ export interface RequestWithRequestId extends Request {
  */
 export function getRequestId(req: Request): string | undefined {
   return (req as RequestWithRequestId).requestId;
-}
-
-/**
- * Helper function to calculate request duration in milliseconds
- */
-export function getRequestDuration(req: Request): number | undefined {
-  const startTime = (req as RequestWithRequestId).startTime;
-  if (startTime) {
-    return Date.now() - startTime;
-  }
-  return undefined;
 }
 
 /**
@@ -87,11 +65,6 @@ export class RequestLogger {
   /** Logs at debug level. */
   debug(message: string, meta?: object): void {
     console.debug(this.formatMessage('DEBUG', message, meta));
-  }
-
-  /** Logs at info level. */
-  log(message: string, meta?: object): void {
-    console.log(this.formatMessage('INFO', message, meta));
   }
 
   /** Logs at warn level. */

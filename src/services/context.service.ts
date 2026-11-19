@@ -28,9 +28,7 @@ export class ContextService {
     const entries = await getAllEntriesFromDb();
     const titles = entries.map(e => e.title);
 
-    // 1. Mandatorily match eager-loaded entries for the first turn
-    // Profile of the sender, Family notes, and Profile of Yasmin. The sender title is built from
-    // the raw username (no case normalization -- the match below is case-insensitive).
+    // Match the sender's profile, family notes and Yasmin's profile case-insensitively.
     const profileOfSenderTitle = profileTitle(username);
     const familyNotesTitle = config.context.familyNotesTitle;
     const profileOfYasminTitle = config.context.profileOfYasminTitle;
@@ -55,7 +53,6 @@ export class ContextService {
       candidates.push(matchedProfileSender);
     }
 
-    // 2. Format the contents from the same snapshot as the matched titles.
     const xmlBlocks: string[] = [];
     const newlyLoadedTitles: string[] = [];
 
@@ -68,10 +65,9 @@ export class ContextService {
 
     let formattedContext = xmlBlocks.join('\n\n');
 
-    // Identify the user Yasmin is talking to
     formattedContext += `\n\nYou are talking to ${username}.`;
 
-    // 3. On the initial turn, inject the manifest of all other available titles
+    // Only the initial turn needs the manifest for lazy loading.
     if (loadedSet.size === 0) {
       const eagerlyLoadedSet = new Set(candidates.map(e => e.title.toLowerCase()));
       const availableTitles = titles.filter(t => !eagerlyLoadedSet.has(t.toLowerCase()));

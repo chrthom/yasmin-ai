@@ -628,10 +628,6 @@ export async function listDocuments(): Promise<LibraryDocument[]> {
       const id = doc.id;
       // Skip ids already returned by an earlier page so a server that ignores "page=" (returning
       // the full list every time) can't bloat the result with ~maxPages copies of each document.
-      if (id === undefined) {
-        results.push(mapLibraryDocument(doc));
-        continue;
-      }
       if (seenIds.has(id)) {
         continue;
       }

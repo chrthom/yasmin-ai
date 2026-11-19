@@ -17,11 +17,8 @@ const VALID_STAGE_PATH_RE =
 const TOPICS_PATH_PREFIX = 'topics/';
 
 /**
- * Generic path-slug sanitizer (same rule as the shared sanitizeForPath in src/strings.ts):
- * lowercase, every non [a-z0-9-] char -> '-'. German umlauts are transliterated
- * FIRST (the family converses in German, so 'Ausflüge' must become 'ausfluege', not
- * 'ausfl-ge'). Freely generated names are normalized here instead of trusted -- this also
- * neutralizes traversal ('../' becomes '--').
+ * Normalizes topic slugs, transliterating German umlauts and collapsing and trimming hyphens.
+ * Unlike the people-path sanitizer, this also neutralizes traversal fragments in generated topics.
  */
 function sanitizeSlug(slug: string): string {
   return slug
@@ -52,7 +49,7 @@ export function normalizeTopicPath(path: string): string | null {
   }
   const stem = path.slice(TOPICS_PATH_PREFIX.length).replace(/\.md$/i, '');
   const slug = sanitizeSlug(stem);
-  if (slug.length === 0 || slug === '-') {
+  if (slug.length === 0) {
     return null;
   }
   return TOPICS_PATH_PREFIX + slug + '.md';

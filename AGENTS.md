@@ -52,6 +52,7 @@ optional subsystems degrade quietly without blocking the user's message.
 Tests use Jest with ts-jest in Node, under `src/__tests__/`; live-agent tests mock `fetch`. TypeScript
 is strict, CommonJS, ES6 target. Use single quotes, semicolons, two-space indentation, Unix line
 endings and arrow functions where appropriate; Prettier's line limit is 110.
+Shared isolated ChatAgent and pipeline fixtures live in `src/__tests__/fixtures/`, excluded from Jest discovery.
 
 ### Comment convention
 
