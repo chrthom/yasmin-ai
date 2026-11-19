@@ -320,7 +320,6 @@ export class ChatAgent {
    * @throws Error when listing the conversations fails.
    */
   private async getActiveConversationId(username: string): Promise<string | undefined> {
-    // Check cache first
     const cached = this.conversationCache.get(username);
     if (cached && cached.expiresAt > Date.now() && cached.conversationId) {
       console.log(`DEBUG Cached conversation ${cached.conversationId} for ${username}`);
@@ -438,7 +437,6 @@ export class ChatAgent {
       let conversationId = await this.getActiveConversationId(username);
       console.log(`DEBUG Existing conversation ${conversationId}`);
 
-      // Get or initialize cached conversation for this user
       let cached = this.conversationCache.get(username);
       if (!cached) {
         cached = {
@@ -469,7 +467,6 @@ export class ChatAgent {
         this.conversationCache.set(username, cached);
       }
 
-      // Query ContextService to find newly relevant context
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
         userText,
         username,
@@ -489,7 +486,6 @@ export class ChatAgent {
           claimedNoteIds = delivery.claimedIds;
         }
       }
-      // Prepend dynamic XML context (and handoff) to user text if present
       let promptContent = userText;
       if (handoffBlock) {
         promptContent = `${handoffBlock}\n\n${promptContent}`;
@@ -501,12 +497,10 @@ export class ChatAgent {
         promptContent = `${formattedContext}\n\n${promptContent}`;
       }
 
-      // Add short answer constraint if requested
       if (shortAnswer) {
         promptContent = `${promptContent}\n\n${shortAnswerHint()}`;
       }
 
-      // Track newly loaded titles to avoid duplicates on future turns
       if (newlyLoadedTitles.length > 0) {
         cached.loadedContextTitles.push(...newlyLoadedTitles);
       }

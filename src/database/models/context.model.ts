@@ -145,9 +145,7 @@ export async function deleteContextEntry(title: string): Promise<boolean> {
  */
 export async function upsertContextEntry(title: string, content: string): Promise<'inserted' | 'updated'> {
   try {
-    // Single atomic statement (title is the PRIMARY KEY). A two-step "read then insert/update" raced
-    // with the live agent's own writes to context_entries and could throw ER_DUP_ENTRY, and would tell
-    // the caller "updated" even when the underlying UPDATE had swallowed a failure.
+    // An atomic upsert avoids races with other writers and propagates write failures.
     const [result]: any = await executeQuery(
       'INSERT INTO context_entries (title, content) VALUES (?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
       [title, content]

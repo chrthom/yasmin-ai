@@ -16,6 +16,7 @@ jest.mock('../config', () => ({
   }
 }));
 
+import { config } from '../config';
 import {
   MistralApiError,
   withRetry,
@@ -411,6 +412,47 @@ describe('mistral_api', () => {
   });
 
   describe('listDocuments', () => {
+    it('rejects a document without a string id at the response boundary', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ name: 'missing-id.md' }], has_more: false })
+      });
+      const originalRetries = config.nightly.maxRetries;
+      (config.nightly as { maxRetries: number }).maxRetries = 0;
+      try {
+        await expect(listDocuments()).rejects.toThrow();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      } finally {
+        (config.nightly as { maxRetries: number }).maxRetries = originalRetries;
+      }
+    });
+
+    it('deduplicates repeated ids while retaining new documents across pages', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ id: 'd1', name: 'first.md' }], has_more: true })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              { id: 'd1', name: 'duplicate.md' },
+              { id: 'd2', name: 'second.md' }
+            ],
+            has_more: false
+          })
+        });
+
+      expect(await listDocuments()).toEqual([
+        { id: 'd1', path: 'first.md', processStatus: undefined, summary: null },
+        { id: 'd2', path: 'second.md', processStatus: undefined, summary: null }
+      ]);
+    });
+
     it('assembles results across 2 pages', async () => {
       mockFetch
         .mockResolvedValueOnce({

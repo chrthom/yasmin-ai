@@ -226,20 +226,10 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Pending-notes snapshot (evidence for Phase 3, bound for Phase 8)
     // -----------------------------------------------------------------------
-    // Undelivered pending notes (the live agent's cross-person outbox) ride along as extra
-    // evidence so a message that never reached its recipient still survives in long-term
-    // memory. A failed read must not fail the run -- consolidation continues on journals alone.
-    // This snapshot is deliberately taken right after Phase 1 (not later, inside Phase 3):
-    // the empty-batch short-circuit below needs the outbox state to decide whether the run
-    // really has nothing to do.
+    // Snapshot before the empty-batch check so undelivered notes can keep consolidation running.
     let undeliveredNotes: IntradayNote[] = [];
-    // Watermark of the consolidation snapshot: phase 8 may only delete notes up to this id,
-    // never a note the live agent staged after the snapshot while the pipeline was running.
-    // Taking the snapshot this early is the safe direction for that bound -- a note staged
-    // later during the run is neither consolidated nor deleted, so it simply survives for the
-    // next nightly run. The watermark is MAX(id) over ALL notes (delivered ones included), not
-    // over the undelivered subset: with only delivered notes the undelivered max would be 0 and
-    // the bounded DELETE would remove nothing, so the outbox would never empty and grow unbounded.
+    // Bound phase 8's delete to this snapshot: later notes survive. MAX(id) includes delivered
+    // notes so a delivered-only outbox can also be cleared (docs/intraday_notes_deployment.md).
     let notesSnapshotMaxId = 0;
     let notesConsolidated = true;
     try {
@@ -260,15 +250,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Empty-batch short-circuit (skip Phases 2-9 when there is nothing to do)
     // -----------------------------------------------------------------------
-    // Applies to BOTH collect paths: a fresh run that found no conversations AND a resumed run
-    // whose effective batch is empty (the resumed branch always replays a non-empty id list,
-    // but the guard keeps that invariant enforced rather than accidental -- e.g. for the
-    // crashed-before-the-batch-write orphan that falls through to fresh collection). The
-    // undelivered-notes check is part of the skip condition: the outbox consolidation rides
-    // along with Phases 3/4, so with pending notes there IS work only this job can do and the
-    // run must continue (with zero conversations) to consolidate them. A failed notes read
-    // also lands here -- the skip performs no outbox writes, so those notes are never lost;
-    // they stay pending and are picked up by the next run.
+    // Fresh and resumed empty batches skip only without known pending notes. If the notes read
+    // failed, this skip leaves the outbox untouched for the next run.
     if (conversations.length === 0 && undeliveredNotes.length === 0) {
       await updateJobLog(jobId, {
         status: 'completed',
