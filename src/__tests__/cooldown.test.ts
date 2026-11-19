@@ -14,8 +14,12 @@ import {
   COOLDOWN_ACTIVE_DAYS,
   EMPTY_COOLDOWN_SECTION_PLACEHOLDER,
   applyPersonTopicCooldown,
+  extractConversationUserDates,
   extractPersonActiveChatDates,
-  formatCooldownDate
+  formatCooldownDate,
+  parseJournalChatDates,
+  stampJournalChatDates,
+  stripJournalChatDates
 } from '../nightly/cooldown';
 
 function archiveRow(filePath: string, content: string, createdAt: Date): MemoryArchiveRow {
@@ -75,16 +79,66 @@ describe('cooldown', () => {
     });
   });
 
+  describe('extractConversationUserDates & journal chatDates helpers', () => {
+    it('extracts sorted distinct user-message dates in MEMORY_TZ and ignores assistant/tool rows', () => {
+      const dates = extractConversationUserDates([
+        // 2026-10-05 23:30 CEST -> 2026-10-05
+        { type: 'message.input', role: 'user', content: 'Hi', createdAt: '2026-10-05T21:30:00Z' },
+        // Assistant reply after midnight Berlin time must NOT add an active user day on its own
+        { type: 'message.output', role: 'assistant', content: 'Hey!', createdAt: '2026-10-05T22:05:00Z' },
+        // Tool execution on another day must NOT count
+        { type: 'function.call', content: '{}', createdAt: '2026-10-07T10:00:00Z' },
+        // User follow-up next morning in Berlin -> 2026-10-06
+        { type: 'message.input', role: 'user', content: 'Moin', createdAt: '2026-10-06T07:15:00Z' },
+        // Second user message on 2026-10-05 (out of order) deduplicates cleanly
+        { type: 'message.input', role: 'user', content: 'Nachtrag', createdAt: '2026-10-05T19:00:00Z' }
+      ]);
+
+      expect(dates).toEqual(['2026-10-05', '2026-10-06']);
+    });
+
+    it('falls back to conversation updatedAt only when non-empty messages carry no user timestamps', () => {
+      expect(extractConversationUserDates([], '2026-10-05T12:00:00Z')).toEqual([]);
+      expect(
+        extractConversationUserDates(
+          [{ type: 'message.input', role: 'user', content: 'Hi' }],
+          '2026-10-05T22:30:00Z'
+        )
+      ).toEqual(['2026-10-06']);
+    });
+
+    it('stamps, parses, and strips chatDates headers idempotently', () => {
+      const stamped = stampJournalChatDates('Zara erzählte vom Töpferkurs.', [
+        '2026-10-06',
+        '2026-10-05',
+        '2026-10-06'
+      ]);
+      expect(stamped).toBe('chatDates: 2026-10-05, 2026-10-06\n\nZara erzählte vom Töpferkurs.');
+      expect(parseJournalChatDates(stamped)).toEqual(['2026-10-05', '2026-10-06']);
+      expect(stripJournalChatDates(stamped)).toBe('Zara erzählte vom Töpferkurs.');
+      // Empty dates or empty body leave journalText untouched:
+      expect(stampJournalChatDates('Zara erzählte vom Töpferkurs.', [])).toBe(
+        'Zara erzählte vom Töpferkurs.'
+      );
+      expect(stampJournalChatDates('   ', ['2026-10-05'])).toBe('   ');
+    });
+  });
+
   describe('extractPersonActiveChatDates', () => {
-    it('counts distinct active conversation dates strictly for the target person', () => {
+    it('counts distinct active conversation dates strictly for the target person (including legacy rows without headers)', () => {
       const rows: MemoryArchiveRow[] = [
         // Two conversations for Zara on the same Berlin calendar day -> 1 active day
         archiveRow('journals/zara/conv-1.md', 'Journal 1', new Date('2026-10-05T09:00:00Z')),
         archiveRow('journals/zara/conv-2.md', 'Journal 2', new Date('2026-10-05T18:30:00Z')),
         // Another active day for Zara (late UTC -> next day in Berlin)
         archiveRow('journals/zara/conv-3.md', 'Journal 3', new Date('2026-10-07T22:30:00Z')),
-        // Empty journal entry is ignored
+        // Empty and header-only journal entries are ignored
         archiveRow('journals/zara/conv-empty.md', '   ', new Date('2026-10-09T12:00:00Z')),
+        archiveRow(
+          'journals/zara/conv-header-only.md',
+          'chatDates: 2026-10-09\n\n   ',
+          new Date('2026-10-09T12:00:00Z')
+        ),
         // Other people's journals and dreams are ignored
         archiveRow('journals/christopher/conv-4.md', 'Dad chat', new Date('2026-10-06T12:00:00Z')),
         archiveRow('journals/dreams/2026-10-08.md', 'TRAUM', new Date('2026-10-08T22:00:00Z')),
@@ -93,6 +147,31 @@ describe('cooldown', () => {
 
       const dates = extractPersonActiveChatDates(rows, 'zara');
       expect([...dates].sort()).toEqual(['2026-10-05', '2026-10-08']);
+    });
+
+    it('counts persisted chatDates across multi-day backlogs and multi-day chats instead of collapsing to row.createdAt', () => {
+      // Simulate a backlog recovery run on 2026-10-10 where every journal row received the same collectedAt.
+      const sameCollectedAt = new Date('2026-10-10T02:00:00Z');
+      const rows: MemoryArchiveRow[] = [
+        archiveRow(
+          'journals/zara/conv-backlog-1.md',
+          stampJournalChatDates('Montag & Dienstag Chat.', ['2026-10-05', '2026-10-06']),
+          sameCollectedAt
+        ),
+        archiveRow(
+          'journals/zara/conv-backlog-2.md',
+          stampJournalChatDates('Donnerstag Chat.', ['2026-10-08']),
+          sameCollectedAt
+        ),
+        archiveRow(
+          'journals/zara/conv-backlog-3.md',
+          stampJournalChatDates('Freitag Chat.', ['2026-10-09']),
+          sameCollectedAt
+        )
+      ];
+
+      const dates = extractPersonActiveChatDates(rows, 'zara');
+      expect([...dates].sort()).toEqual(['2026-10-05', '2026-10-06', '2026-10-08', '2026-10-09']);
     });
 
     it('excludes dream files under journals/dreams/ while keeping real conv ids for a user named dreams', () => {
@@ -246,7 +325,7 @@ describe('cooldown', () => {
       expect(result).not.toContain('Nach Töpferkurs fragen');
     });
 
-    it('override 2 (fällig ab): suppresses before dueDate, lifts cooldown once dueDate <= runDate, and ignores pre-discussion deadlines', () => {
+    it('override 2 (fällig ab): retains future deadlines with date-gated restraint, lifts once dueDate <= runDate, and strips pre-discussion deadlines', () => {
       const input = samplePersonProfile({
         openTopics: '- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)',
         intentions:
@@ -254,37 +333,72 @@ describe('cooldown', () => {
           '- Alte Frist schon besprochen (besprochen am 2026-10-05, fällig ab 2026-10-03)'
       });
 
-      // Before due date (2026-10-07): still on cooldown -> stripped
+      // Before due date (2026-10-07): future fällig-ab items stay in the eager cache with explicit
+      // date-gated restraint so quiet nights cannot strand the follow-up; stale pre-discussion
+      // deadline (2026-10-03 <= 2026-10-05) is still stripped by cooldown.
       const beforeDue = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-07');
-      expect(beforeDue).not.toContain('Mathe-Klausur am Freitag');
-      expect(beforeDue).not.toContain('Fragen wie die Mathe-Klausur lief');
+      expect(beforeDue).toContain(
+        '- Mathe-Klausur am Freitag (am 2026-10-05 besprochen – Zurückhaltung bis 2026-10-09, erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen) (fällig ab 2026-10-09)'
+      );
+      expect(beforeDue).toContain(
+        '- Fragen wie die Mathe-Klausur lief (am 2026-10-05 besprochen – Zurückhaltung bis 2026-10-09, erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen, fällig ab 2026-10-09)'
+      );
       expect(beforeDue).not.toContain('Alte Frist schon besprochen');
 
-      // On due date (2026-10-09): Mathe-Klausur lifts, stale 2026-10-03 deadline stays stripped
+      // On due date (2026-10-09): restraint lifts completely, stale 2026-10-03 deadline stays stripped.
       const onDue = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-09');
       expect(onDue).toContain('- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)');
       expect(onDue).toContain(
         '- Fragen wie die Mathe-Klausur lief (besprochen am 2026-10-05, fällig ab 2026-10-09)'
       );
+      expect(onDue).not.toContain('Zurückhaltung bis 2026-10-09');
       expect(onDue).not.toContain('Alte Frist schon besprochen');
     });
 
-    it('strips multi-line bullets and nested sub-bullets cleanly without leaving orphaned lines', () => {
+    it('strips multi-line bullets and blank-separated indented continuations / nested sub-bullets without leaving orphans', () => {
       const input = samplePersonProfile({
         openTopics: [
           '- Töpferkurs in Altona (zuletzt besprochen am 2026-10-05)',
+          '',
           '  Sie probiert nächste Woche eine blaue Glasur aus.',
+          '',
           '  - Foto zeigen lassen',
+          '    - Auch die Schale von letzter Woche',
           '',
           '- Sommerurlaub in Italien'
+        ].join('\n'),
+        intentions: [
+          '- Nach dem Töpferkurs fragen (besprochen am 2026-10-05)',
+          '',
+          '  - Foto der Glasur zeigen lassen'
         ].join('\n')
       });
 
-      const result = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-05');
+      const stripped = applyPersonTopicCooldown(input, new Set(['2026-10-05']), '2026-10-05');
 
-      expect(result).not.toContain('blaue Glasur');
-      expect(result).not.toContain('Foto zeigen lassen');
-      expect(result).toContain('- Sommerurlaub in Italien');
+      expect(stripped).not.toContain('blaue Glasur');
+      expect(stripped).not.toContain('Foto zeigen lassen');
+      expect(stripped).not.toContain('Schale von letzter Woche');
+      expect(stripped).not.toContain('Foto der Glasur');
+      expect(stripped).toContain('- Sommerurlaub in Italien');
+      expect(stripped).toContain(`## Yasmin's Intentions\n${EMPTY_COOLDOWN_SECTION_PLACEHOLDER}`);
+
+      // When kept at 1 subsequent active day in Open Topics, blank-separated children stay attached and intact:
+      const kept = applyPersonTopicCooldown(input, new Set(['2026-10-05', '2026-10-08']), '2026-10-08');
+      expect(kept).toContain(
+        [
+          '- Töpferkurs in Altona (vor 1 Gesprächstag besprochen – Zurückhaltung, nur bei neuem Aspekt)',
+          '',
+          '  Sie probiert nächste Woche eine blaue Glasur aus.',
+          '',
+          '  - Foto zeigen lassen',
+          '    - Auch die Schale von letzter Woche',
+          '',
+          '- Sommerurlaub in Italien'
+        ].join('\n')
+      );
+      // In Intentions at 1 subsequent active day, parent + blank-separated sub-bullet are still stripped cleanly:
+      expect(kept).not.toContain('Foto der Glasur');
     });
   });
 });

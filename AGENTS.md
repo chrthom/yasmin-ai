@@ -94,9 +94,9 @@ src/
 │   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
 │   │                  #   overrides the agent's updatedAt
 │   ├── cooldown.ts    # Per-person 5-active-chat-day topic cooldown applied to people/<name>.md
-│   │                  #   before Phase-7 compaction (strips/rewrites (besprochen am ...) markers
-│   │                  #   using each person's archived journal dates, with neuer Aspekt / fällig ab
-│   │                  #   overrides; zero archive churn)
+│   │                  #   before Phase-7 compaction (counts persisted journal chatDates, strips/rewrites
+│   │                  #   (besprochen am ...) markers, retains future fällig-ab deadlines with restraint,
+│   │                  #   zero archive churn)
 │   └── mapping.ts     # Table-driven mapping between verbose file paths and context_entries titles
 ├── services/
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
@@ -239,9 +239,10 @@ At a high level, each run:
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
    so the small, fast, sensitive-free eager set always reflects the latest long-term memory. For
    `people/<name>.md`, `cooldown.ts` first applies a deterministic 5-active-conversation-day topic cooldown
-   derived from that person's own `journals/<slug>/*.md` dates (stripping recently discussed items from
-   `Yasmin's Intentions` / `Open Topics` and rewriting `(besprochen am YYYY-MM-DD)` into pause/restraint cues
-   unless overridden by a newer `neuer Aspekt` or reached `fällig ab` date, without mutating `memory_archive`).
+   derived from that person's own persisted `journals/<slug>/*.md` `chatDates` (stripping recently discussed items from
+   `Yasmin's Intentions` / `Open Topics`, retaining future `fällig ab` deadlines with date-gated restraint, and rewriting
+   `(besprochen am YYYY-MM-DD)` into pause/restraint cues unless overridden by a newer `neuer Aspekt` or reached `fällig ab`
+   date, without mutating `memory_archive`).
    The `Profile of Yasmin` compaction additionally folds in the current mood and the most recent dream
    reflections (`self-reflection/dreams.md`) as soft evidence — dream-derived material is always marked as
    such (e.g. "aus einem Traum") and never promoted to standalone facts. That asymmetry is deliberate:

@@ -27,7 +27,7 @@ const msg = (role: 'user' | 'assistant', content: string) => ({
 const userWithContext = (text: string) =>
   '<context_entry title="Profile of Zara">\nfacts\n</context_entry>\n\n' +
   '<available_context_entries>\n- Profile of Anna\n</available_context_entries>\n\n' +
-  `You are talking to Zara.\n\n${text}\n\nYour answer must be shorter than 1500 characters.`;
+  `You are talking to Zara. Today is 2026-10-09.\n\n${text}\n\nYour answer must be shorter than 1500 characters.`;
 
 describe('handoff', () => {
   const originalAgent = config.mistral.summarizerAgentId;

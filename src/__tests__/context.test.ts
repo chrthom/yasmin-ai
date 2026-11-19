@@ -46,14 +46,16 @@ describe('Context Service', () => {
       expect(newlyLoadedTitles).not.toContain('Profile of Ellena');
     });
 
-    it('should not reload already loaded context titles', async () => {
+    it('should not reload already loaded context titles and should include today’s date in MEMORY_TZ', async () => {
       const alreadyLoaded = ['Profile of Christopher', 'Profile of Yasmin', 'Family notes'];
+      // 2026-10-08T22:30:00Z is already 2026-10-09 in Europe/Berlin (CEST).
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
         'Tell me about samira',
         'christopher',
-        alreadyLoaded
+        alreadyLoaded,
+        new Date('2026-10-08T22:30:00Z')
       );
-      expect(formattedContext).toBe('\n\nYou are talking to christopher.');
+      expect(formattedContext).toBe('\n\nYou are talking to christopher. Today is 2026-10-09.');
       expect(newlyLoadedTitles).toEqual([]);
     });
 

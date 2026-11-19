@@ -1,5 +1,6 @@
 import { config } from '../config';
 import { MemoryArchiveRow } from '../database/models/memory_archive.model';
+import { ConversationMessage } from '../mistral/mistral_api';
 import { dreamDateFromPath } from './dream';
 
 /**
@@ -13,6 +14,9 @@ export const COOLDOWN_ACTIVE_DAYS = 5;
  * that section, keeping the compaction LLM from back-filling the emptied heading with paused topics.
  */
 export const EMPTY_COOLDOWN_SECTION_PLACEHOLDER = '- (aktuell keine)';
+
+const JOURNAL_CHAT_DATES_LINE_RE = /^chatDates:\s*(\d{4}-\d{2}-\d{2}(?:\s*,\s*\d{4}-\d{2}-\d{2})*)\s*$/im;
+const JOURNAL_CHAT_DATES_STRIP_RE = /^chatDates:\s*\d{4}-\d{2}-\d{2}(?:\s*,\s*\d{4}-\d{2}-\d{2})*\s*\n+/i;
 
 const FAST_PATH_BESPROCHEN_RE = /\bbesprochen\s+am\s+\d{4}-\d{2}-\d{2}\b/i;
 const BESPROCHEN_TAG_RE = /([([,;–-]\s*)(?:zuletzt\s+)?besprochen\s+am\s+(\d{4}-\d{2}-\d{2})\b/gi;
@@ -69,9 +73,124 @@ export function formatCooldownDate(date: Date): string {
 }
 
 /**
+ * Checks whether a raw Mistral conversation message is a human user turn (excluding assistant
+ * outputs and internal tool/function/system/service/error rows).
+ *
+ * @param message Raw conversation message row.
+ * @returns true when the message represents a user turn.
+ */
+function isUserTurnMessage(message: ConversationMessage): boolean {
+  const t = message.type.toLowerCase();
+  if (
+    t.includes('tool') ||
+    t.includes('function') ||
+    t.includes('system') ||
+    t.includes('service') ||
+    t.includes('error')
+  ) {
+    return false;
+  }
+  const role = message.role ? message.role.toLowerCase() : t.includes('output') ? 'assistant' : 'user';
+  return role === 'user';
+}
+
+/**
+ * Extracts sorted, deduplicated YYYY-MM-DD calendar dates (in MEMORY_TZ) of all user messages in a
+ * conversation. When a non-empty message list lacks per-message timestamps, falls back to the
+ * conversation's `updatedAt` timestamp so delayed consolidation runs still record the chat's date.
+ *
+ * @param messages Raw conversation messages returned by Mistral.
+ * @param fallbackUpdatedAt Optional conversation `updated_at` ISO timestamp.
+ * @returns Sorted distinct YYYY-MM-DD dates on which the user wrote in this conversation.
+ */
+export function extractConversationUserDates(
+  messages: readonly ConversationMessage[],
+  fallbackUpdatedAt?: string
+): string[] {
+  if (messages.length === 0) {
+    return [];
+  }
+
+  const dates = new Set<string>();
+  for (const message of messages) {
+    if (!isUserTurnMessage(message) || !message.createdAt) {
+      continue;
+    }
+    const parsed = new Date(message.createdAt);
+    if (!isNaN(parsed.getTime())) {
+      dates.add(formatCooldownDate(parsed));
+    }
+  }
+
+  if (dates.size === 0 && fallbackUpdatedAt) {
+    const parsedFallback = new Date(fallbackUpdatedAt);
+    if (!isNaN(parsedFallback.getTime())) {
+      dates.add(formatCooldownDate(parsedFallback));
+    }
+  }
+
+  return [...dates].sort();
+}
+
+/**
+ * Strips any leading `chatDates: ...` metadata header from an archived journal entry, returning
+ * just the prose body.
+ *
+ * @param content Raw archived journal content.
+ * @returns Journal content without the `chatDates:` header.
+ */
+export function stripJournalChatDates(content: string): string {
+  return content.replace(JOURNAL_CHAT_DATES_STRIP_RE, '');
+}
+
+/**
+ * Parses the `chatDates: YYYY-MM-DD, ...` header written at the top of archived conversation
+ * journals by Phase 2.
+ *
+ * @param content Raw archived journal content.
+ * @returns Sorted distinct YYYY-MM-DD dates from the header, or `[]` when absent.
+ */
+export function parseJournalChatDates(content: string): string[] {
+  const match = JOURNAL_CHAT_DATES_LINE_RE.exec(content);
+  if (!match) {
+    return [];
+  }
+  const dates = new Set(
+    match[1]
+      .split(',')
+      .map(part => part.trim())
+      .filter(Boolean)
+  );
+  return [...dates].sort();
+}
+
+/**
+ * Prepends the authoritative `chatDates: YYYY-MM-DD, ...` header to a non-empty journal entry so
+ * multi-day conversations and multi-day backlogs consolidated in a single nightly run preserve
+ * their real user-message calendar dates.
+ *
+ * @param journalText Generated journal prose.
+ * @param chatDates Distinct YYYY-MM-DD user-message dates for the conversation.
+ * @returns Journal content with the `chatDates:` header when both prose and dates are non-empty.
+ */
+export function stampJournalChatDates(journalText: string, chatDates: readonly string[]): string {
+  const body = stripJournalChatDates(journalText).trim();
+  if (body.length === 0 || chatDates.length === 0) {
+    return journalText;
+  }
+  const uniqueSorted = [...new Set(chatDates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
+  if (uniqueSorted.length === 0) {
+    return journalText;
+  }
+  return `chatDates: ${uniqueSorted.join(', ')}\n\n${body}`;
+}
+
+/**
  * Extracts the distinct calendar dates (YYYY-MM-DD in MEMORY_TZ) on which the given person had at
- * least one non-empty archived conversation journal. Multiple conversations on the same day count
- * as a single active conversation day; dreams and other people's journals are ignored.
+ * least one non-empty archived conversation journal. Prefers each journal's persisted `chatDates:`
+ * user-message dates (handling multi-day chats and backlog recovery runs), falling back to
+ * `row.createdAt` only for legacy journals archived without the header. Dreams and other people's
+ * journals are ignored.
  *
  * @param currentVersions All current memory_archive rows.
  * @param personSlug The sanitized person path slug (e.g. "zara" or "mary-jane").
@@ -92,10 +211,18 @@ export function extractPersonActiveChatDates(
       continue;
     }
     const rest = row.filePath.slice(prefix.length);
-    if (rest.includes('/') || row.content.trim().length === 0) {
+    if (rest.includes('/') || stripJournalChatDates(row.content).trim().length === 0) {
       continue;
     }
-    dates.add(formatCooldownDate(row.createdAt));
+
+    const persistedDates = parseJournalChatDates(row.content);
+    if (persistedDates.length > 0) {
+      for (const d of persistedDates) {
+        dates.add(d);
+      }
+    } else {
+      dates.add(formatCooldownDate(row.createdAt));
+    }
   }
 
   return dates;
@@ -170,8 +297,9 @@ function leadingIndent(line: string): number {
 }
 
 /**
- * Groups a section's body lines into blank-line runs and logical items (bullets together with any
- * indented continuation lines or nested sub-bullets, or single unbulleted lines).
+ * Groups a section's body lines into blank-line runs and logical items. Blank-separated indented
+ * continuations and nested sub-bullets stay attached to their parent list item so suppressing a
+ * parent bullet never leaves orphaned child lines behind.
  *
  * @param bodyLines The lines inside one `## ` section.
  * @returns Ordered blank and item chunks.
@@ -179,18 +307,19 @@ function leadingIndent(line: string): number {
 function parseBodyChunks(bodyLines: string[]): BodyChunk[] {
   const chunks: BodyChunk[] = [];
   let activeItem: { lines: string[]; baseIndent: number; isList: boolean } | null = null;
+  let pendingBlanks: string[] = [];
 
   for (const line of bodyLines) {
     if (line.trim().length === 0) {
       if (activeItem) {
-        chunks.push({ type: 'item', lines: activeItem.lines });
-        activeItem = null;
-      }
-      const prev = chunks[chunks.length - 1];
-      if (prev && prev.type === 'blank') {
-        prev.lines.push(line);
+        pendingBlanks.push(line);
       } else {
-        chunks.push({ type: 'blank', lines: [line] });
+        const prev = chunks[chunks.length - 1];
+        if (prev && prev.type === 'blank') {
+          prev.lines.push(line);
+        } else {
+          chunks.push({ type: 'blank', lines: [line] });
+        }
       }
       continue;
     }
@@ -198,14 +327,28 @@ function parseBodyChunks(bodyLines: string[]): BodyChunk[] {
     const indent = leadingIndent(line);
     const listMatch = LIST_ITEM_START_RE.exec(line);
 
-    if (activeItem && indent > activeItem.baseIndent) {
-      // Indented continuation line or nested sub-bullet belongs to the current parent item.
+    if (
+      activeItem &&
+      activeItem.isList &&
+      (indent > activeItem.baseIndent || (pendingBlanks.length === 0 && listMatch === null))
+    ) {
+      // Indented continuation paragraph / nested sub-bullet (even after blank lines), or an
+      // immediate lazy continuation line with no intervening blank line, stays attached to the
+      // current parent list item.
+      if (pendingBlanks.length > 0) {
+        activeItem.lines.push(...pendingBlanks);
+        pendingBlanks = [];
+      }
       activeItem.lines.push(line);
       continue;
     }
 
     if (activeItem) {
       chunks.push({ type: 'item', lines: activeItem.lines });
+      if (pendingBlanks.length > 0) {
+        chunks.push({ type: 'blank', lines: pendingBlanks });
+        pendingBlanks = [];
+      }
     }
 
     activeItem = {
@@ -217,13 +360,16 @@ function parseBodyChunks(bodyLines: string[]): BodyChunk[] {
 
   if (activeItem) {
     chunks.push({ type: 'item', lines: activeItem.lines });
+    if (pendingBlanks.length > 0) {
+      chunks.push({ type: 'blank', lines: pendingBlanks });
+    }
   }
 
   return chunks;
 }
 
 /**
- * Collects all regex capture-group-1 matches from text without mutating shared RegExp state.
+ * Collects all regex capture-group matches from text without mutating shared RegExp state.
  *
  * @param pattern Global regex whose capture group index provides the date string.
  * @param text The item text to inspect.
@@ -253,6 +399,27 @@ function stripStaleNewAspectTags(text: string, besprochenDate: string): string {
     .replace(STALE_LEADING_ASPEKT_RE, (full, date: string) => (date < besprochenDate ? '(' : full))
     .replace(STALE_TRAILING_ASPEKT_RE, (full, date: string) => (date < besprochenDate ? '' : full))
     .replace(STALE_STANDALONE_ASPEKT_RE, (full, date: string) => (date < besprochenDate ? '' : full));
+}
+
+/**
+ * Rewrites `(besprochen am YYYY-MM-DD)` on an item that carries a future `fällig ab` deadline into
+ * explicit date-gated restraint guidance, keeping the item in the eager cache so the live agent can
+ * still act on the deadline when it arrives after quiet nights (when Phases 2-9 do not re-run).
+ *
+ * @param itemText The item text to rewrite.
+ * @param besprochenDate The latest discussed date on the item.
+ * @param dueDate The earliest future post-discussion `fällig ab` date (YYYY-MM-DD).
+ * @returns The item text with deadline-gated restraint guidance.
+ */
+function rewriteFutureDueTag(itemText: string, besprochenDate: string, dueDate: string): string {
+  const cleaned = stripStaleNewAspectTags(itemText, besprochenDate);
+  const regex = new RegExp(BESPROCHEN_TAG_RE.source, BESPROCHEN_TAG_RE.flags);
+
+  return cleaned.replace(
+    regex,
+    (_full, prefix: string, date: string) =>
+      `${prefix}am ${date} besprochen – Zurückhaltung bis ${dueDate}, erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen`
+  );
 }
 
 /**
@@ -290,10 +457,10 @@ function rewriteBesprochenTag(
 
 /**
  * Evaluates one item inside a person-profile section against the 5-active-chat-day cooldown and
- * its two overrides (`neuer Aspekt` >= `besprochen` date, or a `fällig ab` date reached since the
- * discussion).
+ * its overrides (`neuer Aspekt` >= `besprochen` date, reached `fällig ab` date, or retained
+ * deadline-gated restraint for a future `fällig ab` date).
  *
- * @param itemLines Lines belonging to a single bullet or paragraph item.
+ * @param itemLines Lines belonging to a single bullet (plus any continuations/sub-bullets) or paragraph.
  * @param sectionKind Section bucket governing whether cooldown strips or rewrites the item.
  * @param activeChatDates Set of active conversation dates (YYYY-MM-DD) for this person.
  * @param runDate Current nightly run date (YYYY-MM-DD in MEMORY_TZ).
@@ -317,12 +484,21 @@ function transformItem(
 
   // Override 1: a new aspect dated on or after the last discussion makes the topic fair game again.
   const hasFreshNewAspect = neuerAspektDates.some(d => d >= besprochenDate);
-  // Override 2: a target date strictly after the discussion that has now arrived lifts cooldown;
+  // Override 2a: a post-discussion target date that has arrived lifts cooldown immediately;
   // requiring d > besprochenDate prevents an old pre-discussion deadline from bypassing cooldown.
   const isDueNow = faelligDates.some(d => d > besprochenDate && d <= runDate);
 
   if (hasFreshNewAspect || isDueNow) {
     return itemLines;
+  }
+
+  // Override 2b: a future post-discussion target date must NOT be stripped from the eager cache,
+  // because quiet nights skip Phases 2-9 -- keep it with explicit date-gated restraint so the live
+  // agent holds back before dueDate and can act once today >= dueDate even without another run.
+  const futureDueDates = faelligDates.filter(d => d > besprochenDate && d > runDate);
+  if (futureDueDates.length > 0) {
+    const earliestFutureDue = futureDueDates.reduce((min, d) => (d < min ? d : min));
+    return rewriteFutureDueTag(itemText, besprochenDate, earliestFutureDue).split('\n');
   }
 
   let subsequentActiveDays = 0;
