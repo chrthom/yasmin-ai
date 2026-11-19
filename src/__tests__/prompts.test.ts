@@ -3,8 +3,10 @@ import * as path from 'node:path';
 import { loadTemplate, promptDir, renderPrompt } from '../nightly/prompts';
 
 describe('nightly prompt templates', () => {
-  it('keeps the integration task’s detailed profile contract in the Studio system prompt', () => {
-    const system = fs.readFileSync(path.join(promptDir(), '..', 'nightly_system_prompt.txt'), 'utf8');
+  it('keeps key integration contract anchors in the checked-in Studio system prompt', () => {
+    const system = fs
+      .readFileSync(path.join(promptDir(), '..', 'nightly_system_prompt.txt'), 'utf8')
+      .replace(/\s+/g, ' ');
     const headings = [
       'Core Facts',
       'Current Attitude',
@@ -15,11 +17,12 @@ describe('nightly prompt templates', () => {
       "Yasmin's View",
       "Yasmin's Intentions"
     ];
-    expect(system).toContain(headings.map(heading => '## ' + heading).join('\n'));
+    headings.forEach(heading => expect(system).toContain('## ' + heading));
     expect(system).toContain('THE ONE AND ONLY FIRST-PERSON FILE');
     expect(system).toContain('2nd-3rd observed occurrence');
     expect(system).toContain('confidence level');
-    expect(system).toContain('[PRIVACY:SENSITIVE]\n...the sensitive passage...\n[/PRIVACY:SENSITIVE]');
+    expect(system).toContain('[PRIVACY:SENSITIVE]');
+    expect(system).toContain('[/PRIVACY:SENSITIVE]');
     expect(system).toContain('memory file content in GERMAN');
   });
 

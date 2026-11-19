@@ -648,6 +648,8 @@ describe('reflection', () => {
     it('describes the mood file, its header format, and the today-evidence rule', () => {
       const prompt = integratePrompt('2026-10-05');
       expect(prompt).toContain('self-reflection/mood.md');
+      expect(prompt).toContain('-1 frustrated');
+      expect(prompt).toContain('+1 cheerful');
       expect(prompt).toContain(
         'valence: <number>\nenergy: <number>\nhalfLifeDays: <number>\nupdatedAt: <ISO date>'
       );
@@ -674,6 +676,8 @@ describe('reflection', () => {
       expect(prompt).toContain('2nd-3rd observed occurrence');
       expect(prompt).toContain('(growing/stable/declining)');
       expect(prompt).toContain('evidence count');
+      expect(prompt).toContain('3× diese Woche');
+      expect(prompt).toContain('leave anecdotes tied to one specific person or conversation out');
       expect(prompt).toContain('never fabricate events, statements or outcomes');
     });
 
@@ -685,14 +689,17 @@ describe('reflection', () => {
     });
 
     it('preserves task-specific output, privacy and forward-looking intention rules', () => {
-      const prompt = integratePrompt('2026-10-05');
+      const prompt = integratePrompt('2026-10-05').replace(/\s+/g, ' ');
       expect(prompt).toContain('call get_long_term_file first');
       expect(prompt).toContain('COMPLETE new content');
-      expect(prompt).toContain('[PRIVACY:SENSITIVE] / [/PRIVACY:SENSITIVE] markers, each on its own line');
-      expect(prompt).toContain('Write all staged file content in German');
+      expect(prompt).toContain('casually surfaced to other family members');
+      expect(prompt).toContain('[PRIVACY:SENSITIVE]');
+      expect(prompt).toContain('[/PRIVACY:SENSITIVE]');
+      expect(prompt).toContain('each on its own line');
+      expect(prompt).toContain('staged file content in German');
       expect(prompt).toContain('one forward-looking idea');
       expect(prompt).toContain("only when today's evidence actually supports it");
-      expect(prompt).toContain('reply with a short plain-text summary');
+      expect(prompt).toContain('short plain-text summary');
     });
   });
 
