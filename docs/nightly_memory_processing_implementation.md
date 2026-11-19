@@ -1,6 +1,6 @@
 # Nightly Memory Processing — Implementation Concept
 
-**Status**: Historical plan document — shipped. The build steps and cutover checklists below were executed; they are kept for design rationale only. `AGENTS.md` ("Nightly Memory Pipeline") and the code in `src/nightly/` describe the shipped system.
+**Status**: Historical plan document — shipped. The build steps and cutover checklists below were executed; they are kept for design rationale only. `docs/ARCHITECTURE.md` and the code in `src/nightly/` describe the shipped system. Earlier proposals below, including the original library privacy policy, can be superseded by later decisions; verify operational details against the code.
 **Design basis**: `nightly_memory_processing_concept_v3.md`
 **Review incorporated**: `feedback_v3_concept.md` (triaged in Appendix C)
 **Date**: 2026-07-06
@@ -56,11 +56,11 @@ Creates: `memory_archive`, `nightly_job_log`, `processing_lock`. Non-destructive
 
 ### 2.2 MariaDB (bootstrap migration — CRITICAL)
 
-The library is empty. Phase 7 regenerates `context_entries` **from** the verbose store, so if the verbose store is empty on first run it would **wipe the existing profiles**. Before the scheduler's first automatic run, run the one-time bootstrap (`scripts/bootstrap-memory.ts`, §7.3):
+The library starts empty. Phase 7 regenerates `context_entries` **from** the verbose store. Before the scheduler's first automatic run, run the one-time bootstrap (`scripts/bootstrap-memory.ts`); without it, the pipeline lacks the existing profiles as its source memory:
 
 > Reads current `context_entries` → **merges each `Profile of X` + `Session with X` into one `people/<name>.md`** (5-section template), composes `self-reflection/profile.md` (from `Profile of Yasmin`) and `general/family.md` (from `Family notes`) → inserts them as `memory_archive` v1 → uploads them to the Mistral library.
 
-Safety net (also permanent behavior): **Phase 7 never overwrites a `context_entries` row that has no verbose source** (see §8.4), so a missed bootstrap degrades to "no change," never data loss.
+Safety net: **Phase 7 does not overwrite a `context_entries` row that has no verbose source** (see §8.4). Bootstrap uploads the existing content directly without stripping sensitive passages; inspect the source rows before running it.
 
 ### 2.3 Mistral Console
 
@@ -301,6 +301,10 @@ Eager set loaded on turn 1 = `Profile of <sender>` + `Profile of Yasmin` + `Fami
 
 ## 9. Privacy
 
+**Historical proposal:** the library policy below was superseded by the decision in §14. Nightly
+library uploads now strip sensitive content. This does not apply to every Mistral call or to the
+bootstrap upload; see `docs/ARCHITECTURE.md` for the current boundaries.
+
 - **Eager cache: always sensitive-free.** `[PRIVACY:SENSITIVE]` blocks stripped in Phase 7 before compaction. Non-negotiable (eager is injected unconditionally).
 - **`memory_archive`: full content** including sensitive (durable truth).
 - **Mistral library (default): keeps sensitive**, with **answer-time enforcement** via the conversation agent's system prompt (block added in 2.3): _"Content marked [PRIVACY:SENSITIVE]: use only as a direct answer when the user explicitly asks about that exact topic; never proactively, for creative connections, or for inferences."_
@@ -437,16 +441,16 @@ Three layers by rate of change -- deliberately folded into existing files, no ne
 
 ## 14. Decisions (finalized 2026-07-06)
 
-| Topic                  | Decision                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Read source (Phase 3)  | **`memory_archive`** (local, exact) — no runtime dependency on the Mistral read API. MariaDB is the durable content source; Mistral is a derived search projection.                                                                                                                                                                                                                                                   |
-| Compression (Phase 7)  | **LLM compaction** by the nightly agent to the 8-section template; 2000-char cap; deterministic truncate fallback.                                                                                                                                                                                                                                                                                                    |
-| Sensitive in library   | **Revised:** stripped before Phase 6's upload too, not just the eager cache -- `[PRIVACY:SENSITIVE]` content never leaves local storage (`memory_archive` keeps it for versioning/audit only). Data minimization won over the original "keep in library + answer-time prompt enforcement" design, which relied entirely on the live agent's prompt discipline to gate a marker the RAG layer could otherwise surface. |
-| Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions). **`Session with X` retired.**                                                                                                                                                                                              |
-| Journals               | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings.                                                                                                                                                                                                                                                                                 |
-| Live agent             | **Read-only** for memory; nightly job is the **sole writer**. `update_context_entry` retired. Keep live writes until the nightly job ships, then flip (§13).                                                                                                                                                                                                                                                          |
-| Reflection             | Dedicated **`yasmin-nightly`** agent; transcripts via `getConversationMessages` (no `[REFLECTION_TRIGGER]`).                                                                                                                                                                                                                                                                                                          |
-| Scheduling             | **Revised:** in-process scheduler (`src/nightly/scheduler.ts`, started from `app.ts`) instead of cron + failure email -- no external unit/wrapper script, and a failure is just an `ERROR` log line rather than a separate alert.                                                                                                                                                                                     |
+| Topic                  | Decision                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read source (Phase 3)  | **`memory_archive`** (local, exact) — no runtime dependency on the Mistral read API. MariaDB is the durable content source; Mistral is a derived search projection.                                                                                                                                                                                               |
+| Compression (Phase 7)  | **LLM compaction** by the nightly agent to the 8-section template; 2000-char cap; deterministic truncate fallback.                                                                                                                                                                                                                                                |
+| Sensitive in library   | **Revised:** stripped before Phase 6's upload too, not just the eager cache. The local `memory_archive` keeps full content; pipeline-internal Mistral review/revision calls can receive it, and bootstrap uploads existing context directly without stripping. Data minimization won over the original "keep in library + answer-time prompt enforcement" design. |
+| Eager entry per person | **Single `Profile of <Name>`** = facts + proactive topics (Core Facts, Current Attitude, Ideas/Interests/Goals, Recent Happenings, Open Topics, Communication Style, Yasmin's Intentions). **`Session with X` retired.**                                                                                                                                          |
+| Journals               | **Per-conversation files in Mistral only** (RAG). **`Journal with X` retired** — short-term arc lives in Profile's Recent Happenings.                                                                                                                                                                                                                             |
+| Live agent             | **Read-only** for memory; nightly job is the **sole writer**. `update_context_entry` retired. Keep live writes until the nightly job ships, then flip (§13).                                                                                                                                                                                                      |
+| Reflection             | Dedicated **`yasmin-nightly`** agent; transcripts via `getConversationMessages` (no `[REFLECTION_TRIGGER]`).                                                                                                                                                                                                                                                      |
+| Scheduling             | **Revised:** in-process scheduler (`src/nightly/scheduler.ts`, started from `app.ts`) instead of cron + failure email -- no external unit/wrapper script, and a failure is just an `ERROR` log line rather than a separate alert.                                                                                                                                 |
 
 No open defaults remain.
 

@@ -476,7 +476,6 @@ export class ChatAgent {
 
       // Query ContextService to find newly relevant context
       const { formattedContext, newlyLoadedTitles } = await contextService.getRelevantContext(
-        userText,
         username,
         cached.loadedContextTitles
       );
