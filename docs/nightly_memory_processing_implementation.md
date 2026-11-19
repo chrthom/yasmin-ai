@@ -67,6 +67,8 @@ Safety net: **Phase 7 does not overwrite a `context_entries` row that has no ver
 1. **Library** — the `memory` library already exists in the production workspace. Obtain its **library id** and put it in `MISTRAL_LIBRARY_ID` (§10). _Do not_ reuse the temporary test id from earlier spikes.
 2. **Conversation agent** (`AGENT_ID_CONVERSATION`) — attach the `memory` library so it auto-retrieves (RAG). Update its system prompt (`mistral_config/conversation/system_prompt.txt`): add the privacy-enforcement block (§9); note that long-term recall now comes from memory; **remove the write/Session instructions and make it read-only** (done at cutover, §13 — after the nightly job is verified; the privacy block turned out to be unnecessary because the live agent never sees stripped text).
 3. **Nightly agent** — create a new agent `yasmin-nightly` with the memory-processor system prompt (§6.3). Library wiring **optional** (only for cross-file discovery; see v3 §1.2). Put its id in `AGENT_ID_NIGHTLY`.
+   **Deploy the system prompt first:** before deploying application changes to the integration task, update the Studio agent identified by `AGENT_ID_NIGHTLY` with `mistral_config/nightly/nightly_system_prompt.txt` from the same release and verify the saved Studio copy. The shortened task delegates file paths, voice rules and the eight-section person template to that system prompt. The application does not install or verify it; tests only inspect the checked-in copy, and a stale Studio copy can silently degrade memory despite review/privacy checks.
+   **Evaluate before rollout:** compare the old and new integration tasks against the same representative journals, undelivered notes and existing memory in an isolated test setup (copied database, test agents/library, no production writes or cleanup). Inspect staged `self-reflection/profile.md`, `self-reflection/mood.md` and a person profile for evidence grounding, trait maturation, privacy audience/markers, mood/no-mood, topic changes, completed/due intentions, German/voice and output format. `npm run nightly:dry-run` is only a connectivity preflight: it makes no integration calls and cannot provide this comparison or verify the Studio prompt. Record the comparison before rollout; roll back the task template if quality regresses. Template character savings are not savings for the full rendered request or measured model tokens.
 4. **Dream agent (optional)** — create the agent `yasmin-dream` with the dream system prompt (`mistral_config/dream/system_prompt.txt`; see §6.1 Phase 5) and put its id in `AGENT_ID_DREAM`. Without it the nightly job still dreams, but falls back to the structured `yasmin-nightly` agent with a creative prompt instead of the dedicated narrative one.
 5. **API key** — issue a **production** key with access to the library + all agents (dream agent included); set `MISTRAL_API_KEY`. Verify it can `GET /v1/libraries/{MISTRAL_LIBRARY_ID}` before go-live.
 
@@ -83,6 +85,7 @@ Safety net: **Phase 7 does not overwrite a `context_entries` row that has no ver
 - [ ] `MISTRAL_LIBRARY_ID` = production `memory` id; prod key can read it
 - [ ] Conversation agent: library attached + privacy prompt updated
 - [ ] `yasmin-nightly` agent created; `AGENT_ID_NIGHTLY` set
+- [ ] Nightly system prompt from the release deployed and verified in Studio **before** application deployment; old/new integration comparison reviewed in an isolated test setup
 - [ ] (optional) `yasmin-dream` agent created from `mistral_config/dream/system_prompt.txt`; `AGENT_ID_DREAM` set (unset → dream generation falls back to the nightly agent with a creative prompt)
 - [ ] Bootstrap migration run; `memory_archive` seeded; library populated
 - [ ] App (re)started so the scheduler arms itself; dry-run reviewed
@@ -102,7 +105,11 @@ New (`+`) and changed (`~`) files, following existing conventions (`src/**` → 
 ~ src/chat_agent.ts                        remove update_context_entry + Session handling (read-only; done at cutover, §13)
 ~ src/services/context.service.ts          eager set: drop 'Session with X' (sender Profile + Yasmin + Family notes)
 - mistral_config/conversation/functions/update_context_entry.json   retired (agent read-only)
-+ src/nightly/pipeline.ts                 phase orchestrator
++ src/nightly/pipeline.ts                 phase orchestrator (delegates phases 4-7 below)
++ src/nightly/review_phase.ts             evidence review/revision + archive writes (Phase 4)
++ src/nightly/dream_phase.ts              resumable dream generation/reflection (Phase 5)
++ src/nightly/upload_phase.ts             privacy-stripped upload + library reconciliation (Phase 6)
++ src/nightly/eager_phase.ts              eager compaction + mood/dream fold-ins (Phase 7)
 + src/nightly/tools.ts                    integration tool set (stage_update, …)
 + src/nightly/reflection.ts              prompts + agent calls (journal, integrate, review, compact)
 + src/nightly/privacy.ts                 [PRIVACY:SENSITIVE] stripping, compaction cap
@@ -212,6 +219,19 @@ deleteDocument(docId: string): Promise<void>                     // DELETE …/d
 ---
 
 ## 6. Nightly pipeline (`src/nightly/pipeline.ts`)
+
+The shipped orchestrator delegates review/archive to `src/nightly/review_phase.ts`, dream generation
+and reflection to `src/nightly/dream_phase.ts`, upload/reconciliation to `src/nightly/upload_phase.ts`,
+and eager regeneration to `src/nightly/eager_phase.ts`. Locking, bounded snapshots, phase ordering,
+outbox reset, cleanup and final status/watermark decisions remain in `pipeline.ts`. Phase stamps also
+remain there except the dream success stamp, which stays inside its phase's error boundary so a
+failed dream does not overwrite the last successful phase. Direct phase tests live in
+`src/__tests__/nightly_phases.test.ts`; orchestration/privacy regressions remain in the integration suite.
+
+Known preserved edge (issue [#146](https://github.com/chrthom/yasmin-ai/issues/146)): failure to load the
+topic duplicate barrier skips topic proposals but leaves the note-clear guard true. Phase 8 may
+therefore clear note-derived topic evidence that was not archived; the extraction characterizes this
+existing behavior rather than changing it.
 
 Orchestrates phases; each writes `last_completed_phase` for resume. The caller (the scheduler, or the CLI entry point for a manual run) catches, marks `failed`/`partial`, releases lock; a failure just surfaces as an `ERROR` log line (§11) -- there is no separate alerting step.
 

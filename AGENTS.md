@@ -33,6 +33,8 @@ optional subsystems degrade quietly without blocking the user's message.
 - Key code: `src/app.ts` routes and scheduler startup; `src/chat_agent.ts`, `src/handoff.ts` and
   `src/services/context.service.ts` for live chat; `src/nightly/` for consolidation; `src/database/`
   for persistence; `src/mistral/mistral_api.ts` for Mistral HTTP; `mistral_config/` for prompts/tools.
+- Nightly `pipeline.ts` delegates phases 4-7 to `review_phase.ts`, `dream_phase.ts`, `upload_phase.ts`
+  and `eager_phase.ts`; the architecture reference describes their boundaries and direct tests.
 
 ## Development and verification
 

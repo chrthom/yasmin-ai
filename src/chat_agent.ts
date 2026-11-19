@@ -11,6 +11,7 @@ import {
 import { buildHandoff, waitFor } from './handoff';
 import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 import { extractContentText } from './mistral/content';
+import { extractToolCalls, ToolCallOutput } from './mistral/tool_calls';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 import { capitalizePreserveRest } from './strings';
 
@@ -20,21 +21,9 @@ interface MistralConversationResponseOutputPart {
   text: string;
 }
 
-/** A tool call the agent requested (nested message.tool_calls shape). */
-interface MistralToolCall {
-  id: string;
-  type: string;
-  function: {
-    name: string;
-    arguments: string | object;
-  };
-}
-
 /** One output entry of a Mistral conversation response: an assistant message or a tool-call block. */
-interface MistralConversationResponseOutput {
+interface MistralConversationResponseOutput extends ToolCallOutput<string | object> {
   content: string | MistralConversationResponseOutputPart[];
-  type: string;
-  tool_calls?: MistralToolCall[];
 }
 
 /** Response of POST /v1/conversations -- an initial send or a tool-result send. */
@@ -535,26 +524,12 @@ export class ChatAgent {
       const maxToolCalls = config.mistral.maxToolCalls;
 
       while (toolCallDetected && loopCount < maxToolCalls) {
-        const toolCalls: Array<{ id: string; name: string; arguments: any }> = [];
-
-        for (const o of responseOutputs) {
-          if (o.type === 'message.tool_calls' && o.tool_calls) {
-            for (const tc of o.tool_calls) {
-              toolCalls.push({
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments
-              });
-            }
-          } else if (o.type === 'function.call' || o.type === 'function_call') {
-            const flatCall = o as any;
-            toolCalls.push({
-              id: flatCall.tool_call_id || flatCall.id,
-              name: flatCall.name,
-              arguments: flatCall.arguments
-            });
-          }
-        }
+        // Omit the extraction-only discriminator to preserve the existing tool-call log shape.
+        const toolCalls = extractToolCalls(responseOutputs).map(({ id, name, arguments: args }) => ({
+          id,
+          name,
+          arguments: args
+        }));
 
         if (toolCalls.length > 0) {
           loopCount++;

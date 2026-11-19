@@ -14,13 +14,8 @@ import {
 import {
   getCurrentVersion,
   insertNextVersion,
-  listCurrentVersions,
-  listUnsynced,
-  markSynced,
-  MemoryArchiveRow,
   pruneOldVersions
 } from '../database/models/memory_archive.model';
-import { upsertContextEntry } from '../database/models/context.model';
 import {
   clearIntradayNotes,
   getIntradayNotesMaxId,
@@ -38,44 +33,14 @@ import {
   setTodaysJournals,
   stage_update
 } from './tools';
-import {
-  buildTranscript,
-  runCompact,
-  runIntegrate,
-  runJournal,
-  runReview,
-  reviseProposal,
-  CompactKind,
-  ExistingTopic
-} from './reflection';
-import { isOverCap, stripSensitive, truncateToCap } from './privacy';
-import {
-  DREAM_EVIDENCE_HEADER,
-  DREAM_EVIDENCE_MAX_CHARS,
-  DREAM_REFLECTION_PATH,
-  appendDreamReflection,
-  dreamDateFromPath,
-  dreamFilePath,
-  findUnreflectedDream,
-  recentDreamReflections,
-  runDream,
-  runDreamReflection,
-  selectDreamSources,
-  shouldDreamTonight,
-  findLastDreamAt
-} from './dream';
-import { pathToTitle } from './mapping';
-import { personNameFromTitle, sanitizeForPath } from '../strings';
-import { decayMoodFile, MOOD_FILE_PATH, parseMood, stampMoodUpdatedAt, stripMoodHeader } from './mood';
-import {
-  deleteConversation,
-  deleteDocument,
-  getConversationMessages,
-  LibraryDocument,
-  listConversations,
-  listDocuments,
-  replaceDocument
-} from '../mistral/mistral_api';
+import { buildTranscript, runIntegrate, runJournal } from './reflection';
+import { runDreamPhase } from './dream_phase';
+import { runEagerPhase } from './eager_phase';
+import { runReviewPhase } from './review_phase';
+import { runUploadPhase } from './upload_phase';
+import { sanitizeForPath } from '../strings';
+import { decayMoodFile } from './mood';
+import { deleteConversation, getConversationMessages, listConversations } from '../mistral/mistral_api';
 
 /** Thrown when the nightly lock could not be acquired -- an expected outcome, not a failure to alert on */
 export class LockHeldError extends Error {
@@ -360,165 +325,13 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 4 -- Review + Archive
     // -----------------------------------------------------------------------
-    let filesUpdatedFromReview = 0;
-    let filesCreatedFromReview = 0;
-    let anyReviewFailed = false;
-    let anyDreamFailed = false;
-    let dreamGenerated = false;
-
-    // The topics duplicate barrier: for a proposed topics/*.md file the reviewer must see every
-    // OTHER topic so it can reject a semantic duplicate before it reaches the archive. Seeded
-    // from the archive and extended as this run approves topic files (same-night duplicates).
-    let topicsLoadFailed = false;
-    let existingTopics: ExistingTopic[];
-    try {
-      const allCurrent = await listCurrentVersions();
-      existingTopics = allCurrent
-        .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
-        .map(row => ({ path: row.filePath, content: row.content }));
-    } catch (error) {
-      // Without barrier data this run cannot judge topic duplicates: skip topics/ proposals
-      // BEFORE reviewing (they are DROPPED -- nothing re-stages this material next run) and mark
-      // the run 'partial', which keeps the watermark so the next invocation retries with a working load.
-      console.error(
-        'ERROR Failed to load existing topics; skipping topics/ proposals for this run: ' + error
-      );
-      existingTopics = [];
-      topicsLoadFailed = true;
-      anyReviewFailed = true;
-    }
-
-    // The topic index is reviewed LAST: it is advisory (only the agent reads it as a discovery
-    // hint), so its lines are archived as staged without validation against the archive set. A
-    // rare stale line after a rejected duplicate is cosmetic and fixed by the next run.
-    const TOPIC_INDEX_PATH = 'general/topic-index.md';
-    const orderedUpdates = [
-      ...stagedUpdates.filter(update => update.path !== TOPIC_INDEX_PATH),
-      ...stagedUpdates.filter(update => update.path === TOPIC_INDEX_PATH)
-    ];
-
-    // The undelivered pending notes snapshot (taken right after Phase 1) rides along as review and
-    // revision evidence for the same reason it rides along in Phase 3: on a quiet night with zero
-    // conversations the journals are empty, so without the notes here the reviewer would reject a
-    // note-derived fact as invented -- and Phase 8 would still empty the outbox afterwards,
-    // silently losing the note's content from long-term memory.
-    for (const update of orderedUpdates) {
-      try {
-        // A failed barrier load leaves no basis for duplicate judgement: skip topics/ proposals
-        // before spending review calls on them.
-        if (topicsLoadFailed && update.path.toLowerCase().startsWith('topics/')) {
-          console.warn(
-            'WARN Skipping review of topic proposal ' +
-              update.path +
-              ' because the existing-topics load failed; it is DROPPED (not re-reviewed next run)'
-          );
-          continue;
-        }
-        const currentVersion = await getCurrentVersion(update.path);
-        const currentContent = currentVersion ? currentVersion.content : null;
-        const lastTouchedAt = currentVersion ? currentVersion.createdAt.toISOString() : null;
-
-        let proposal = update.content;
-        // The barrier for this file never changes across revisions (update.path is fixed), so
-        // compute it once before the review/revision loop instead of on every attempt.
-        const barrierForUpdate = topicsLoadFailed
-          ? []
-          : existingTopics.filter(topic => topic.path !== update.path);
-        let verdict = await runReview(
-          { path: update.path, content: proposal, isNew: update.isNew },
-          currentContent,
-          lastTouchedAt,
-          todaysJournals,
-          0,
-          barrierForUpdate,
-          undeliveredNotes
-        );
-
-        // On rejection, feed the reviewer's feedback back to the agent for a corrected full
-        // replacement, then re-review (bounded convergence). All revisions reuse the SAME
-        // conversation so the proposal->feedback history stays in scope; the reviewer stays stateless.
-        let revisions = 0;
-        let revisionConversationId: string | undefined;
-        while (!verdict.approved && revisions < config.nightly.maxRevisions) {
-          const revised = await reviseProposal(
-            update,
-            currentContent,
-            proposal,
-            verdict.reason,
-            todaysJournals,
-            revisionConversationId,
-            undeliveredNotes
-          );
-          revisionConversationId = revised.conversationId || revisionConversationId;
-          proposal = revised.content;
-          verdict = await runReview(
-            { path: update.path, content: proposal, isNew: update.isNew },
-            currentContent,
-            lastTouchedAt,
-            todaysJournals,
-            revisions + 1,
-            barrierForUpdate,
-            undeliveredNotes
-          );
-          revisions++;
-        }
-
-        // The per-file revision conversation is nightly-agent scratch (filtered out of every future
-        // collection, so it can never loop back in), but delete it now so we don't accumulate orphans.
-        if (revisionConversationId) {
-          await deleteConversation(revisionConversationId);
-        }
-
-        let contentToArchive = proposal;
-        if (verdict.approved && update.path === MOOD_FILE_PATH) {
-          // The agent-supplied updatedAt inside the mood header is untrusted text: a wrong or
-          // hallucinated date would silently skew (or freeze) every later decay, so the archive
-          // stamp -- the moment this run collected today's conversations -- wins. The narrative and
-          // the numeric mood fields stay as staged.
-          contentToArchive = stampMoodUpdatedAt(contentToArchive, collectedAt);
-        }
-        if (verdict.approved) {
-          const { created } = await insertNextVersion(update.path, contentToArchive, collectedAt);
-          // Classify create-vs-update from whether an archived version already existed, not from
-          // the AI-supplied isNew flag, which is never cross-checked against real archive state.
-          if (created && currentContent === null) {
-            filesCreatedFromReview++;
-          } else if (created) {
-            filesUpdatedFromReview++;
-          }
-          // Extend the same-run duplicate barrier with the newly archived topic, so a second
-          // semantically-equal proposal staged this same night is still caught by the reviewer.
-          if (update.path.toLowerCase().startsWith('topics/')) {
-            existingTopics.push({ path: update.path, content: proposal });
-          }
-        } else {
-          // A reviewer rejection is a normal, handled outcome: the proposal is simply not written
-          // and the run must NOT degrade to 'partial' (which would block the watermark and
-          // reprocess the same conversations forever). This WARN keeps it observable.
-          console.warn(
-            'WARN Rejected staged update for ' + update.path + ' after enough revisions: ' + verdict.reason
-          );
-          // Rejected topic duplicates are DROPPED BY DESIGN (reviseProposal only revises the
-          // same path, so the material cannot be merged into the existing topic here): the
-          // watermark still advances, so this WARN is the only auditable trace of the loss.
-          if (update.path.toLowerCase().startsWith('topics/')) {
-            console.warn(
-              'WARN Topic proposal ' +
-                update.path +
-                ' was rejected (likely a duplicate) and is DROPPED BY DESIGN; its material is not merged automatically. ' +
-                'Archived topics it may belong to: ' +
-                (topicsLoadFailed
-                  ? '(unknown: topics load failed)'
-                  : existingTopics.map(topic => topic.path).join(', '))
-            );
-          }
-        }
-      } catch (error) {
-        console.error('ERROR Failed to review/archive staged update for ' + update.path + ': ' + error);
-        anyReviewFailed = true;
-        notesConsolidated = false;
-      }
-    }
+    const reviewResult = await runReviewPhase(stagedUpdates, todaysJournals, undeliveredNotes, collectedAt);
+    const {
+      filesUpdated: filesUpdatedFromReview,
+      filesCreated: filesCreatedFromReview,
+      anyReviewFailed
+    } = reviewResult;
+    notesConsolidated = notesConsolidated && reviewResult.notesConsolidated;
 
     await updateJobLog(jobId, {
       lastCompletedPhase: '4-archive',
@@ -537,182 +350,15 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     // Phase 5 -- Dream (two-stage: dream generation + Yasmin's own reflection)
     // -----------------------------------------------------------------------
-    // Runs on only some nights (2-3x per week -- see shouldDreamTonight). Old, randomly mixed
-    // journals are woven into a dream by a dedicated dream agent, then reflected on with Yasmin's
-    // conversation persona. The phase is idempotent and always safe to re-run (fresh or resumed):
-    // the dream file's per-date existence guards stage 1 (no double dream), and the dated
-    // reflection header guards stage 2 -- so a crash after dream generation is caught up on the
-    // next run with the reflection only. A dream failure degrades to 'partial', never aborts.
-    try {
-      const currentVersionsForDream = await listCurrentVersions();
-      const dreamPath = dreamFilePath(collectedAt);
-      const dreamRow = await getCurrentVersion(dreamPath);
-
-      if (dreamRow) {
-        // Stage 1 is already durably done for this date -- only the reflection may be missing.
-        dreamGenerated = true;
-      } else if (!shouldDreamTonight(findLastDreamAt(currentVersionsForDream), Math.random)) {
-        console.log('INFO No dream tonight (cadence)');
-      } else {
-        const sources = selectDreamSources(currentVersionsForDream, collectedAt, Math.random);
-        if (sources.length < 2) {
-          console.log('INFO Too few old journals to dream from; skipping dream phase');
-        } else {
-          const dreamText = await runDream(sources);
-          // The archive (and with it the RAG copy) must be self-describing: without this header,
-          // the live agent retrieving the dream from its library would have no way to tell the
-          // dream's absurd, recombined events from things that actually happened -- the system
-          // prompt tells it library content is "YOUR MEMORY".
-          const dateStr = dreamDateFromPath(dreamPath)!;
-          const archivedDream =
-            'TRAUM -- nicht wirklich passiert. Am ' +
-            dateStr +
-            ' hatte Yasmin diesen Traum (nur ein Traum, erfunden aus alten Tagebucheintragen):\n\n' +
-            dreamText;
-          await insertNextVersion(dreamPath, archivedDream, collectedAt);
-          dreamGenerated = true;
-          console.log('INFO Dream generated from ' + sources.length + ' old journals: ' + dreamPath);
-        }
-      }
-
-      // Stage 2 -- Yasmin's own reflection (conversation persona). Appends one dated entry to the
-      // append-only self-reflection/dreams.md. The dated header is the idempotency guard: it makes
-      // a same-night resume (crash between the two stages) catch up at most the missing reflection,
-      // and it also lets a LATER run catch up the newest dream whose reflection once failed or came
-      // back empty -- a 'partial' run is not resumed and the next night's dreamPath is a new date,
-      // so without this catch-up that dream would stay unreflected forever.
-      const reflectionRow = await getCurrentVersion(DREAM_REFLECTION_PATH);
-      const reflectionContent = reflectionRow ? reflectionRow.content : null;
-      // Stage 1 (just run or pre-existing) may have added a dream the initial listing predates, so
-      // re-list: findUnreflectedDream picks the newest dream lacking a dated reflection entry.
-      const versionsAfterDream = await listCurrentVersions();
-      const unreflected = findUnreflectedDream(versionsAfterDream, reflectionContent);
-      if (unreflected) {
-        const dateStr = dreamDateFromPath(unreflected.filePath)!;
-        const reflectionText = await runDreamReflection(unreflected.content);
-        const nextContent = appendDreamReflection(reflectionContent, dateStr, reflectionText);
-        await insertNextVersion(DREAM_REFLECTION_PATH, nextContent, collectedAt);
-        console.log(
-          'INFO Dream reflection for ' + unreflected.filePath + ' appended to ' + DREAM_REFLECTION_PATH
-        );
-      }
-
-      await updateJobLog(jobId, { lastCompletedPhase: '5-dream' });
-    } catch (error) {
-      // No lastCompletedPhase stamp here (unlike the success path): the log must show the last
-      // phase that actually succeeded, so a dream failure stays distinguishable in nightly_job_log
-      // from a dream that completed and failed later.
-      console.error('ERROR Dream phase failed: ' + error);
-      anyDreamFailed = true;
-    }
+    const { dreamGenerated, anyDreamFailed } = await runDreamPhase(jobId, collectedAt);
 
     // -----------------------------------------------------------------------
     // Phase 6 -- Upload
     // -----------------------------------------------------------------------
-    let anyUploadFailed = false;
-    let anyDeleteFailed = false;
-    let unsynced: MemoryArchiveRow[];
-    try {
-      unsynced = await listUnsynced();
-    } catch (error) {
-      // An unguarded transient read failure here would bubble to the outer catch and turn the whole
-      // run into a non-resumable 'failed'. Demote it to a phase failure instead: skip the upload, mark
-      // the run 'partial', and let the next invocation pick up the still-unsynced rows.
-      console.error('ERROR Phase 6 failed to list unsynced rows; skipping upload: ' + error);
-      anyUploadFailed = true;
-      unsynced = [];
-    }
-
-    for (const row of unsynced) {
-      try {
-        // Sensitive passages never leave local storage: memory_archive keeps the full content for
-        // versioning/audit, but only the stripped copy is ever uploaded to the third-party Mistral
-        // library, which backs RAG retrieval for the live chat agent.
-        const uploadContent = stripSensitive(row.content);
-        // An empty memory file carries no information and Mistral rejects empty document uploads
-        // (HTTP 400) -- skip it rather than degrading the run to 'partial' on a file with nothing to say.
-        if (uploadContent.trim().length === 0) {
-          console.log('INFO Skipping upload of empty file "' + row.filePath + '"');
-          continue;
-        }
-        const doc = await replaceDocument(row.filePath, uploadContent, row.mistralDocId ?? undefined);
-        await markSynced(row.id, doc.id);
-      } catch (error) {
-        console.error('ERROR Failed to upload "' + row.filePath + '" to Mistral: ' + error);
-        anyUploadFailed = true;
-        continue;
-      }
-    }
-
-    let currentVersionsForReconcile: MemoryArchiveRow[] = [];
-    let mistralDocs: LibraryDocument[] = [];
-    try {
-      currentVersionsForReconcile = await listCurrentVersions();
-      mistralDocs = await listDocuments();
-    } catch (error) {
-      // Same resumability rationale: without the orphan-cleanup inputs we cannot safely tell which
-      // library docs are orphans, so skip the deletions, mark 'partial', and retry next run.
-      console.error(
-        'ERROR Phase 6 failed to reconcile Mistral library documents; skipping orphan cleanup: ' + error
-      );
-      anyDeleteFailed = true;
-    }
-    const currentByPath = new Map(currentVersionsForReconcile.map(v => [v.filePath, v]));
-
-    // Group library docs by path to also catch same-path duplicates (a failed replaceDocument
-    // delete leaves a superseded copy of a still-valid path behind forever): for each duplicated
-    // path keep only the doc the archive references (its mistral_doc_id) and delete the rest.
-    const docsByPath = new Map<string, LibraryDocument[]>();
-    for (const doc of mistralDocs) {
-      const list = docsByPath.get(doc.path) ?? [];
-      list.push(doc);
-      docsByPath.set(doc.path, list);
-    }
-
-    for (const [path, docs] of docsByPath) {
-      if (docs.length === 1) {
-        // Single copy: fall through to the orphan check below.
-        if (!currentByPath.has(path)) {
-          try {
-            await deleteDocument(docs[0].id);
-          } catch (error) {
-            console.error('ERROR Failed to delete orphaned Mistral document "' + path + '": ' + error);
-            anyDeleteFailed = true;
-          }
-        }
-        continue;
-      }
-
-      // Multiple copies of the same path: keep the one the archive references and drop the rest.
-      // Without a matching reference we cannot tell which copy is live, so leave them all
-      // rather than guess.
-      const current = currentByPath.get(path);
-      const keeper = current ? docs.find(d => d.id === current.mistralDocId) : undefined;
-      if (!keeper) {
-        console.warn(
-          'WARN ' +
-            path +
-            ' has ' +
-            docs.length +
-            ' copies in the library but none matches the archived document id; leaving all copies'
-        );
-        continue;
-      }
-      for (const doc of docs) {
-        if (doc.id === keeper.id) {
-          continue;
-        }
-        try {
-          await deleteDocument(doc.id);
-        } catch (error) {
-          console.error(
-            'ERROR Failed to delete duplicate Mistral document "' + path + '" (' + doc.id + '): ' + error
-          );
-          anyDeleteFailed = true;
-        }
-      }
-    }
-
+    const uploadResult = await runUploadPhase();
+    const { anyUploadFailed } = uploadResult;
+    // Phase 8 outbox deletion failures also contribute to the final partial-status decision.
+    let anyDeleteFailed = uploadResult.anyDeleteFailed;
     await updateJobLog(jobId, { lastCompletedPhase: '6-upload' });
 
     // -----------------------------------------------------------------------
@@ -721,125 +367,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // NOTE: this phase's upserts are NOT counted into the job log's filesUpdated/filesCreated --
     // it unconditionally rewrites every current file every night regardless of whether anything
     // actually changed, so it is not a meaningful "how much changed" signal (see Phase 4, which is).
-    let anyEagerFailed = false;
-    let allCurrentVersions: MemoryArchiveRow[];
-    try {
-      allCurrentVersions = await listCurrentVersions();
-    } catch (error) {
-      // Same resumability rationale as Phase 6: leave the eager cache untouched this run and mark
-      // 'partial' so phase 7 re-runs next invocation.
-      console.error(
-        'ERROR Phase 7 failed to load current versions; leaving the eager cache untouched: ' + error
-      );
-      anyEagerFailed = true;
-      allCurrentVersions = [];
-    }
-
-    for (const row of allCurrentVersions) {
-      const title = pathToTitle(row.filePath);
-      if (title === null) {
-        continue;
-      }
-
-      let kind: CompactKind;
-      let personName: string | undefined;
-
-      if (row.filePath === 'self-reflection/profile.md') {
-        kind = 'yasmin';
-      } else if (row.filePath === 'general/family.md') {
-        kind = 'family';
-      } else {
-        const name = personNameFromTitle(title);
-        if (name === null) {
-          // Unreachable today -- people/ paths always map to "Profile of <name>" titles -- but
-          // treat it like any other per-row failure rather than compacting against a wrong name.
-          console.error('ERROR Phase 7 could not derive a person name from title "' + title + '"');
-          anyEagerFailed = true;
-          continue;
-        }
-        kind = 'person';
-        personName = name;
-      }
-
-      try {
-        const stripped = stripSensitive(row.content);
-        // Yasmin's eager profile also carries her current mood (valence, energy, reason), so the
-        // daily state is present in every turn without a RAG hop. The mood file itself has no
-        // eager entry of its own -- pathToTitle maps it to null, so only this fold-in brings it
-        // into the cache.
-        let compactSource = stripped;
-        if (kind === 'yasmin') {
-          const moodRow = await getCurrentVersion(MOOD_FILE_PATH);
-          if (moodRow) {
-            const mood = parseMood(moodRow.content);
-            if (!mood) {
-              // Without a parsable header decay is skipped forever, so folding in stale numbers
-              // (or "n/a") would silently freeze a broken mood file into the eager profile.
-              console.warn('WARN ' + MOOD_FILE_PATH + ' has no parsable mood header; skipping mood fold-in');
-            }
-            // The mood narrative gets the same sensitive-strip as the profile itself: it flows into
-            // the compacted Profile of Yasmin, which is eagerly loaded for every sender, so a
-            // [PRIVACY:SENSITIVE] passage in the mood reason must never survive this fold-in.
-            if (mood) {
-              const moodNarrative = stripSensitive(stripMoodHeader(moodRow.content));
-              // An empty narrative means the mood fully faded: decay drops the reason together
-              // with the numbers, so a stale reason can never outlive its mood in the eager
-              // profile (nor in the library -- the same blanked file is uploaded in Phase 6).
-              if (moodNarrative.length > 0) {
-                const header =
-                  '\n\n## My current mood\nvalence: ' +
-                  mood.valence +
-                  ', energy: ' +
-                  mood.energy +
-                  ', half-life: ' +
-                  mood.halfLifeDays +
-                  ' days\n\n';
-                compactSource = stripped + header + moodNarrative;
-              }
-            }
-          }
-          // Dream reflections as SOFT evidence (issue #126): how Yasmin reflects on her dreams is
-          // first-person self-concept material, so the most recent entries of the append-only
-          // self-reflection/dreams.md ride along into her profile's compaction input. The dream
-          // content itself never reaches people/ or general/ files -- this one-way fold-in is the
-          // only bridge, and the compaction prompt forces dream-derived material to be marked as
-          // such (never a standalone fact). Like the mood narrative, the reflections are
-          // sensitive-stripped: they end up in the eager profile every sender reads on turn 1.
-          const dreamsRow = await getCurrentVersion(DREAM_REFLECTION_PATH);
-          if (dreamsRow) {
-            const reflections = stripSensitive(
-              recentDreamReflections(dreamsRow.content, DREAM_EVIDENCE_MAX_CHARS)
-            );
-            if (reflections.length > 0) {
-              compactSource = compactSource + '\n\n' + DREAM_EVIDENCE_HEADER + '\n\n' + reflections;
-            }
-          }
-        }
-        let compacted = await runCompact(kind, personName, compactSource);
-
-        if (compacted.trim().length === 0) {
-          // An empty source file simply has nothing to compact -- log and move on rather than
-          // degrading a healthy run to 'partial'. A genuinely empty memory file is not a
-          // failure.
-          console.log(
-            'INFO Phase 7 compaction produced empty output for "' +
-              row.filePath +
-              '"; skipping eager-cache update (no content)'
-          );
-          continue;
-        }
-
-        if (isOverCap(compacted, config.nightly.eagerMaxChars)) {
-          compacted = truncateToCap(compacted, config.nightly.eagerMaxChars);
-        }
-
-        await upsertContextEntry(title, compacted);
-      } catch (error) {
-        console.error('ERROR Failed to regenerate eager cache entry for "' + row.filePath + '": ' + error);
-        anyEagerFailed = true;
-      }
-    }
-
+    const anyEagerFailed = await runEagerPhase();
     await updateJobLog(jobId, { lastCompletedPhase: '7-eager' });
     // -----------------------------------------------------------------------
     // Phase 8 -- Pending-notes reset (outbox)
