@@ -757,7 +757,8 @@ describe('ChatAgent', () => {
       expect(JSON.parse(secondBody.inputs[0].result).title).toBe('Profile of Anjali');
     });
 
-    it('preserves missing flat fields and handles malformed JSON with the live tool error', async () => {
+    // Characterization: missing ids/names are pass-through artifacts, not the desired live contract.
+    it('characterizes missing flat fields and handles malformed JSON with the live tool error', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
       mockFetch
         .mockResolvedValueOnce({
@@ -790,7 +791,8 @@ describe('ChatAgent', () => {
       expect(JSON.parse(inputs[1].result)).toEqual({ found: false, error: 'Title parameter is required' });
     });
 
-    it('releases claimed notes if a malformed nested tool call fails extraction', async () => {
+    // Characterization: TypeError is existing behavior, not desired; future hardening may return tool errors.
+    it('characterizes note-claim release when a malformed nested tool call fails extraction', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
       mockGetUndeliveredNotesForUser.mockResolvedValue([{ id: 7, fromUsername: 'anjali', content: 'Hi' }]);
       mockFetch.mockResolvedValueOnce({
@@ -805,7 +807,8 @@ describe('ChatAgent', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
-    it('retains live failure behavior when a known flat tool has no arguments', async () => {
+    // Characterization: args.title currently throws; hardening should preserve note safety, not this crash.
+    it('characterizes live failure when a known flat tool has no arguments', async () => {
       jest.spyOn(chatAgent as any, 'getActiveConversationId').mockResolvedValue('conv-123');
       mockGetUndeliveredNotesForUser.mockResolvedValue([{ id: 8, fromUsername: 'anjali', content: 'Hi' }]);
       mockFetch.mockResolvedValueOnce({
