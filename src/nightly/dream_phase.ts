@@ -19,7 +19,14 @@ import {
 
 /**
  * Generates a dream and catches up its reflection, preserving the per-date resume guards.
- * A failure marks the phase partial without stamping it as completed.
+ * Per-date dream files and dated reflection headers prevent duplicates, including catch-up of
+ * earlier unreflected dreams. A failure marks the phase partial without a completion stamp so
+ * nightly_job_log retains the last phase that actually succeeded.
+ *
+ * @param jobId - Job log row to stamp only after both stages succeed (or safely skip).
+ * @param collectedAt - Snapshot time used for the dream date and archive timestamps.
+ * @returns Flags indicating a durable dream exists for this date and whether any stage or stamp failed;
+ * the latter drives partial job status, even if the dream was already archived.
  */
 export async function runDreamPhase(
   jobId: number,
@@ -46,7 +53,8 @@ export async function runDreamPhase(
         console.log('INFO Too few old journals to dream from; skipping dream phase');
       } else {
         const dreamText = await runDream(sources);
-        // The RAG copy must distinguish imagined events from actual memories.
+        // The live prompt calls library content "YOUR MEMORY"; this self-describing header keeps
+        // retrieved dream events distinguishable from things that actually happened.
         const dateStr = dreamDateFromPath(dreamPath)!;
         const archivedDream =
           'TRAUM -- nicht wirklich passiert. Am ' +

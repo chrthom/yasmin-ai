@@ -20,7 +20,16 @@ export interface ReviewPhaseResult {
 
 /**
  * Reviews and archives staged updates in order, maintaining the same-night topic duplicate barrier.
- * Notes accompany both review and revision as evidence; per-file errors prevent outbox clearing.
+ * On quiet nights journals may be empty: notes accompany review and revision so note-derived facts
+ * are not rejected as invented before Phase 8 clears the outbox. Per-file errors prevent clearing.
+ *
+ * @param stagedUpdates - Proposed file contents; the advisory topic index is reviewed last.
+ * @param todaysJournals - Journal evidence for review and revision.
+ * @param undeliveredNotes - Bounded outbox snapshot supplying evidence absent from journals.
+ * @param collectedAt - Archive timestamp, also overriding agent-supplied mood timestamps.
+ * @returns Counts of newly archived existing/new files (not inferred from isNew), a failure flag
+ * driving partial status, and the note-clear guard. Handled rejections leave that guard true;
+ * topic-barrier load failures currently do too (known data-loss edge tracked in issue #146).
  */
 export async function runReviewPhase(
   stagedUpdates: StagedUpdate[],
@@ -42,7 +51,8 @@ export async function runReviewPhase(
       .filter(row => row.filePath.toLowerCase().startsWith('topics/'))
       .map(row => ({ path: row.filePath, content: row.content }));
   } catch (error) {
-    // Without barrier data, drop topic proposals and mark the run partial.
+    // Without barrier data, drop topic proposals and mark the run partial. Existing behavior leaves
+    // notesConsolidated true, so Phase 8 may lose note-derived topic facts; follow-up: issue #146.
     console.error('ERROR Failed to load existing topics; skipping topics/ proposals for this run: ' + error);
     existingTopics = [];
     topicsLoadFailed = true;

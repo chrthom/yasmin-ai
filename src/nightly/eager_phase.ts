@@ -17,7 +17,16 @@ import { MOOD_FILE_PATH, parseMood, stripMoodHeader } from './mood';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import { CompactKind, runCompact } from './reflection';
 
-/** Regenerates mapped eager entries, privacy-stripping profile, mood and dream evidence. */
+/**
+ * Regenerates mapped eager entries, privacy-stripping profile, mood and dream evidence.
+ * Yasmin's profile is eagerly loaded for every sender, so its mood/dream fold-ins must be stripped
+ * before compaction too. Dream reflections are first-person self-concept, not factual evidence:
+ * this one-way fold-in is their only direct bridge into an eager profile (issue #126), never into
+ * people/ or general/ profiles. Facts require the normal journal/integrate/review evidence chain.
+ *
+ * @returns True if loading archive versions or regenerating any mapped entry failed (partial job
+ * status); false means no failure, including safe skips of unmapped files or empty compactions.
+ */
 export async function runEagerPhase(): Promise<boolean> {
   let anyEagerFailed = false;
   let allCurrentVersions: MemoryArchiveRow[];

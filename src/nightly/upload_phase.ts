@@ -7,7 +7,13 @@ import {
 import { deleteDocument, LibraryDocument, listDocuments, replaceDocument } from '../mistral/mistral_api';
 import { stripSensitive } from './privacy';
 
-/** Uploads unsynced archive versions and reconciles orphaned or duplicate library documents. */
+/**
+ * Uploads unsynced archive versions and reconciles orphaned or duplicate library documents.
+ * Archive references are reloaded after syncing so duplicate cleanup keeps the replacement copy.
+ *
+ * @returns anyUploadFailed flags archive-list/upload/sync failures; anyDeleteFailed flags
+ * reconciliation-input or document-deletion failures. Both drive partial job status without aborting.
+ */
 export async function runUploadPhase(): Promise<{ anyUploadFailed: boolean; anyDeleteFailed: boolean }> {
   let anyUploadFailed = false;
   let anyDeleteFailed = false;
@@ -25,6 +31,7 @@ export async function runUploadPhase(): Promise<{ anyUploadFailed: boolean; anyD
     try {
       // The local archive retains sensitive passages, but the library must not receive them.
       const uploadContent = stripSensitive(row.content);
+      // Mistral rejects empty uploads with HTTP 400; skip files with nothing to say, not mark partial.
       if (uploadContent.trim().length === 0) {
         console.log('INFO Skipping upload of empty file "' + row.filePath + '"');
         continue;

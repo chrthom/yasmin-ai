@@ -374,7 +374,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // -----------------------------------------------------------------------
     const uploadResult = await runUploadPhase();
     const { anyUploadFailed } = uploadResult;
-    let { anyDeleteFailed } = uploadResult;
+    // Phase 8 outbox deletion failures also contribute to the final partial-status decision.
+    let anyDeleteFailed = uploadResult.anyDeleteFailed;
     await updateJobLog(jobId, { lastCompletedPhase: '6-upload' });
 
     // -----------------------------------------------------------------------

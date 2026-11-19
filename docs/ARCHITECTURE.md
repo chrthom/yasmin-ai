@@ -59,8 +59,12 @@ src/
 ├── nightly/
 │   ├── run.ts         # CLI entry point (run via ts-node from source); manual runs + --dry-run
 │   ├── scheduler.ts   # In-process daily scheduler; started from app.ts, calls the same pipeline
-│   ├── pipeline.ts    # 9-phase orchestrator: collect, journal, integrate, review/archive,
-│   │                  #   dream, upload, regenerate eager cache, pending-notes reset, cleanup
+│   ├── pipeline.ts    # 9-phase orchestrator; delegates review/archive, dream, upload and eager
+│   │                  #   regeneration; owns locking, snapshot bounds, reset, cleanup and job status
+│   ├── review_phase.ts # Phase 4: evidence review/revision, topic barrier and versioned archive writes
+│   ├── dream_phase.ts  # Phase 5: resumable dream generation/reflection and success-only phase stamp
+│   ├── upload_phase.ts # Phase 6: privacy-stripped upload, orphan and duplicate reconciliation
+│   ├── eager_phase.ts  # Phase 7: eager compaction with privacy-guarded mood/dream fold-ins
 │   ├── reflection.ts  # Prompts + nightly-agent calls (journal, integrate, review, compact)
 │   ├── tools.ts       # Nightly agent's tool set (list/get_long_term_file, read_todays_journals,
 │   │                  #   stage_update)
@@ -86,7 +90,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory, mood, dream
+                            #   pipeline.integration, nightly_phases, context.model, bootstrap-memory, mood, dream
 ```
 
 ### Data Flow
@@ -166,6 +170,19 @@ and delete. So the new one does not start blind, its first prompt carries a `<pr
 - **Nightly pipeline** (`src/nightly/`): `pipeline.ts` orchestrates the nightly consolidation run; `reflection.ts` holds the agent calls for journaling, integrating, reviewing, and compacting, building its prompts from the templates in `mistral_config/nightly/prompts/` (rendered by `src/nightly/prompts.ts`); `mood.ts` implements Yasmin's daily mood layer (`self-reflection/mood.md`): the machine-readable header, deterministic exponential decay toward neutral (run nightly before the upload phase, no agent call), the archive stamp that overrides the agent-supplied `updatedAt`, and the privacy-guarded fold-in of the current mood into the compacted `Profile of Yasmin`; `dream.ts` implements the nightly dream phase (dream generation plus Yasmin's own dated, append-only reflections in `self-reflection/dreams.md`) and the Phase-7 fold-in of the most recent dream reflections into the compacted `Profile of Yasmin` as soft evidence — marked as dream-derived ("aus einem Traum"), never standalone facts; `tools.ts` implements the nightly agent's tool-calling surface; `privacy.ts` strips `[PRIVACY:SENSITIVE]` content and enforces the eager-cache size cap; `mapping.ts` maps verbose file paths (e.g. `people/christopher.md`) to `context_entries` titles (e.g. `Profile of Christopher`) and back, using the shared stem/capitalize helpers in `src/strings.ts` (the same function the pipeline's journal-path builder uses, so both mapping directions cannot drift apart) -- `topics/` files, `general/topic-index.md`, `self-reflection/mood.md`, and `self-reflection/dreams.md` deliberately have NO eager mapping (RAG via the Mistral library upload only, never in the turn-1 prompt; mood and dream reflections reach the turn-1 prompt only through the fold-ins into the compacted `Profile of Yasmin`); `run.ts` is the CLI entry point (run via ts-node from source).
 
 ### Nightly Memory Pipeline
+
+The nightly orchestrator delegates phases 4-7 to `review_phase.ts`, `dream_phase.ts`, `upload_phase.ts`
+and `eager_phase.ts`, respectively. These modules own review/archive, the resumable dream stages,
+library reconciliation and eager-cache regeneration; `dream.ts`/`mood.ts` provide their supporting
+helpers. `pipeline.ts` retains locking, snapshot bounds, phase ordering, outbox reset, cleanup and
+status/watermark decisions. Phase stamps remain in the orchestrator except the dream success stamp,
+which stays within `dream_phase.ts`'s failure boundary. Direct phase tests live in
+`src/__tests__/nightly_phases.test.ts`; orchestration/privacy regressions remain in the integration suite.
+
+Known preserved edge (issue [#146](https://github.com/chrthom/yasmin-ai/issues/146)): failure to load the
+topic duplicate barrier skips topic proposals but leaves the note-clear guard true. Phase 8 may
+therefore clear note-derived topic evidence that was not archived; the extraction characterizes this
+existing behavior rather than changing it.
 
 Once a night, an in-process scheduler (`src/nightly/scheduler.ts`, started from `app.ts`) calls the same
 pipeline the API server is already running in — no external cron daemon or wrapper script, so it always
