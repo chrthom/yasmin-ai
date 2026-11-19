@@ -1,7 +1,31 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { loadTemplate, promptDir, renderPrompt } from '../nightly/prompts';
 
 describe('nightly prompt templates', () => {
+  it('keeps key integration contract anchors in the checked-in Studio system prompt', () => {
+    const system = fs
+      .readFileSync(path.join(promptDir(), '..', 'nightly_system_prompt.txt'), 'utf8')
+      .replace(/\s+/g, ' ');
+    const headings = [
+      'Core Facts',
+      'Current Attitude',
+      'Ideas, Interests & Goals',
+      'Recent Happenings',
+      'Open Topics',
+      'Communication Style',
+      "Yasmin's View",
+      "Yasmin's Intentions"
+    ];
+    headings.forEach(heading => expect(system).toContain('## ' + heading));
+    expect(system).toContain('THE ONE AND ONLY FIRST-PERSON FILE');
+    expect(system).toContain('2nd-3rd observed occurrence');
+    expect(system).toContain('confidence level');
+    expect(system).toContain('[PRIVACY:SENSITIVE]');
+    expect(system).toContain('[/PRIVACY:SENSITIVE]');
+    expect(system).toContain('memory file content in GERMAN');
+  });
+
   it('renders every prompt variant used by the nightly pipeline without leaving tokens behind', () => {
     const update = { path: 'people/alice.md', content: 'new content', isNew: false };
     const selfUpdate = { path: 'self-reflection/profile.md', content: 'new content', isNew: true };
