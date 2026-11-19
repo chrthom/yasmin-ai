@@ -50,12 +50,13 @@ describe('extractToolCalls', () => {
     ]);
   });
 
+  // Characterization of pre-refactor failures, not a requirement for future malformed-call handling.
   it.each([
     [{ type: 'message.tool_calls', tool_calls: [{}] }],
     [{ type: 'message.tool_calls', tool_calls: [null] }],
     [{ type: 'message.tool_calls', tool_calls: {} }],
     [null]
-  ])('throws for malformed nested structures as the live caller previously did', (...outputs) => {
+  ])('characterizes malformed nested structure failures from the previous live caller', (...outputs) => {
     expect(() => extractToolCalls(outputs as any)).toThrow(TypeError);
   });
 });

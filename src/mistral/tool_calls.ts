@@ -16,6 +16,11 @@ export type ExtractedToolCall<Arguments> =
 /**
  * Extracts calls in response order without validating fields or parsing arguments.
  * Missing or malformed fields retain the callers' existing pass-through or failure behavior.
+ *
+ * @param outputs Response entries containing nested or flat calls.
+ * @returns Raw tool calls, with their source shape preserved for caller-specific defaults.
+ * @throws {TypeError} If a nested call lacks its function object, a truthy tool_calls value is
+ *   not iterable, or a response entry or nested call is null or undefined.
  */
 export function extractToolCalls<Arguments>(
   outputs: readonly ToolCallOutput<Arguments>[]

@@ -11,7 +11,7 @@ import {
 import { buildHandoff, waitFor } from './handoff';
 import { conversationsUrl, fetchWithTimeout, MistralApiError, withRetry } from './mistral/mistral_api';
 import { extractContentText } from './mistral/content';
-import { extractToolCalls } from './mistral/tool_calls';
+import { extractToolCalls, ToolCallOutput } from './mistral/tool_calls';
 import { notesBlock as renderNotesBlock, shortAnswerHint } from './protocol';
 import { capitalizePreserveRest } from './strings';
 
@@ -21,25 +21,9 @@ interface MistralConversationResponseOutputPart {
   text: string;
 }
 
-/** A tool call the agent requested (nested message.tool_calls shape). */
-interface MistralToolCall {
-  id: string;
-  type: string;
-  function: {
-    name: string;
-    arguments: string | object;
-  };
-}
-
 /** One output entry of a Mistral conversation response: an assistant message or a tool-call block. */
-interface MistralConversationResponseOutput {
+interface MistralConversationResponseOutput extends ToolCallOutput<string | object> {
   content: string | MistralConversationResponseOutputPart[];
-  type: string;
-  tool_calls?: MistralToolCall[];
-  tool_call_id?: string;
-  id?: string;
-  name?: string;
-  arguments?: string | object;
 }
 
 /** Response of POST /v1/conversations -- an initial send or a tool-result send. */
@@ -546,6 +530,7 @@ export class ChatAgent {
       const maxToolCalls = config.mistral.maxToolCalls;
 
       while (toolCallDetected && loopCount < maxToolCalls) {
+        // Omit the extraction-only discriminator to preserve the existing tool-call log shape.
         const toolCalls = extractToolCalls(responseOutputs).map(({ id, name, arguments: args }) => ({
           id,
           name,
