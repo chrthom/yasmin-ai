@@ -324,22 +324,22 @@ jobs:
           echo "--- rendered prompt ---"
           cat out/reviewer.rendered.md
 
+      # Fetch only the runner from trusted main, not the event/PR checkout.
+      # Do this after npm ci, before passing any agent credentials to it.
+      - name: Fetch trusted opencode runner
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DEV_LOOP_TOKEN }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/.github/dev-loop/scripts/opencode-runner.sh?ref=main" \
+            > "$RUNNER_TEMP/dev-loop-opencode-runner.sh"
+
       - name: Install opencode
         if: steps.gate.outputs.skip != 'true'
         run: |
-          # The v2 installer (npm package @opencode/cli) installs to
-          # ~/.opencode/bin; the v1 installer at https://opencode.ai/install
-          # ships 1.x and cannot reach 2.x releases.
-          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VERSION"
-          export PATH="$HOME/.opencode/bin:$PATH"
-          command -v opencode
-          # The invocation below is verified against this exact version; the
-          # v1 -> v2 CLI surface moved substantially (auth/provider/config
-          # flags, managed-service architecture, event schema).
-          opencode --version | grep -F "$OPENCODE_VERSION" || {
-            echo "::error::Installed opencode version does not match the expected $OPENCODE_VERSION - verify the invocation against the new CLI surface before rerunning"
-            exit 1
-          }
+          runner="$(cat "$RUNNER_TEMP/dev-loop-opencode-runner.sh")"
+          bash -eo pipefail -c "$runner" -- install
 
       - name: Run opencode reviewer
         id: opencode
@@ -367,104 +367,10 @@ jobs:
           # proxy. Env keys are case-insensitive, so this covers both the
           # NO_PROXY and no_proxy spellings that tools check.
           NO_PROXY: 127.0.0.1,localhost
+        # Load the snapshot into Bash before the agent can check out or edit a PR.
         run: |
-          export PATH="$HOME/.opencode/bin:$PATH"
-          mkdir -p "$OPENCODE_CONFIG_DIR"
-          # Pin the websearch provider; skip when no key is configured so the tool
-          # is simply unavailable instead of erroring on a missing provider.
-          if [ -n "$TAVILY_API_KEY" ]; then
-            printf '{"websearch": {"provider": "tavily"}}\n' > "$OPENCODE_CONFIG_DIR/opencode.jsonc"
-            echo "opencode.jsonc: websearch provider pinned to tavily"
-          else
-            echo "TAVILY_API_KEY not set; websearch/webfetch stay disabled"
-          fi
-
-          # Watchdog: consume the JSON event stream, tee it to a file, and kill
-          # opencode when the run degenerates:
-          #  - MAX_DENIED_STREAK consecutive failed/denied tool calls (state
-          #    "failed", or "completed" with a non-zero shell exit)
-          #  - MAX_TURNS steps (step_start events)
-          #  - MAX_TOKENS cumulative cost-weighted tokens: input + output +
-          #    cache.write + 0.1 * cache.read (cached tokens are billed at 10%,
-          #    so the cap means "N uncached-equivalent tokens")
-          run_watchdog() {
-            streak=0
-            steps=0
-            tokens=0
-            jq -c '
-              select(.type == "tool_use" or .type == "step_start" or .type == "step_finish")
-              | if .type == "tool_use" then {
-                    k: "tool",
-                    status: (.part.state.status // ""),
-                    exit: (.part.state.metadata.metadata.exit // 0)
-                  }
-                elif .type == "step_start" then { k: "step" }
-                else {
-                    k: "tokens",
-                    t: (
-                      (.part.tokens.input // 0)
-                      + (.part.tokens.output // 0)
-                      + (.part.tokens.cache.write // 0)
-                      + (0.1 * (.part.tokens.cache.read // 0))
-                    )
-                  }
-                end' 2>/dev/null \
-            | while IFS= read -r entry; do
-                k="$(printf '%s' "$entry" | jq -r '.k')"
-                case "$k" in
-                  step)
-                    steps=$((steps + 1))
-                    if [ "$steps" -ge "$MAX_TURNS" ]; then
-                      echo "watchdog: step limit $MAX_TURNS reached - killing opencode"
-                      pkill -TERM -f 'opencode run' || true
-                      exit 99
-                    fi
-                    ;;
-                  tokens)
-                    tt="$(printf '%s' "$entry" | jq -r '.t')"
-                    tokens=$(jq -n --argjson a "$tokens" --argjson b "$tt" '$a + $b | floor')
-                    if [ "$tokens" -ge "$MAX_TOKENS" ]; then
-                      echo "watchdog: token limit $MAX_TOKENS reached - killing opencode"
-                      pkill -TERM -f 'opencode run' || true
-                      exit 99
-                    fi
-                    ;;
-                  tool)
-                    status="$(printf '%s' "$entry" | jq -r '.status')"
-                    exit_code="$(printf '%s' "$entry" | jq -r '.exit')"
-                    if [ "$status" = "failed" ] || { [ "$status" = "completed" ] && [ "$exit_code" != "0" ] && [ -n "$exit_code" ] && [ "$exit_code" != "null" ]; }; then
-                      streak=$((streak + 1))
-                      echo "watchdog: failed tool call streak = $streak"
-                      if [ "$streak" -ge "$MAX_DENIED_STREAK" ]; then
-                        echo "watchdog: $streak consecutive failed tool calls - killing opencode"
-                        pkill -TERM -f 'opencode run' || true
-                        exit 99
-                      fi
-                    elif [ "$status" = "completed" ]; then
-                      streak=0
-                    fi
-                    ;;
-                esac
-              done
-          }
-
-          set -o pipefail
-          set +e
-          timeout --signal=TERM --kill-after=60 "$TIME_LIMIT_SEC" \
-            opencode run --standalone --format json --auto --model mistral/zai-glm-5-3 \
-              "$(cat out/reviewer.rendered.md)" \
-            2> out/opencode.stderr \
-            | tee out/stream.ndjson \
-            | run_watchdog
-          rc=$?
-          set -e
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          echo "--- opencode stderr ---"
-          cat out/opencode.stderr || true
-          if [ "$rc" = "99" ]; then
-            echo "stopped_by_watchdog=true" >> "$GITHUB_OUTPUT"
-          fi
-          exit 0
+          runner="$(cat "$RUNNER_TEMP/dev-loop-opencode-runner.sh")"
+          bash -eo pipefail -c "$runner" -- run out/reviewer.rendered.md
 
       - name: Upload opencode output artifact
         if: always() && steps.gate.outputs.skip != 'true'
