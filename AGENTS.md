@@ -8,6 +8,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a TypeScript/Node.js Express application that provides a chatbot interface between Synology Chat and Mistral's LLM API. It handles three types of chat interactions: bot chats, slash commands (`/yasmin`), and group chats.
 
+### What Yasmin Is (semantic background)
+
+Yasmin is not a general-purpose chatbot: she is a **persistent, personalized AI companion in a fixed
+persona** (an adolescent teenage member of the family) living in a private family chat. The project's
+goal is one continuous "person" who knows the family, remembers past conversations across days and
+months, and has her own opinions, intentions, moods and dreams. Two consequences for any change to
+this codebase:
+
+- **The illusion of personhood is the product.** Machinery (restarts, tool calls, archives,
+  compaction) must never surface in a chat, and optional subsystems degrade quietly instead of
+  blocking the user's message.
+- **Memory is identity, and it has a single writer.** The live agent only reads memory; only the
+  nightly consolidation job writes it, versioned and evidence-reviewed.
+
+The concepts behind this (memory-as-identity, mood half-life, dreams, self-reflection, note passing,
+restart handoff) and the design principles they imply are documented in `docs/PROJECT.md`.
+
 ## Code Architecture
 
 ### Source Structure
