@@ -24,6 +24,7 @@ this codebase:
 
 The concepts behind this (memory-as-identity, mood half-life, dreams, self-reflection, note passing,
 restart handoff) and the design principles they imply are documented in `docs/PROJECT.md`.
+
 ## Code Architecture
 
 ### Source Structure
