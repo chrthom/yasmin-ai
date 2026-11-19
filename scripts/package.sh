@@ -34,6 +34,7 @@ zip -r "$ARCHIVE_NAME" \
   src \
   scripts \
   database \
+  mistral_config \
   -x "**/node_modules/*" \
   -x "**/node_modules" \
   -x "dist/*" \

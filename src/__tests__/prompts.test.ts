@@ -6,7 +6,11 @@ describe('nightly prompt templates', () => {
     const update = { path: 'people/alice.md', content: 'new content', isNew: false };
     const selfUpdate = { path: 'self-reflection/profile.md', content: 'new content', isNew: true };
     const prompts = [
-      renderPrompt('journal_prompt.txt', { userName: 'Alice', transcript: 'transcript text' }),
+      renderPrompt('journal_prompt.txt', {
+        userName: 'Alice',
+        transcript: 'transcript text',
+        runDate: '2026-10-05'
+      }),
       renderPrompt('integrate_prompt.txt', {
         runDate: '2026-10-05',
         undeliveredNotes: renderPrompt('integrate_notes_block.txt', {
@@ -82,7 +86,7 @@ describe('nightly prompt templates', () => {
   });
 
   it('throws on a token without a value instead of silently passing the placeholder through', () => {
-    expect(() => renderPrompt('journal_prompt.txt', { userName: 'Alice' })).toThrow(
+    expect(() => renderPrompt('journal_prompt.txt', { userName: 'Alice', runDate: '2026-10-05' })).toThrow(
       /Missing value for prompt template token \{\{transcript\}\}/
     );
   });
@@ -90,9 +94,12 @@ describe('nightly prompt templates', () => {
   it('matches the expected journal prompt output for a known input', () => {
     const prompt = renderPrompt('journal_prompt.txt', {
       userName: 'Alice',
-      transcript: 'user: hi\nassistant: hello'
+      transcript: 'user: hi\nassistant: hello',
+      runDate: '2026-10-05'
     });
-    expect(prompt).toContain("Write a journal entry summarizing today's conversation with Alice.");
+    expect(prompt).toContain(
+      "Write a journal entry summarizing today's conversation with Alice. Today is 2026-10-05."
+    );
     expect(prompt).toContain('<<<BEGIN TRANSCRIPT>>>');
     expect(prompt).toContain('user: hi\nassistant: hello');
     expect(prompt).toContain('<<<END TRANSCRIPT>>>');

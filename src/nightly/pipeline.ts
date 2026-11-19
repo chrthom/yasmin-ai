@@ -50,11 +50,14 @@ import {
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import {
+  DREAM_EVIDENCE_HEADER,
+  DREAM_EVIDENCE_MAX_CHARS,
   DREAM_REFLECTION_PATH,
   appendDreamReflection,
   dreamDateFromPath,
   dreamFilePath,
   findUnreflectedDream,
+  recentDreamReflections,
   runDream,
   runDreamReflection,
   selectDreamSources,
@@ -812,6 +815,22 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
               }
             }
           }
+          // Dream reflections as SOFT evidence (issue #126): how Yasmin reflects on her dreams is
+          // first-person self-concept material, so the most recent entries of the append-only
+          // self-reflection/dreams.md ride along into her profile's compaction input. The dream
+          // content itself never reaches people/ or general/ files -- this one-way fold-in is the
+          // only bridge, and the compaction prompt forces dream-derived material to be marked as
+          // such (never a standalone fact). Like the mood narrative, the reflections are
+          // sensitive-stripped: they end up in the eager profile every sender reads on turn 1.
+          const dreamsRow = await getCurrentVersion(DREAM_REFLECTION_PATH);
+          if (dreamsRow) {
+            const reflections = stripSensitive(
+              recentDreamReflections(dreamsRow.content, DREAM_EVIDENCE_MAX_CHARS)
+            );
+            if (reflections.length > 0) {
+              compactSource = compactSource + '\n\n' + DREAM_EVIDENCE_HEADER + '\n\n' + reflections;
+            }
+          }
         }
         let compacted = await runCompact(kind, personName, compactSource);
 
@@ -858,10 +877,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       } catch (error) {
         console.error('ERROR Failed to clear the intraday_notes outbox: ' + error);
       }
-    } else {
+    } else if (!notesConsolidated) {
       console.warn(
         'WARN Consolidation phases did not complete; keeping intraday_notes for the next nightly run'
       );
+    } else {
+      console.log('INFO intraday_notes outbox is empty; nothing to clear');
     }
 
     // -----------------------------------------------------------------------

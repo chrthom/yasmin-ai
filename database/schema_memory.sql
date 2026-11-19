@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS processing_lock (
     lock_name   VARCHAR(64) PRIMARY KEY,       -- e.g. 'nightly'
     acquired_at TIMESTAMP NOT NULL,
     owner       VARCHAR(128) NOT NULL          -- host:pid
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Durable, single-row watermark of the most recent successful snapshot the job has fully processed.
 -- Deliberately kept OUT of nightly_job_log (which pruneOldJobLogs deletes from): if every completed
@@ -49,4 +49,4 @@ CREATE TABLE IF NOT EXISTS processing_lock (
 CREATE TABLE IF NOT EXISTS nightly_watermark (
     id          TINYINT PRIMARY KEY,           -- singleton; always 1
     snapshot_at DATETIME NOT NULL              -- Phase-1 listing snapshot time of the last fully-completed run
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

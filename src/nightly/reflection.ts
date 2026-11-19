@@ -1,7 +1,8 @@
 import { config } from '../config';
 import { PREVIOUS_CONVERSATION_STRIP_RE } from '../protocol';
-import { askAgent, runAgentToolLoop, ConversationMessage } from '../mistral/mistral_api';
+import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } from '../mistral/mistral_api';
 import { extractContentText } from '../mistral/content';
+import { isDialogueMessage } from '../mistral/transcript';
 import { isOverCap, truncateToCap } from './privacy';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
@@ -11,21 +12,8 @@ import { IntradayNote } from '../database/models/intraday_notes.model';
 export type { StagedUpdate };
 
 // ---------------------------------------------------------------------------
-// Shared transcript helpers
+// Journal transcript helpers
 // ---------------------------------------------------------------------------
-
-/** Re-exported for callers that only need the message shape, without redefining it. */
-export type RawConversationMessage = ConversationMessage;
-
-/**
- * Joins the text parts of a single message's content (string, or array of {type, text} parts).
- *
- * @param content The raw message content of unknown shape.
- * @returns The concatenated text parts, or an empty string for any other shape.
- */
-export function extractMessageText(content: unknown): string {
-  return extractContentText(content);
-}
 
 /**
  * Strips the `<previous_conversation>` block the live agent seeds a fresh conversation with
@@ -40,31 +28,12 @@ export function stripHandoffBlock(text: string): string {
 }
 
 /**
- * Checks whether a message row is actual human<->assistant dialogue. Internal plumbing isn't
- * conversation content: tool calls, function calls/results (including giant web_search reads),
- * system/service rows and errors should never reach the transcript that feeds memory.
- *
- * @param message The raw message row.
- * @returns true when the row is dialogue and should be kept in a transcript.
- */
-export function isDialogueMessage(message: ConversationMessage): boolean {
-  const t = message.type.toLowerCase();
-  return !(
-    t.includes('tool') ||
-    t.includes('function') ||
-    t.includes('system') ||
-    t.includes('service') ||
-    t.includes('error')
-  );
-}
-
-/**
  * Renders a conversation's messages into a plain "label: text" transcript, one line per message.
  * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized
  * message (e.g. an oversized user paste) can never blow up the downstream journal prompt.
  *
  * @param messages The conversation's raw message history.
- * @returns The capped transcript, with the handoff block stripped from user messages.
+ * @returns The capped transcript, with handoff blocks stripped from message text.
  */
 export function buildTranscript(messages: ConversationMessage[]): string {
   const lines: string[] = [];
@@ -73,7 +42,7 @@ export function buildTranscript(messages: ConversationMessage[]): string {
     if (!isDialogueMessage(message)) {
       continue;
     }
-    const text = stripHandoffBlock(stripChannelHistoryBlock(extractMessageText(message.content)));
+    const text = stripHandoffBlock(stripChannelHistoryBlock(extractContentText(message.content)));
     if (text.length === 0) {
       continue;
     }
@@ -108,10 +77,15 @@ export const JOURNAL_SOFT_CAP_CHARS: number = config.nightly.journalSoftCapChars
  *
  * @param userName The conversation partner's name.
  * @param transcript The capped transcript to journal.
+ * @param runDate The run date the entry should date events with (defaults to today in the nightly tz).
  * @returns The rendered prompt.
  */
-export function journalPrompt(userName: string, transcript: string): string {
-  return renderPrompt('journal_prompt.txt', { userName, transcript });
+export function journalPrompt(userName: string, transcript: string, runDate?: string): string {
+  return renderPrompt('journal_prompt.txt', {
+    userName,
+    transcript,
+    runDate: runDate ?? formatRunDate(new Date())
+  });
 }
 
 /**
@@ -123,13 +97,15 @@ export function journalPrompt(userName: string, transcript: string): string {
  * @throws Error when the agent returns an empty entry on both attempts.
  */
 export async function runJournal(userName: string, transcript: string): Promise<string> {
-  let text = (
-    await askAgent({
-      agentId: config.mistral.nightlyAgentId,
-      inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
-      store: false
-    })
-  ).outputText.trim();
+  const first = await askAgent({
+    agentId: config.mistral.nightlyAgentId,
+    inputs: [{ role: 'user', content: journalPrompt(userName, transcript) }],
+    store: false
+  });
+  let text = first.outputText.trim();
+  if (text.length === 0) {
+    logEmptyAgentReply('journal for ' + userName + ', attempt 1', first);
+  }
 
   // An empty reply is always a failed generation, not "nothing to say": retry once, then throw so the
   // conversation is reprocessed next night instead of persisting an empty journal file.
@@ -141,12 +117,17 @@ export async function runJournal(userName: string, transcript: string): Promise<
           role: 'user',
           content:
             journalPrompt(userName, transcript) +
-            '\n\nYour previous answer was empty. Write the journal entry now.'
+            '\n\nYour previous answer was empty. Do not use any tools and do not call any' +
+            ' functions for this task -- tools are not available here. Write the journal entry as' +
+            ' your plain text answer now.'
         }
       ],
       store: false
     });
     text = retry.outputText.trim();
+    if (text.length === 0) {
+      logEmptyAgentReply('journal for ' + userName + ', attempt 2', retry);
+    }
     if (text.length === 0) {
       throw new Error('Journal agent returned an empty entry for ' + userName + ' on both attempts');
     }
@@ -513,8 +494,14 @@ export async function runReview(
       };
     }
     console.error('ERROR Malformed reviewer verdict for ' + update.path + ': ' + result.outputText);
+    if (result.outputText.trim().length === 0) {
+      logEmptyAgentReply('review verdict for ' + update.path, result);
+    }
   } catch (error) {
     console.error('ERROR Failed to parse reviewer verdict for ' + update.path + ': ' + error);
+    if (result.outputText.trim().length === 0) {
+      logEmptyAgentReply('review verdict for ' + update.path, result);
+    }
   }
 
   return { approved: false, reason: 'Could not parse reviewer verdict; rejecting as a safe default.' };
@@ -638,8 +625,14 @@ export async function reviseProposal(
     inputs
   });
 
+  const content = result.outputText.trim();
+  if (content.length === 0) {
+    logEmptyAgentReply('revision of ' + update.path, result);
+    throw new Error('Revision agent returned an empty replacement for ' + update.path);
+  }
+
   return {
-    content: result.outputText.trim(),
+    content,
     conversationId: result.conversationId || conversationId || ''
   };
 }
@@ -695,7 +688,9 @@ export async function runCompact(
     store: false
   });
   let text = first.outputText.trim();
-  if (!isOverCap(text, cap)) {
+  if (text.length === 0) {
+    logEmptyAgentReply('compaction of kind=' + kind + ' (first attempt)', first);
+  } else if (!isOverCap(text, cap)) {
     return text;
   }
 
@@ -710,6 +705,9 @@ export async function runCompact(
     store: false
   });
   text = second.outputText.trim();
+  if (text.length === 0) {
+    logEmptyAgentReply('compaction of kind=' + kind + ' (over-cap retry)', second);
+  }
 
   if (isOverCap(text, cap)) {
     console.warn(

@@ -97,7 +97,27 @@ jobs:
             --description "dev-loop: human decision required" 2>/dev/null || true
           gh label create dev-loop --color 46A1AA \
             --description "Development and reviewing is performed by an agentic AI dev-loop" 2>/dev/null || true
-          pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels)"
+          # Fail open with a trace on poll errors (the #119 class): a hard gh
+          # failure must not red-run the gate, and an empty or truncated read
+          # must not parse as "lacks the dev-loop label" - a silent green skip
+          # of a legitimate review. Retry boundedly; a PR that stays unreadable
+          # cannot be gated at all (label, draft and head SHA all come from
+          # here), so skip with a warning - no findings are stranded by a
+          # review that never started, and the next event re-offers it.
+          pr_json=""
+          for attempt in 1 2 3 4 5; do
+            pr_json="$(gh pr view "$PR_NUMBER" --json number,headRefOid,isDraft,labels 2>/dev/null || true)"
+            if [ -n "$pr_json" ] && jq -e . <<<"$pr_json" >/dev/null 2>&1; then
+              break
+            fi
+            pr_json=""
+            [ "$attempt" = 5 ] || sleep 10
+          done
+          if [ -z "$pr_json" ]; then
+            echo "::warning::PR poll failed after 5 attempts; cannot evaluate the gate on PR #$PR_NUMBER. Skipping - re-run via workflow_dispatch or push to re-offer the review (fail visible, no red run)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Three gates, in order (docs/dev-loop.md): dev-loop label -> not draft
           # -> no needs-human. Draft is a human parking brake; the loop never
           # flips it and never touches a draft PR on any event.
@@ -131,10 +151,17 @@ jobs:
           # One review per head SHA: skip if a marker review already exists for it.
           # --paginate streams one JSON array per page: slurp the pages before
           # selecting (a per-page evaluation prints one result per page, and a
-          # 2-page PR's '0\n0' would read as "exists" in the test below).
+          # 2-page PR's '0\n0' would read as "exists" in the test below). A
+          # truncated listing (jq parse error) must not red-run the gate
+          # either: warn and proceed - fail open to reviewing, since the
+          # dedupe is best-effort and a missed duplicate costs at most one
+          # redundant review cycle on the same head.
           existing="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
             | jq -rs --arg sha "$head_sha" \
-              '(add // []) | any(.[]; ((.body // "") | startswith("<!-- dev-loop-review -->")) and .commit_id == $sha)')"
+              '(add // []) | any(.[]; ((.body // "") | startswith("<!-- dev-loop-review -->")) and .commit_id == $sha)' 2>/dev/null || true)"
+          if [ -z "$existing" ]; then
+            echo "::warning::Marker-dedupe poll failed; proceeding as if no marker review exists for head $head_sha (fail open to reviewing)."
+          fi
           if [ "$existing" = "true" ]; then
             echo "A marker review for head SHA $head_sha already exists; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -159,8 +186,14 @@ jobs:
           ci_wait_start=$(date +%s)
           ci_state=""
           while [ $(( $(date +%s) - ci_wait_start )) -lt 1200 ]; do
-            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
-            if [ "$tip_now" != "$head_sha" ]; then
+            # An empty read (transient gh failure) must not parse as "head
+            # moved" - that would silently skip a legitimate review with a
+            # green run and no synchronize event to recover it. Keep
+            # polling; the loop re-reads the tip in 30s anyway.
+            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+            if [ -z "$tip_now" ]; then
+              echo "::warning::Head-SHA poll failed while waiting for CI; continuing to wait (re-polled in 30s)."
+            elif [ "$tip_now" != "$head_sha" ]; then
               ci_state="moved"
               break
             fi
@@ -188,11 +221,17 @@ jobs:
           if [ "${ci_state:-}" = "red" ]; then
             # Re-check the tip right before dispatching: a format push racing
             # the poll would otherwise send the fixer after a stale red state.
-            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid | jq -r '.headRefOid')"
-            if [ "$tip_now" != "$head_sha" ]; then
+            # A failed re-check dispatches anyway (fail open): skipping would
+            # strand the reviewer's red-CI dispatch, and the fixer re-checks
+            # the live state itself.
+            tip_now="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+            if [ -n "$tip_now" ] && [ "$tip_now" != "$head_sha" ]; then
               echo "Head moved ($head_sha -> $tip_now) after red CI; skipping. The new head's synchronize event re-offers the review."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
+            fi
+            if [ -z "$tip_now" ]; then
+              echo "::warning::Head-SHA re-check poll failed after red CI; dispatching the fixer anyway (fail open)."
             fi
             echo "CI is red on head $head_sha with the tip unchanged; dispatching the fixer (CI-failure mode, no review findings)."
             if gh workflow run dev-loop-fix.yml --ref main -f pr_number="$PR_NUMBER" -f review_id=none -f retry=0; then
@@ -215,19 +254,48 @@ jobs:
           # array per page) before selecting, or a 2-page PR emits one
           # timestamp / one count per page and silently breaks the epoch cut
           # and the cap comparison.
-          epoch_cut="$(gh api repos/${GH_REPO}/issues/$PR_NUMBER/comments --paginate \
-            | jq -rs '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-escalation -->")) | .created_at] | last // empty')"
-          marker_count="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
-            | jq -rs --arg after "${epoch_cut:-1970-01-01T00:00:00Z}" \
-              '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | select(.submitted_at >= $after)] | length')"
+          # Both polls fail open with a trace: a truncated listing (jq parse
+          # error) must not red-run the gate, and an unreadable epoch must
+          # not degrade to the 1970 floor (counting every marker review ever)
+          # and misfire the cap on a long-lived PR. An unreadable epoch or
+          # count skips the cap check this run - fail open to reviewing
+          # instead of parking the PR on bad data.
+          epoch_cut=""
+          epoch_poll_failed="false"
+          if ! epoch_cut="$(gh api repos/${GH_REPO}/issues/$PR_NUMBER/comments --paginate \
+            | jq -rs '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-escalation -->")) | .created_at] | last // empty' 2>/dev/null)"; then
+            epoch_poll_failed="true"
+          fi
+          marker_count=""
+          if [ "$epoch_poll_failed" = "false" ]; then
+            marker_count="$(gh api repos/${GH_REPO}/pulls/$PR_NUMBER/reviews --paginate \
+              | jq -rs --arg after "${epoch_cut:-1970-01-01T00:00:00Z}" \
+                '(add // []) | [.[] | select((.body // "") | startswith("<!-- dev-loop-review -->")) | select(.submitted_at >= $after)] | length' 2>/dev/null || true)"
+          fi
+          if [ -z "$marker_count" ]; then
+            # An empty epoch_cut on a healthy poll = a fresh epoch (no
+            # escalation comments yet; the 1970 floor above then counts
+            # every marker review). An empty marker_count means a poll
+            # failed (a healthy count jq always emits a number): the cap
+            # cannot be evaluated this run.
+            echo "::warning::Iteration-cap poll failed (epoch poll failed: $epoch_poll_failed); proceeding without the cap check (fail open)."
+            marker_count=0
+          fi
           if [ "$marker_count" -ge "$MAX_ITERATIONS" ]; then
             echo "Iteration cap reached ($marker_count >= $MAX_ITERATIONS marker reviews this epoch); escalating."
-            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null
+            # Guard both signals like escalate() in the post-step script: a
+            # transient gh failure inside the escalation must not red-run
+            # the gate - at least one signal reaches a human, with a trace
+            # when one fails (the next event's gate re-attempts the cap
+            # escalation if both failed).
+            gh pr edit "$PR_NUMBER" --add-label needs-human >/dev/null \
+              || echo "::warning::Could not add the needs-human label (gh pr edit failed); relying on the escalation comment."
             cat > /tmp/dev-loop-escalation.md <<EOF
           <!-- dev-loop-escalation -->
           @$REPO_OWNER dev-loop iteration cap reached: ${MAX_ITERATIONS} review/fix cycles on PR #${PR_NUMBER} without resolution. The loop is parked; please review the PR and its marker reviews, then remove the \`needs-human\` label to resume with a fresh budget.
           EOF
-            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null
+            gh pr comment "$PR_NUMBER" --body-file /tmp/dev-loop-escalation.md >/dev/null \
+              || echo "::warning::Could not post the escalation comment (gh pr comment failed); the needs-human label marks the PR."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

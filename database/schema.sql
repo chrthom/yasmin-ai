@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS context_entries (
     title VARCHAR(255) PRIMARY KEY,
     content TEXT NOT NULL
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Seed all context entries
 INSERT INTO context_entries (title, content) VALUES
@@ -35,4 +35,4 @@ CREATE TABLE IF NOT EXISTS intraday_notes (
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     delivered_at DATETIME NULL,          -- set on individual delivery
     delivered_to JSON NULL               -- collected recipients for to_username IS NULL
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

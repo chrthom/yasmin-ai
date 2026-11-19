@@ -5,7 +5,8 @@ import {
   getConversationMessages,
   ConversationMessage
 } from './mistral/mistral_api';
-import { extractMessageText, isDialogueMessage } from './nightly/reflection';
+import { extractContentText } from './mistral/content';
+import { isDialogueMessage } from './mistral/transcript';
 import { PREVIOUS_CONVERSATION_CAPTURE_RE, SUMMARY_CAPTURE_RE, cleanStoredText, xmlBlock } from './protocol';
 import { stripChannelHistoryBlock } from './channel_history';
 
@@ -45,7 +46,7 @@ export const extractTurns = (messages: ConversationMessage[]): { turns: Turn[]; 
     }
     const role: 'user' | 'assistant' =
       message.role === 'user' || (!message.role && !message.type.includes('output')) ? 'user' : 'assistant';
-    const raw = extractMessageText(message.content);
+    const raw = extractContentText(message.content);
     if (role === 'user' && priorContext === undefined) {
       // Strip the channel-history block (untrusted third-party chatter) before capturing prior context, so
       // a <previous_conversation> smuggled into the transcript can never be read as trusted harness input.

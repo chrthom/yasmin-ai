@@ -1,4 +1,4 @@
-Write a journal entry summarizing today's conversation with {{userName}}.
+Write a journal entry summarizing today's conversation with {{userName}}. Today is {{runDate}}.
 
 Write in plain prose, third person, with no title, no metadata, and no markdown headings -- just the journal content itself. Write the journal entry in German.
 Focus on meaningful interactions, emotional exchanges, milestones, shared experiences, inside jokes, and any facts or commitments that should be remembered. Also actively look for: opinions or ideas {{userName}} expressed, personal projects, hobbies, or goals they mentioned, topics they came back to more than once within this conversation, moments where they reflected on themselves, and any cues about how they like to be talked to (tone, humor, directness, formality). Note these explicitly rather than only describing what happened.

@@ -145,7 +145,7 @@ Non-events by design:
   the fixer's push-to-main conflict-scan fanout — are enumerated where they occur (post-step
   state machine, Failure handling, event map).
 
-## Post-step state machine (all post-steps, no agent involvement)
+## Post-step state machine (gates and post-steps, no agent involvement)
 
 | Post-step   | Condition                                                                       | Action                                                                                                                                                                   |
 | ----------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -153,7 +153,11 @@ Non-events by design:
 | reviewer    | `Verdict: NEEDS_HUMAN`                                                          | label `needs-human` + marker escalation comment `@$REPO_OWNER` (the `github.repository_owner`-derived mention every escalation template uses)                            |
 | reviewer    | head SHA moved since review start                                               | re-dispatch reviewer (stale review is not acted on)                                                                                                                      |
 | reviewer    | head-SHA freshness poll errors                                                  | post the review on the reviewed SHA + `::warning` (fail open; the stale-head protection is best-effort)                                                                  |
-| fixer       | outcome `FIXED` (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                                                                      |
+| fixer gate  | advisory poll errors (head SHA, mergeability, CI state; pre-agent)              | `::warning` + proceed (fail open — the fixer re-checks live; a skip would strand the reviewer's red-CI dispatch)                                                          |
+| fixer gate  | essential poll errors (review object, head branch, resume review id; pre-agent) | bounded retry, then label `needs-human` + marker escalation comment (never a silent no-findings degradation that strands findings)                                       |
+| fixer       | outcome `FIXED` with a moved head (findings fixed and/or conflicts resolved, merge commit pushed) | nothing — the push fires `synchronize`, which triggers the reviewer                                                                                       |
+| fixer       | outcome `FIXED` with an unchanged head (findings verified resolved, or a failed push) | chain the reviewer (its per-head marker dedupe bounds the duplicate; never an escalation — parking resolved PRs for no reason)                                          |
+| fixer       | outcome `FIXED` with an unknown head (freshness poll failed on either side)     | chain the reviewer as if the head were unchanged + `::warning` (fail open; a genuinely pushed fix is covered by its own `synchronize`)                                   |
 | fixer       | outcome `WALL:`/budget stop                                                     | label `needs-human` + escalation comment                                                                                                                                 |
 | implementer | outcome `finished`                                                              | open a **ready** PR (`Closes #<N>`) with the `dev-loop` label; `ready_for_review` fires the first review                                                                 |
 | implementer | outcome `NO_PR`                                                                 | comment questions on the issue + label `needs-human`                                                                                                                     |

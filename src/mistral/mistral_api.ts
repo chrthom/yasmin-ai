@@ -373,6 +373,26 @@ export interface AgentCallResult {
   rawOutputs: unknown[];
 }
 
+/**
+ * Diagnostics for an agent reply that parsed to no text: the parsed text alone cannot distinguish
+ * a tool-call-only reply, a guardrail block, or an unexpected output shape -- all look "empty".
+ * Logs the parsed tool calls and the raw outputs so the next occurrence is diagnosable from the
+ * container log alone.
+ *
+ * @param context What the caller was asking the agent for (e.g. "journal for Alice, attempt 1").
+ * @param result The raw agent call result that yielded no text.
+ */
+export function logEmptyAgentReply(context: string, result: AgentCallResult): void {
+  console.error(
+    'ERROR Agent reply for ' +
+      context +
+      ' contained no text. Tool calls: ' +
+      JSON.stringify(result.toolCalls) +
+      '. Raw outputs: ' +
+      JSON.stringify(result.rawOutputs)
+  );
+}
+
 const OutputContentPartResponseSchema = z
   .object({
     type: z.string(),
@@ -501,20 +521,41 @@ export async function runAgentToolLoop(params: {
 
     for (const call of result.toolCalls) {
       let args: Record<string, unknown> = {};
-      let parseFailed = false;
+      let parseError: string | null = null;
 
       if (typeof call.arguments === 'string') {
         try {
           args = JSON.parse(call.arguments);
         } catch (error) {
-          console.error('ERROR Failed to parse tool call arguments for ' + call.name + ': ' + error);
-          parseFailed = true;
+          console.error(
+            'ERROR Failed to parse tool call arguments for ' +
+              call.name +
+              ': ' +
+              error +
+              ' (arguments length: ' +
+              call.arguments.length +
+              ' chars, tail: ' +
+              JSON.stringify(call.arguments.slice(-80)) +
+              ')'
+          );
+          parseError = String(error);
         }
       } else {
         args = call.arguments;
       }
 
-      const resultStr = parseFailed ? '{"error":"invalid arguments"}' : await executeTool(call.name, args);
+      // The parse error rides back to the agent verbatim so it can actually correct the malformed
+      // arguments (often a truncated long string) instead of guessing at a generic "invalid". When
+      // the payload looks truncated (no closing quote near the end), say so explicitly: the agent
+      // then knows to resend the full content instead of fiddling with the characters it can see.
+      const truncatedHint =
+        parseError !== null && typeof call.arguments === 'string' && !/"\s*[\]}]\s*$/.test(call.arguments)
+          ? ' The arguments appear TRUNCATED -- resend the complete content, do not abbreviate it.'
+          : '';
+      const resultStr =
+        parseError !== null
+          ? '{"error":"arguments were not valid JSON: ' + parseError.replace(/"/g, "'") + truncatedHint + '"}'
+          : await executeTool(call.name, args);
 
       toolInputs.push({
         type: 'function.result',
