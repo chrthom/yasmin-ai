@@ -232,6 +232,25 @@ describe('nightly/dream', () => {
       await expect(runDream([archiveRow('journals/alice/conv-1.md', 30)])).resolves.toContain('Ein Traum.');
       expect(mockDelete).toHaveBeenCalledWith('dream-scratch-1');
     });
+
+    it('ignores header-only journals in selectDreamSources and strips chatDates headers from dream prompts', async () => {
+      const always = () => 0.99;
+      const headerOnly = archiveRow('journals/alice/conv-empty.md', 20, 'chatDates: 2026-09-10\n\n   ');
+      const stamped = archiveRow(
+        'journals/alice/conv-1.md',
+        20,
+        'chatDates: 2026-09-10, 2026-09-11\n\nAlice erzählte von ihrem Garten.'
+      );
+      expect(selectDreamSources([headerOnly], NOW, always)).toEqual([]);
+      const picked = selectDreamSources([headerOnly, stamped], NOW, always);
+      expect(picked.map(r => r.filePath)).toEqual(['journals/alice/conv-1.md']);
+
+      mockAskAgent.mockResolvedValueOnce({ outputText: 'Ein Gartentraum.', toolCalls: [], rawOutputs: [] });
+      await runDream(picked);
+      const sentPrompt: string = mockAskAgent.mock.calls[0][0].inputs[0].content;
+      expect(sentPrompt).toContain('Alice erzählte von ihrem Garten.');
+      expect(sentPrompt).not.toContain('chatDates:');
+    });
   });
 
   describe('runDreamReflection (stage 2)', () => {

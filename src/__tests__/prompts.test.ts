@@ -57,8 +57,12 @@ describe('nightly prompt templates', () => {
         undeliveredNotesBlock: '',
         voiceRule: ''
       }),
-      renderPrompt('compact_person_prompt.txt', { cap: '10000', personName: 'Alice' }) +
-        renderPrompt('compact_footer.txt', { content: 'content to compact' }),
+      renderPrompt('compact_person_prompt.txt', {
+        cap: '10000',
+        personName: 'Alice',
+        runDate: '2026-10-05',
+        activeChatDates: '2026-10-01, 2026-10-05'
+      }) + renderPrompt('compact_footer.txt', { content: 'content to compact' }),
       renderPrompt('compact_yasmin_prompt.txt', { cap: '10000', personName: '' }) +
         renderPrompt('compact_footer.txt', { content: 'content to compact' }),
       renderPrompt('compact_family_prompt.txt', { cap: '10000', personName: '' }) +
@@ -98,11 +102,11 @@ describe('nightly prompt templates', () => {
       runDate: '2026-10-05'
     });
     expect(prompt).toContain(
-      "Write a journal entry summarizing today's conversation with Alice. Today is 2026-10-05."
+      'Write a journal entry summarizing the conversation with Alice. The processing date is 2026-10-05;'
     );
     expect(prompt).toContain('<<<BEGIN TRANSCRIPT>>>');
     expect(prompt).toContain('user: hi\nassistant: hello');
     expect(prompt).toContain('<<<END TRANSCRIPT>>>');
-    expect(prompt.endsWith('write the journal entry described above.')).toBe(true);
+    expect(prompt.trimEnd().endsWith('write the journal entry described above.')).toBe(true);
   });
 });

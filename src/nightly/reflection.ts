@@ -4,6 +4,7 @@ import { askAgent, runAgentToolLoop, logEmptyAgentReply, ConversationMessage } f
 import { extractContentText } from '../mistral/content';
 import { isDialogueMessage } from '../mistral/transcript';
 import { isOverCap, truncateToCap } from './privacy';
+import { formatActiveChatDatesForPrompt, formatCooldownDate } from './cooldown';
 import { loadTemplate, renderPrompt } from './prompts';
 import { StagedUpdate, JournalEntry } from './tools';
 import { IntradayNote } from '../database/models/intraday_notes.model';
@@ -27,9 +28,10 @@ export function stripHandoffBlock(text: string): string {
 }
 
 /**
- * Renders a conversation's messages into a plain "label: text" transcript, one line per message.
+ * Renders a conversation's messages into a dated "[YYYY-MM-DD] label: text" transcript, one line per message.
  * Only real human<->assistant dialogue is kept, and the result is capped so a single oversized
- * message (e.g. an oversized user paste) can never blow up the downstream journal prompt.
+ * message (e.g. an oversized user paste) can never blow up the downstream journal prompt. Messages
+ * without a valid timestamp are explicitly marked unknown rather than assigned a guessed date.
  *
  * @param messages The conversation's raw message history.
  * @returns The capped transcript, with handoff blocks stripped from message text.
@@ -46,7 +48,9 @@ export function buildTranscript(messages: ConversationMessage[]): string {
       continue;
     }
     const label = message.role || (message.type.includes('output') ? 'assistant' : 'user');
-    lines.push(label + ': ' + text);
+    const timestamp = message.createdAt ? new Date(message.createdAt) : undefined;
+    const date = timestamp && !isNaN(timestamp.getTime()) ? formatCooldownDate(timestamp) : 'date unknown';
+    lines.push('[' + date + '] ' + label + ': ' + text);
   }
 
   const transcriptMaxChars = config.nightly.transcriptMaxChars;
@@ -264,7 +268,11 @@ function perFileTypeReviewerRules(path: string): string {
       "Additional criteria for people/<name>.md: a statement in Yasmin's View is an opinion and must " +
       "never read as a fact -- it must be marked as Yasmin's interpretation with a confidence level, and " +
       "a first opinion is always tentative. A trait claim needs evidence, and a goal that today's " +
-      'journals show completed must be marked done or removed, not kept open. Reject if the section ' +
+      'journals show completed must be marked done or removed, not kept open. Per-person topic-cooldown ' +
+      'tags ("(besprochen am YYYY-MM-DD)", "(neuer Aspekt am YYYY-MM-DD: ...)", "(fällig ab YYYY-MM-DD)") ' +
+      'are valid when grounded in the evidence, and retiring answered items from Open Topics or ' +
+      "Yasmin's Intentions (leaving those sections empty when nothing fresh is open) is expected -- do " +
+      'NOT reject for removing a discussed topic instead of inventing a follow-up. Reject if the section ' +
       "structure (including Yasmin's View) is missing or reordered.\n"
     );
   }
@@ -643,18 +651,28 @@ export async function reviseProposal(
 /** Which kind of long-term file a Phase-7 compaction prompt is built for. */
 export type CompactKind = 'person' | 'yasmin' | 'family';
 
+/** Per-person cooldown context passed into Phase-7 person compaction. */
+export interface PersonCompactContext {
+  /** Current nightly run date (`YYYY-MM-DD` in `MEMORY_TZ`). */
+  runDate: string;
+  /** Distinct `YYYY-MM-DD` dates on which this specific person had active conversations. */
+  activeChatDates: Iterable<string>;
+}
+
 /**
  * Builds the Phase-7 compaction prompt for a given kind of long-term file
  *
  * @param kind Which kind of long-term file is being compacted.
  * @param personName The person's name, required for kind 'person' (undefined otherwise).
  * @param strippedContent The file's privacy-stripped current content.
+ * @param personContext Optional per-person active conversation dates + runDate for topic cooldown.
  * @returns The rendered compaction prompt.
  */
 export function compactPrompt(
   kind: CompactKind,
   personName: string | undefined,
-  strippedContent: string
+  strippedContent: string,
+  personContext?: PersonCompactContext
 ): string {
   const cap = String(config.nightly.eagerMaxChars);
   const headerName: Record<CompactKind, string> = {
@@ -662,7 +680,12 @@ export function compactPrompt(
     yasmin: 'compact_yasmin_prompt.txt',
     family: 'compact_family_prompt.txt'
   };
-  const header = renderPrompt(headerName[kind], { cap, personName: personName ?? '' });
+  const header = renderPrompt(headerName[kind], {
+    cap,
+    personName: personName ?? '',
+    runDate: personContext?.runDate ?? formatRunDate(new Date()),
+    activeChatDates: formatActiveChatDatesForPrompt(personContext?.activeChatDates ?? [])
+  });
   return header + renderPrompt('compact_footer.txt', { content: strippedContent });
 }
 
@@ -672,18 +695,20 @@ export function compactPrompt(
  * @param kind Which kind of long-term file is being compacted.
  * @param personName The person's name, required for kind 'person' (undefined otherwise).
  * @param strippedContent The file's privacy-stripped current content.
+ * @param personContext Optional per-person active conversation dates + runDate for topic cooldown.
  * @returns The compacted content, within the eager-cache cap.
  */
 export async function runCompact(
   kind: CompactKind,
   personName: string | undefined,
-  strippedContent: string
+  strippedContent: string,
+  personContext?: PersonCompactContext
 ): Promise<string> {
   const cap = config.nightly.eagerMaxChars;
 
   const first = await askAgent({
     agentId: config.mistral.nightlyAgentId,
-    inputs: [{ role: 'user', content: compactPrompt(kind, personName, strippedContent) }],
+    inputs: [{ role: 'user', content: compactPrompt(kind, personName, strippedContent, personContext) }],
     store: false
   });
   let text = first.outputText.trim();
@@ -694,7 +719,7 @@ export async function runCompact(
   }
 
   const tighterPrompt =
-    compactPrompt(kind, personName, strippedContent) +
+    compactPrompt(kind, personName, strippedContent, personContext) +
     '\n\nYou are still over the ' +
     cap +
     ' character limit -- cut it down further, keep only what is essential.';

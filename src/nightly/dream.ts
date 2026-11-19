@@ -19,6 +19,8 @@ export const DREAM_SOFT_CAP_CHARS = 4000;
 /** Soft cap on the reflection length -- a reflection is a short paragraph, not another journal */
 export const DREAM_REFLECTION_SOFT_CAP_CHARS = 2000;
 
+const JOURNAL_CHAT_DATES_HEADER_RE = /^chatDates:\s*\d{4}-\d{2}-\d{2}(?:\s*,\s*\d{4}-\d{2}-\d{2})*\s*\n+/i;
+
 /** Formats an ISO date (yyyy-mm-dd) in the nightly job's configured timezone */
 export function dreamDateStr(now: Date): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -52,7 +54,7 @@ export function selectDreamSources(
     row =>
       row.filePath.startsWith('journals/') &&
       !row.filePath.startsWith(DREAMS_DIR) &&
-      row.content.trim().length > 0 &&
+      row.content.replace(JOURNAL_CHAT_DATES_HEADER_RE, '').trim().length > 0 &&
       now.getTime() - row.createdAt.getTime() >= minAgeMs
   );
 
@@ -109,7 +111,7 @@ export function dreamPrompt(sources: MemoryArchiveRow[]): string {
         '<<<BEGIN JOURNAL ' +
         row.filePath +
         '>>>\n' +
-        row.content +
+        row.content.replace(JOURNAL_CHAT_DATES_HEADER_RE, '') +
         '\n<<<END JOURNAL ' +
         row.filePath +
         '>>>'

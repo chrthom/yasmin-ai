@@ -7,6 +7,14 @@ jest.mock('../database/connection', () => ({ executeQuery: jest.fn() }));
 
 const mockExecuteQuery = executeQuery as jest.Mock;
 
+beforeEach(() => {
+  jest.useFakeTimers().setSystemTime(new Date('2026-10-08T22:30:00Z'));
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 describe('Context Service', () => {
   beforeEach(() => {
     mockExecuteQuery.mockReset().mockResolvedValue([TEST_CONTEXT_DATA]);
@@ -36,7 +44,7 @@ describe('Context Service', () => {
         '<context_entry title="PROFILE OF YASMIN">\nYasmin\n</context_entry>\n\n' +
         '<context_entry title="family NOTES">\n\n</context_entry>\n\n' +
         '<context_entry title="pRoFiLe Of ZaRa">\nSender\n</context_entry>\n\n' +
-        'You are talking to zara.',
+        'You are talking to zara. Today is 2026-10-09.',
       newlyLoadedTitles: ['PROFILE OF YASMIN', 'family NOTES', 'pRoFiLe Of ZaRa']
     });
   });
@@ -69,15 +77,15 @@ describe('Context Service', () => {
         '<context_entry title="Profile of Yasmin">\nYasmin\n</context_entry>\n\n' +
         '<context_entry title="Family notes">\n\n</context_entry>\n\n' +
         '<context_entry title="Profile of Yasmin">\nYasmin\n</context_entry>\n\n' +
-        'You are talking to yasmin.',
+        'You are talking to yasmin. Today is 2026-10-09.',
       newlyLoadedTitles: ['Profile of Yasmin', 'Family notes', 'Profile of Yasmin']
     });
   });
 
-  it('skips already loaded titles without a manifest on subsequent turns', async () => {
+  it('skips already loaded titles and includes today’s date in MEMORY_TZ on subsequent turns', async () => {
     const loaded = ['Profile of Christopher', 'Profile of Yasmin', 'Family notes'];
     expect(await contextService.getRelevantContext('christopher', loaded)).toEqual({
-      formattedContext: '\n\nYou are talking to christopher.',
+      formattedContext: '\n\nYou are talking to christopher. Today is 2026-10-09.',
       newlyLoadedTitles: []
     });
   });
@@ -98,7 +106,7 @@ describe('Context Service', () => {
       formattedContext:
         '<context_entry title="PROFILE OF YASMIN">\nYasmin\n</context_entry>\n\n' +
         '<context_entry title="Profile of Zara">\nZara\n</context_entry>\n\n' +
-        'You are talking to ZARA.',
+        'You are talking to ZARA. Today is 2026-10-09.',
       newlyLoadedTitles: ['PROFILE OF YASMIN', 'Profile of Zara']
     });
   });
@@ -117,7 +125,7 @@ describe('Context Service', () => {
       formattedContext:
         '<available_context_entries>\n- Other\n</available_context_entries>\n\n' +
         '<context_entry title="Family notes">\n\n</context_entry>\n\n' +
-        'You are talking to zara.',
+        'You are talking to zara. Today is 2026-10-09.',
       newlyLoadedTitles: ['Family notes']
     });
   });
@@ -127,7 +135,7 @@ describe('Context Service', () => {
 
     expect(await contextService.getRelevantContext('unknown', [])).toEqual({
       formattedContext:
-        '<available_context_entries>\n- Other\n</available_context_entries>\n\n\n\nYou are talking to unknown.',
+        '<available_context_entries>\n- Other\n</available_context_entries>\n\n\n\nYou are talking to unknown. Today is 2026-10-09.',
       newlyLoadedTitles: []
     });
   });
@@ -135,7 +143,7 @@ describe('Context Service', () => {
   it('handles an empty snapshot', async () => {
     mockExecuteQuery.mockResolvedValueOnce([[]]);
     expect(await contextService.getRelevantContext('unknown', [])).toEqual({
-      formattedContext: '\n\nYou are talking to unknown.',
+      formattedContext: '\n\nYou are talking to unknown. Today is 2026-10-09.',
       newlyLoadedTitles: []
     });
   });
@@ -169,7 +177,8 @@ describe('context snapshots across turns', () => {
     const first = await contextService.getRelevantContext('zara', []);
     expect(first).toEqual({
       formattedContext:
-        '<context_entry title="Profile of Yasmin">\nold\n</context_entry>\n\n' + 'You are talking to zara.',
+        '<context_entry title="Profile of Yasmin">\nold\n</context_entry>\n\n' +
+        'You are talking to zara. Today is 2026-10-09.',
       newlyLoadedTitles: ['Profile of Yasmin']
     });
 
@@ -178,7 +187,7 @@ describe('context snapshots across turns', () => {
       formattedContext:
         '<context_entry title="Family notes">\nnew family notes\n</context_entry>\n\n' +
         '<context_entry title="Profile of Zara">\nnew profile\n</context_entry>\n\n' +
-        'You are talking to zara.',
+        'You are talking to zara. Today is 2026-10-09.',
       newlyLoadedTitles: ['Family notes', 'Profile of Zara']
     });
     expect(mockExecuteQuery).toHaveBeenCalledTimes(2);

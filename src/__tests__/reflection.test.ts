@@ -64,7 +64,7 @@ describe('reflection', () => {
 
       const result = buildTranscript(messages);
 
-      expect(result).toBe('user: hi there\nassistant: hello world');
+      expect(result).toBe('[date unknown] user: hi there\n[date unknown] assistant: hello world');
     });
 
     it('infers roles from the type field when role is absent', () => {
@@ -75,7 +75,7 @@ describe('reflection', () => {
 
       const result = buildTranscript(messages);
 
-      expect(result).toBe('user: question\nassistant: answer');
+      expect(result).toBe('[date unknown] user: question\n[date unknown] assistant: answer');
     });
 
     it('skips messages whose extracted text is empty', () => {
@@ -86,7 +86,7 @@ describe('reflection', () => {
 
       const result = buildTranscript(messages);
 
-      expect(result).toBe('assistant: ok');
+      expect(result).toBe('[date unknown] assistant: ok');
     });
 
     it('drops tool/function/system plumbing so giant internal tool results never reach the journal prompt', () => {
@@ -103,7 +103,32 @@ describe('reflection', () => {
 
       const result = buildTranscript(messages);
 
-      expect(result).toBe('user: what did you find?\nassistant: here is the answer');
+      expect(result).toBe(
+        '[date unknown] user: what did you find?\n[date unknown] assistant: here is the answer'
+      );
+    });
+
+    it('labels each message with its own MEMORY_TZ date and does not guess missing or invalid dates', () => {
+      const messages = [
+        { type: 'message.input', role: 'user', content: 'Prüfung morgen', createdAt: '2026-10-05T20:00:00Z' },
+        {
+          type: 'message.output',
+          role: 'assistant',
+          content: 'Viel Glück!',
+          createdAt: '2026-10-05T20:01:00Z'
+        },
+        { type: 'message.input', role: 'user', content: 'Anderes Thema', createdAt: '2026-10-06T22:30:00Z' },
+        { type: 'message.output', role: 'assistant', content: 'Undatiert', createdAt: 'invalid' },
+        { type: 'message.input', role: 'user', content: 'Auch undatiert' }
+      ];
+
+      expect(buildTranscript(messages)).toBe(
+        '[2026-10-05] user: Prüfung morgen\n' +
+          '[2026-10-05] assistant: Viel Glück!\n' +
+          '[2026-10-07] user: Anderes Thema\n' +
+          '[date unknown] assistant: Undatiert\n' +
+          '[date unknown] user: Auch undatiert'
+      );
     });
 
     it('caps an oversized transcript so a single huge reply cannot blow up the journal prompt', () => {
@@ -133,6 +158,20 @@ describe('reflection', () => {
       expect(prompt).toContain('reacted to Yasmin herself');
       expect(prompt).toContain('praise, enthusiasm, agreement, criticism');
       expect(prompt).toContain('emotional tone');
+    });
+
+    it('asks for per-topic discussion dates and does not invent dates for unknown messages', () => {
+      const transcript = buildTranscript([
+        { type: 'message.input', role: 'user', content: 'Prüfung morgen', createdAt: '2026-10-05T20:00:00Z' },
+        { type: 'message.input', role: 'user', content: 'Anderes Thema', createdAt: '2026-10-07T12:00:00Z' },
+        { type: 'message.input', role: 'user', content: 'Noch etwas' }
+      ]);
+      const prompt = journalPrompt('Alice', transcript, '2026-10-20');
+      expect(prompt).toContain('[2026-10-05] user: Prüfung morgen');
+      expect(prompt).toContain('[2026-10-07] user: Anderes Thema');
+      expect(prompt).toContain('[date unknown] user: Noch etwas');
+      expect(prompt).toContain('latest date on which THAT topic was discussed');
+      expect(prompt).toContain('do not guess its date from the processing date');
     });
   });
 
@@ -760,6 +799,88 @@ describe('reflection', () => {
       // The fact gate: only Yasmin's own profile compaction draws on dream reflections.
       expect(compactPrompt('person', 'Alice', 'content')).not.toContain('My reflections on my dreams');
       expect(compactPrompt('family', undefined, 'content')).not.toContain('My reflections on my dreams');
+    });
+  });
+
+  describe('per-person topic cooldown prompts', () => {
+    it('instructs integratePrompt to stamp semantic cooldown dates strictly on people/<name>.md and retire answered topics', () => {
+      const prompt = integratePrompt('2026-10-05');
+      expect(prompt).toContain('(besprochen am YYYY-MM-DD)');
+      expect(prompt).toContain('(neuer Aspekt am 2026-10-05: <kurzer Grund>)');
+      expect(prompt).toContain('(fällig ab YYYY-MM-DD)');
+      expect(prompt).toContain('STRICTLY in people/<name>.md ONLY');
+      expect(prompt).toContain('NEVER replace an answered intention');
+    });
+
+    it('uses topic-specific dates for backlog takeaways and preserves unknown dates and unanswered deadlines', () => {
+      const prompt = integratePrompt('2026-10-20');
+      expect(prompt).toContain('latest date the journal explicitly gives for THAT topic');
+      expect(prompt).toContain(
+        'only when it has exactly one date and the topic has no explicit or unknown date'
+      );
+      expect(prompt).toContain('NEVER use the latest date of a multi-day header or the processing date');
+      expect(prompt).toContain(
+        'preserve any existing discussion date and otherwise leave the new item untagged'
+      );
+      expect(prompt).toContain('only when evidence shows that particular aspect or follow-up was addressed');
+      expect(prompt).toContain('preserve an unanswered follow-up even if its deadline has already arrived');
+      expect(prompt).not.toContain('(besprochen am 2026-10-20)');
+    });
+
+    it('permits grounded topic-cooldown date tags on people/<name>.md during review while forbidding them in family/topics', () => {
+      const personReview = reviewPrompt(
+        { path: 'people/alice.md', content: 'c', isNew: false },
+        'old',
+        '2026-10-01T00:00:00.000Z',
+        [],
+        0
+      );
+      expect(personReview).toContain('(besprochen am YYYY-MM-DD)');
+      expect(personReview).toContain('(neuer Aspekt am YYYY-MM-DD: ...)');
+      expect(personReview).toContain('(fällig ab YYYY-MM-DD)');
+      expect(personReview).toContain('do NOT reject for removing a discussed topic');
+      expect(personReview).toContain('reject cooldown tags placed in general/family.md or topics/*.md');
+    });
+
+    it('tells person compaction (and only person compaction) to evaluate per-person active chat dates and cooldown rules', () => {
+      const personCompact = compactPrompt('person', 'Alice', 'content', {
+        runDate: '2026-10-08',
+        activeChatDates: ['2026-10-05', '2026-10-08']
+      });
+      expect(personCompact).toContain('Today is 2026-10-08.');
+      expect(personCompact).toContain('Active conversation dates with Alice: 2026-10-05, 2026-10-08.');
+      expect(personCompact).toContain('zuletzt im letzten Gespräch besprochen – Pause');
+      expect(personCompact).toContain('vor N Gesprächstagen besprochen – Zurückhaltung');
+      expect(personCompact).toContain('Zurückhaltung bis F – erst ab Fälligkeit');
+      expect(personCompact).toContain('- (aktuell keine)');
+
+      expect(compactPrompt('family', undefined, 'content')).not.toContain(
+        'zuletzt im letzten Gespräch besprochen'
+      );
+      expect(compactPrompt('yasmin', undefined, 'content')).not.toContain(
+        'zuletzt im letzten Gespräch besprochen'
+      );
+    });
+
+    it('retains same-day new aspects and unanswered deadlines even when their dates are not after the discussion', () => {
+      const source = [
+        '## Ideas, Interests & Goals',
+        '- Töpferkurs (besprochen am 2026-10-05) (neuer Aspekt am 2026-10-05: neue Nachricht)',
+        '## Open Topics',
+        '- Prüfung (besprochen am 2026-10-05) (fällig ab 2026-10-05)',
+        '- Termin (besprochen am 2026-10-07) (fällig ab 2026-10-06)'
+      ].join('\n');
+      const prompt = compactPrompt('person', 'Alice', source, {
+        runDate: '2026-10-07',
+        activeChatDates: ['2026-10-05', '2026-10-07']
+      });
+      expect(prompt).toContain(source);
+      expect(prompt).toContain('do NOT discard it merely because A or F is on or before D');
+      expect(prompt).toContain('equal dates do not establish ordering within a day');
+      expect(prompt).toContain('even when a discussion date is unknown');
+      expect(prompt).toContain('even when A or F equals or precedes D');
+      expect(prompt).not.toContain('with A > D');
+      expect(prompt).not.toContain('with F > D');
     });
   });
 });

@@ -58,7 +58,10 @@ jest.mock('../database/models/memory_archive.model', () => ({
 }));
 
 jest.mock('../database/models/context.model', () => ({
-  upsertContextEntry: jest.fn()
+  upsertContextEntry: jest.fn(),
+  getAllEntriesFromDb: jest.fn(),
+  getAllTitlesFromDb: jest.fn(),
+  getContentByTitleFromDb: jest.fn()
 }));
 jest.mock('../database/models/intraday_notes.model', () => ({
   getIntradayNotesMaxId: jest.fn(),
@@ -167,7 +170,13 @@ import {
   markSynced,
   pruneOldVersions
 } from '../database/models/memory_archive.model';
-import { upsertContextEntry } from '../database/models/context.model';
+import {
+  getAllEntriesFromDb,
+  getAllTitlesFromDb,
+  getContentByTitleFromDb,
+  upsertContextEntry
+} from '../database/models/context.model';
+import { contextService } from '../services/context.service';
 import {
   clearIntradayNotes,
   getIntradayNotesMaxId,
@@ -221,6 +230,9 @@ const mockMarkSynced = markSynced as jest.Mock;
 const mockPruneOldVersions = pruneOldVersions as jest.Mock;
 
 const mockUpsertContextEntry = upsertContextEntry as jest.Mock;
+const mockGetAllEntriesFromDb = getAllEntriesFromDb as jest.Mock;
+const mockGetAllTitlesFromDb = getAllTitlesFromDb as jest.Mock;
+const mockGetContentByTitleFromDb = getContentByTitleFromDb as jest.Mock;
 const mockGetIntradayNotesMaxId = getIntradayNotesMaxId as jest.Mock;
 const mockGetUnconsolidatedNotes = getUnconsolidatedNotes as jest.Mock;
 const mockClearIntradayNotes = clearIntradayNotes as jest.Mock;
@@ -287,8 +299,8 @@ class MemoryArchiveFake {
   }
 
   /** Test helper: seeds a pre-existing current version directly, bypassing the mocked entry point */
-  async seed(filePath: string, content: string): Promise<FakeArchiveRow> {
-    const { row } = await this.insertNextVersion(filePath, content);
+  async seed(filePath: string, content: string, createdAt?: Date): Promise<FakeArchiveRow> {
+    const { row } = await this.insertNextVersion(filePath, content, createdAt);
     return row;
   }
 
@@ -296,7 +308,8 @@ class MemoryArchiveFake {
 
   insertNextVersion = async (
     filePath: string,
-    content: string
+    content: string,
+    createdAt: Date = new Date()
   ): Promise<{ row: FakeArchiveRow; created: boolean }> => {
     const contentHash = hashOf(content);
     const current = this.currentFor(filePath);
@@ -313,7 +326,7 @@ class MemoryArchiveFake {
       version: current ? current.version + 1 : 1,
       mistralDocId: null,
       syncedAt: null,
-      createdAt: new Date()
+      createdAt
     };
     this.rows.push(row);
     return { row, created: true };
@@ -2099,5 +2112,307 @@ describe('nightly pipeline integration', () => {
     const result = await runNightlyPipeline();
     expect(result.status).toBe('completed');
     expect(mockClearIntradayNotes).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase-7 per-person topic cooldown (zero archive churn, per-person active days)
+  // -------------------------------------------------------------------------
+  it('cooldown: Phase 7 passes ONLY that person’s active chat days into person compaction without mutating memory_archive', async () => {
+    const rawAliceProfile = [
+      '## Core Facts',
+      '- Alice wohnt in Hamburg.',
+      '',
+      '## Ideas, Interests & Goals',
+      '- Töpferkurs in Altona (besprochen am 2026-10-05)',
+      '',
+      '## Open Topics',
+      '- Neue Glasur beim Töpferkurs (besprochen am 2026-10-05)',
+      '',
+      "## Yasmin's Intentions",
+      '- Nach dem Töpferkurs fragen (Status: open, besprochen am 2026-10-05)'
+    ].join('\n');
+
+    await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
+    await archive.seed(
+      'journals/alice/conv-a1.md',
+      'Alice erzählte vom Töpferkurs.',
+      new Date('2026-10-05T19:00:00Z')
+    );
+    // Five active days for Bob + a dream file must NOT advance Alice's topic cooldown.
+    for (const day of ['06', '07', '08', '09', '10']) {
+      await archive.seed(`journals/bob/conv-b${day}.md`, 'Bob chat', new Date(`2026-10-${day}T12:00:00Z`));
+    }
+    await archive.seed('journals/dreams/2026-10-11.md', 'TRAUM', new Date('2026-10-11T22:00:00Z'));
+
+    // Tonight only Bob chats -> Alice still has 0 active conversation days since 2026-10-05.
+    mockListConversations.mockResolvedValueOnce([conversation('conv-bob-today', 'Bob')]);
+    mockRunJournal.mockResolvedValueOnce('Bob sprach heute über Fußball.');
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing staged', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+
+    const aliceCompactCall = mockRunCompact.mock.calls.find(
+      call => call[0] === 'person' && call[1] === 'Alice'
+    );
+    expect(aliceCompactCall).toBeDefined();
+    expect(aliceCompactCall![2]).toBe(rawAliceProfile);
+    expect([...aliceCompactCall![3].activeChatDates].sort()).toEqual(['2026-10-05']);
+
+    // Zero archive churn: people/alice.md in memory_archive stays at v1 with its static date tag.
+    const archivedAlice = await archive.getCurrentVersion('people/alice.md');
+    expect(archivedAlice?.version).toBe(1);
+    expect(archivedAlice?.content).toBe(rawAliceProfile);
+  });
+
+  it('cooldown: Phase 7 counts subsequent active conversation days for that person including tonight’s new journal', async () => {
+    const rawAliceProfile = '## Ideas, Interests & Goals\n- Töpferkurs in Altona (besprochen am 2026-10-05)';
+
+    await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
+    await archive.seed('journals/alice/conv-a1.md', 'Tag 0', new Date('2026-10-05T18:00:00Z'));
+    await archive.seed('journals/alice/conv-a2.md', 'Tag 1', new Date('2026-10-08T18:00:00Z'));
+
+    // Tonight Alice chats again (on a distinct later date) without touching Töpferkurs -> 2 subsequent active days.
+    mockListConversations.mockResolvedValueOnce([conversation('conv-a3', 'Alice')]);
+    mockRunJournal.mockResolvedValueOnce('Alice sprach heute nur übers Wetter.');
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing staged', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+
+    const aliceCompactCall = mockRunCompact.mock.calls.find(
+      call => call[0] === 'person' && call[1] === 'Alice'
+    );
+    expect(aliceCompactCall).toBeDefined();
+    const personContext = aliceCompactCall![3];
+    expect([...personContext.activeChatDates].sort()).toEqual([
+      '2026-10-05',
+      '2026-10-08',
+      personContext.runDate
+    ]);
+  });
+
+  it('cooldown (backlog): Phase 2 persists real user-message chatDates so a multi-day backlog consolidated in one run passes every real chat date into Phase 7 without leaking chatDates to RAG', async () => {
+    const rawAliceProfile = '## Ideas, Interests & Goals\n- Töpferkurs in Altona (besprochen am 2026-10-05)';
+
+    await archive.seed('people/alice.md', rawAliceProfile, new Date('2026-10-05T20:00:00Z'));
+
+    // Five backlog conversations spanning 2026-10-05 .. 2026-10-10 (including a two-day conversation
+    // conv-b2 across 2026-10-06 and 2026-10-07) are all consolidated together in ONE nightly run, so
+    // every journal row receives the same collectedAt timestamp.
+    mockListConversations.mockResolvedValueOnce([
+      { id: 'conv-b1', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-05T19:00:00Z' },
+      { id: 'conv-b2', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-07T08:00:00Z' },
+      { id: 'conv-b3', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-08T18:00:00Z' },
+      { id: 'conv-b4', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-09T18:00:00Z' },
+      { id: 'conv-b5', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-10T18:00:00Z' }
+    ]);
+
+    const messagesByConv: Record<string, any[]> = {
+      'conv-b1': [
+        { type: 'message.input', role: 'user', content: 'Tag 0', createdAt: '2026-10-05T18:00:00Z' }
+      ],
+      'conv-b2': [
+        { type: 'message.input', role: 'user', content: 'Tag 1 abends', createdAt: '2026-10-06T20:00:00Z' },
+        { type: 'message.input', role: 'user', content: 'Tag 2 morgens', createdAt: '2026-10-07T07:30:00Z' }
+      ],
+      'conv-b3': [
+        { type: 'message.input', role: 'user', content: 'Tag 3', createdAt: '2026-10-08T17:00:00Z' }
+      ],
+      'conv-b4': [
+        { type: 'message.input', role: 'user', content: 'Tag 4', createdAt: '2026-10-09T17:00:00Z' }
+      ],
+      'conv-b5': [
+        { type: 'message.input', role: 'user', content: 'Tag 5', createdAt: '2026-10-10T17:00:00Z' }
+      ]
+    };
+    mockGetConversationMessages.mockImplementation(async (id: string) => messagesByConv[id] ?? []);
+    mockRunJournal.mockResolvedValue('Alice plauderte über den Alltag.');
+    mockRunIntegrate.mockResolvedValueOnce({ finalText: 'nothing staged', iterations: 1 });
+
+    const result = await runNightlyPipeline();
+    expect(result.status).toBe('completed');
+
+    // Archived journal persists the multi-day chatDates header locally:
+    const multiDayJournal = await archive.getCurrentVersion('journals/alice/conv-b2.md');
+    expect(multiDayJournal?.content).toBe(
+      'chatDates: 2026-10-06, 2026-10-07\n\nAlice plauderte über den Alltag.'
+    );
+
+    // Phase 6 strips internal chatDates headers before uploading journals to the Mistral RAG library:
+    const uploadedMultiDay = mockReplaceDocument.mock.calls.find(
+      call => call[0] === 'journals/alice/conv-b2.md'
+    );
+    expect(uploadedMultiDay).toBeDefined();
+    expect(uploadedMultiDay![1]).toBe('Alice plauderte über den Alltag.');
+
+    // Phase 7 passes all 6 distinct user-message dates (5 subsequent days after 2026-10-05) to compaction:
+    const aliceCompactCall = mockRunCompact.mock.calls.find(
+      call => call[0] === 'person' && call[1] === 'Alice'
+    );
+    expect(aliceCompactCall).toBeDefined();
+    expect([...aliceCompactCall![3].activeChatDates].sort()).toEqual([
+      '2026-10-05',
+      '2026-10-06',
+      '2026-10-07',
+      '2026-10-08',
+      '2026-10-09',
+      '2026-10-10'
+    ]);
+  });
+
+  it('passes message-specific dates into journaling and retains topic dates in the evidence for integration', async () => {
+    const actualReflection = jest.requireActual('../nightly/reflection');
+    mockBuildTranscript.mockImplementation(actualReflection.buildTranscript);
+    mockListConversations.mockResolvedValueOnce([
+      { id: 'conv-multi', name: 'Alice', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-07T12:00:00Z' }
+    ]);
+    mockGetConversationMessages.mockResolvedValueOnce([
+      { type: 'message.input', role: 'user', content: 'Prüfung morgen', createdAt: '2026-10-05T20:00:00Z' },
+      { type: 'message.input', role: 'user', content: 'Anderes Thema', createdAt: '2026-10-07T12:00:00Z' }
+    ]);
+    const journal =
+      'Am 2026-10-05 sprach Alice über ihre Prüfung am 2026-10-06. Am 2026-10-07 ging es um anderes.';
+    mockRunJournal.mockResolvedValueOnce(journal);
+    let integrationEvidence: any;
+    mockRunIntegrate.mockImplementationOnce(async (executeTool: any) => {
+      integrationEvidence = await executeTool('read_todays_journals', {});
+      return { finalText: '', iterations: 1 };
+    });
+
+    const result = await runNightlyPipeline();
+
+    expect(result.status).toBe('completed');
+    expect(mockRunJournal).toHaveBeenCalledWith(
+      'Alice',
+      '[2026-10-05] user: Prüfung morgen\n[2026-10-07] user: Anderes Thema'
+    );
+    expect(JSON.stringify(integrationEvidence)).toContain(journal);
+    expect(JSON.stringify(integrationEvidence)).toContain('chatDates: 2026-10-05, 2026-10-07');
+  });
+
+  it('cooldown (fällig ab across quiet nights): future due-date follow-ups survive consecutive skipped quiet runs and live chat receives Today is YYYY-MM-DD', async () => {
+    const contextCache = new Map<string, string>();
+    mockUpsertContextEntry.mockImplementation(async (title: string, content: string) => {
+      const existed = contextCache.has(title);
+      contextCache.set(title, content);
+      return existed ? 'updated' : 'created';
+    });
+    mockGetAllEntriesFromDb.mockImplementation(async () =>
+      [...contextCache.entries()].map(([title, content]) => ({ title, content }))
+    );
+    mockGetAllTitlesFromDb.mockImplementation(async () => [...contextCache.keys()]);
+    mockGetContentByTitleFromDb.mockImplementation(async (title: string) => {
+      for (const [k, v] of contextCache.entries()) {
+        if (k.toLowerCase() === title.toLowerCase()) {
+          return v;
+        }
+      }
+      return null;
+    });
+    mockRunCompact.mockImplementation(async (_kind: any, _name: any, source: string, ctx?: any) => {
+      if (ctx?.runDate && ctx.runDate < '2026-10-09') {
+        return source.replace(
+          '(besprochen am 2026-10-05) (fällig ab 2026-10-09)',
+          '(Zurückhaltung bis 2026-10-09 – erst ab Fälligkeit oder bei neuem Aspekt von selbst ansprechen) (fällig ab 2026-10-09)'
+        );
+      }
+      return source;
+    });
+
+    const rawZaraProfile = [
+      '## Core Facts',
+      '- Zara ist Yasmins ältere Schwester.',
+      '',
+      '## Open Topics',
+      '- Mathe-Klausur am Freitag (besprochen am 2026-10-05) (fällig ab 2026-10-09)'
+    ].join('\n');
+
+    jest.useFakeTimers();
+    try {
+      // Night 1 (2026-10-05 in Berlin): Zara talked about her upcoming Friday exam.
+      jest.setSystemTime(new Date('2026-10-05T21:00:00Z'));
+      await archive.seed('people/zara.md', rawZaraProfile, new Date('2026-10-05T20:00:00Z'));
+      mockListConversations.mockResolvedValueOnce([
+        { id: 'conv-z1', name: 'Zara', agentId: FAMILY_AGENT_ID, updatedAt: '2026-10-05T19:00:00Z' }
+      ]);
+      mockGetConversationMessages.mockResolvedValueOnce([
+        {
+          type: 'message.input',
+          role: 'user',
+          content: 'Freitag Klausur!',
+          createdAt: '2026-10-05T18:50:00Z'
+        }
+      ]);
+      mockRunJournal.mockResolvedValueOnce('Zara hat am Freitag Mathe-Klausur.');
+      mockRunIntegrate.mockResolvedValueOnce({ finalText: 'done', iterations: 1 });
+
+      const night1 = await runNightlyPipeline();
+      expect(night1.status).toBe('completed');
+      expect(mockRunCompact).toHaveBeenCalledTimes(1);
+      expect(mockRunCompact.mock.calls[0][3].runDate).toBe('2026-10-05');
+      expect([...mockRunCompact.mock.calls[0][3].activeChatDates]).toEqual(['2026-10-05']);
+
+      const cachedAfterNight1 = contextCache.get('Profile of Zara') ?? '';
+      expect(cachedAfterNight1).toContain('Mathe-Klausur am Freitag');
+      expect(cachedAfterNight1).toContain('Zurückhaltung bis 2026-10-09');
+      expect(cachedAfterNight1).toContain('fällig ab 2026-10-09');
+
+      // Consecutive quiet nights (2026-10-06, 2026-10-07, 2026-10-08, and 02:00 UTC on due date 2026-10-09):
+      // every run short-circuits in Phase 1 with zero LLM calls.
+      for (const iso of [
+        '2026-10-06T21:00:00Z',
+        '2026-10-07T21:00:00Z',
+        '2026-10-08T21:00:00Z',
+        '2026-10-09T02:00:00Z'
+      ]) {
+        jest.setSystemTime(new Date(iso));
+        mockListConversations.mockResolvedValueOnce([]);
+        const quietResult = await runNightlyPipeline();
+        expect(quietResult.status).toBe('completed');
+        expect(quietResult.conversationsProcessed).toBe(0);
+      }
+      expect(mockRunCompact).toHaveBeenCalledTimes(1);
+
+      // Before due date (2026-10-07): live context carries restraint + Today is 2026-10-07 (< 2026-10-09).
+      const beforeDueContext = await contextService.getRelevantContext(
+        'zara',
+        [],
+        new Date('2026-10-07T14:00:00Z')
+      );
+      expect(beforeDueContext.formattedContext).toContain('Mathe-Klausur am Freitag');
+      expect(beforeDueContext.formattedContext).toContain('Zurückhaltung bis 2026-10-09');
+      expect(beforeDueContext.formattedContext).toContain('You are talking to zara. Today is 2026-10-07.');
+
+      // On the due date (2026-10-09) right after quiet nights: follow-up is STILL in the eager cache
+      // and Today is 2026-10-09 (>= fällig ab 2026-10-09), so live chat can proactively ask!
+      const onDueContext = await contextService.getRelevantContext(
+        'zara',
+        [],
+        new Date('2026-10-09T14:00:00Z')
+      );
+      expect(onDueContext.formattedContext).toContain('Mathe-Klausur am Freitag');
+      expect(onDueContext.formattedContext).toContain('fällig ab 2026-10-09');
+      expect(onDueContext.formattedContext).toContain('You are talking to zara. Today is 2026-10-09.');
+
+      // When a non-quiet nightly run executes on 2026-10-09 (e.g. Bob chatted while Zara had 0 new chats),
+      // Phase 7 passes runDate=2026-10-09 so Zara's due follow-ups lose their Zurückhaltung cue.
+      jest.setSystemTime(new Date('2026-10-09T21:00:00Z'));
+      mockListConversations.mockResolvedValueOnce([conversation('conv-bob-due', 'Bob')]);
+      mockGetConversationMessages.mockResolvedValueOnce([]);
+      mockRunJournal.mockResolvedValueOnce('Bob chat.');
+      mockRunIntegrate.mockResolvedValueOnce({ finalText: 'done', iterations: 1 });
+
+      const dueNight = await runNightlyPipeline();
+      expect(dueNight.status).toBe('completed');
+      const zaraDueCompactCall = mockRunCompact.mock.calls.filter(
+        call => call[0] === 'person' && call[1] === 'Zara'
+      )[1];
+      expect(zaraDueCompactCall[3].runDate).toBe('2026-10-09');
+      const cachedAfterDueNight = contextCache.get('Profile of Zara') ?? '';
+      expect(cachedAfterDueNight).not.toContain('Zurückhaltung bis 2026-10-09');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

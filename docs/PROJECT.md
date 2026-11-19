@@ -81,7 +81,11 @@ being rewritten, like a diary.
 Her opinions (the "Yasmin's View" sections of person profiles) are interpretations with a tendency,
 never facts about a person. Her intentions (follow-ups, goals) live in each person's profile and she
 brings them up on her own initiative when the moment fits. Together they make her an agent with a
-perspective, not a lookup table.
+perspective, not a lookup table. To keep her from sounding fixated by re-asking about the same topic
+every day, topics discussed with a person enter a per-person **5-active-conversation-day cooldown**
+(days without a chat with that person do not count): recently discussed topics become passive
+background memory that she only engages with when the person brings them up or when a genuinely new
+aspect or target date arises.
 
 ### Note passing
 

@@ -46,7 +46,8 @@ import {
   runReview,
   reviseProposal,
   CompactKind,
-  ExistingTopic
+  ExistingTopic,
+  PersonCompactContext
 } from './reflection';
 import { isOverCap, stripSensitive, truncateToCap } from './privacy';
 import {
@@ -67,6 +68,13 @@ import {
 import { pathToTitle } from './mapping';
 import { personNameFromTitle, sanitizeForPath } from '../strings';
 import { decayMoodFile, MOOD_FILE_PATH, parseMood, stampMoodUpdatedAt, stripMoodHeader } from './mood';
+import {
+  extractConversationUserDates,
+  extractPersonActiveChatDates,
+  formatCooldownDate,
+  stampJournalChatDates,
+  stripJournalChatDates
+} from './cooldown';
 import {
   deleteConversation,
   deleteDocument,
@@ -164,7 +172,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
     // Resume model + Phase 1 -- Collect
     // -----------------------------------------------------------------------
     const orphan = await findRunningJob();
-    let conversations: { id: string; name: string }[];
+    let conversations: { id: string; name: string; updatedAt?: string }[];
     const skippedIds: string[] = [];
     // The watermark for the NEXT run must reflect when THIS run's Phase-1 snapshot was taken, not
     // when the job finishes minutes later -- otherwise conversations updated in that gap are
@@ -192,7 +200,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       conversations = orphan.processedConversationIds.map(id => {
         const found = listedById.get(id);
         if (found) {
-          return { id, name: found.name || id };
+          return { id, name: found.name || id, updatedAt: found.updatedAt };
         }
         console.warn(
           'WARN Resumed conversation ' + id + ' not found in listing; using id as placeholder name'
@@ -220,7 +228,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         });
       }
 
-      conversations = filtered.map(c => ({ id: c.id, name: c.name || c.id }));
+      conversations = filtered.map(c => ({ id: c.id, name: c.name || c.id, updatedAt: c.updatedAt }));
     }
 
     // -----------------------------------------------------------------------
@@ -311,6 +319,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         let journalText: string;
         try {
           const messages = await getConversationMessages(conv.id);
+          const chatDates = extractConversationUserDates(messages, conv.updatedAt);
           const transcript = buildTranscript(messages);
           const textPartCount = messages.reduce(
             (n, m) => n + (Array.isArray(m.content) ? m.content.filter(p => p?.type === 'text').length : 0),
@@ -320,8 +329,9 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
             `DEBUG Journal transcript for ${conv.name} (${conv.id}): ` +
               `${messages.length} messages, ${textPartCount} text parts, ${transcript.length} chars`
           );
-          journalText = await runJournal(conv.name, transcript);
-          console.log(`DEBUG Journal entry for ${conv.name} (${conv.id}): ${journalText.length} chars`);
+          const generatedJournal = await runJournal(conv.name, transcript);
+          console.log(`DEBUG Journal entry for ${conv.name} (${conv.id}): ${generatedJournal.length} chars`);
+          journalText = stampJournalChatDates(generatedJournal, chatDates);
         } catch (error) {
           skippedIds.push(conv.id);
           await updateJobLog(jobId, { skippedConversationIds: skippedIds });
@@ -644,8 +654,12 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       try {
         // Sensitive passages never leave local storage: memory_archive keeps the full content for
         // versioning/audit, but only the stripped copy is ever uploaded to the third-party Mistral
-        // library, which backs RAG retrieval for the live chat agent.
-        const uploadContent = stripSensitive(row.content);
+        // library, which backs RAG retrieval for the live chat agent. Internal journal chatDates
+        // headers are also stripped so neither RAG nor empty-after-stripping checks see metadata.
+        const rawForUpload = row.filePath.startsWith('journals/')
+          ? stripJournalChatDates(row.content)
+          : row.content;
+        const uploadContent = stripSensitive(rawForUpload);
         // An empty memory file carries no information and Mistral rejects empty document uploads
         // (HTTP 400) -- skip it rather than degrading the run to 'partial' on a file with nothing to say.
         if (uploadContent.trim().length === 0) {
@@ -752,6 +766,8 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
       allCurrentVersions = [];
     }
 
+    const runDateStr = formatCooldownDate(collectedAt);
+
     for (const row of allCurrentVersions) {
       const title = pathToTitle(row.filePath);
       if (title === null) {
@@ -785,6 +801,7 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
         // eager entry of its own -- pathToTitle maps it to null, so only this fold-in brings it
         // into the cache.
         let compactSource = stripped;
+        let personContext: PersonCompactContext | undefined;
         if (kind === 'yasmin') {
           const moodRow = await getCurrentVersion(MOOD_FILE_PATH);
           if (moodRow) {
@@ -831,8 +848,17 @@ export async function runNightlyPipeline(): Promise<PipelineResult> {
               compactSource = compactSource + '\n\n' + DREAM_EVIDENCE_HEADER + '\n\n' + reflections;
             }
           }
+        } else if (kind === 'person' && personName !== undefined) {
+          // Per-person topic cooldown is evaluated during Phase-7 compaction (never written back to
+          // memory_archive, avoiding nightly version/upload churn): active chat days are extracted
+          // strictly from this person's own archived journals.
+          const activeChatDates = extractPersonActiveChatDates(
+            allCurrentVersions,
+            sanitizeForPath(personName)
+          );
+          personContext = { runDate: runDateStr, activeChatDates };
         }
-        let compacted = await runCompact(kind, personName, compactSource);
+        let compacted = await runCompact(kind, personName, compactSource, personContext);
 
         if (compacted.trim().length === 0) {
           // An empty source file simply has nothing to compact -- log and move on rather than

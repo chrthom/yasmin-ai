@@ -72,6 +72,7 @@ src/
 │   ├── mood.ts        # Yasmin's daily mood: header parse/render, deterministic exponential decay,
 │   │                  #   (a fully faded mood also drops its narrative), and the archive stamp that
 │   │                  #   overrides the agent's updatedAt
+│   ├── cooldown.ts    # Active chat dates and journal headers for per-person topic cooldowns
 │   └── mapping.ts     # Table-driven mapping between verbose file paths and context_entries titles
 ├── services/
 │   └── context.service.ts    # Orchestrates matching, DB loading, and XML formatting
@@ -86,7 +87,7 @@ src/
     ├── strings.test.ts
     └── ...                # plus nightly-pipeline suites: mistral_api, nightly_job.model,
                             #   memory_archive.model, mapping, nightly_tools, reflection, privacy,
-                            #   pipeline.integration, context.model, bootstrap-memory, mood, dream
+                            #   pipeline.integration, context.model, bootstrap-memory, mood, dream, cooldown
 ```
 
 ### Data Flow
@@ -97,6 +98,7 @@ src/
    - Mandatorily fetches the sender's profile (e.g. `Profile of Zara`), `Family notes`, and `Profile of Yasmin` on the initial turn.
    - Filters out already loaded titles using the session's active conversation cache.
    - Wraps newly loaded context pieces in structured XML tags (`<context_entry title="...">...</context_entry>`) and prepends them to the prompt.
+   - Supplies today's date in `MEMORY_TZ` on every turn for date-gated follow-ups.
    - Calls the Mistral API with custom Tool Calling configuration and manages 12-hour session state.
 4. **Formatting** → `SynologyClient` strips markdown formatting (bold, headers) and chunks long responses (>1800 chars) for Synology's limits
 5. **Response** → Answers are sent back to Synology Chat via its API
@@ -210,7 +212,12 @@ At a high level, each run:
    path and uploads existing context directly, without stripping; inspect it for sensitive content first.
 7. **Regenerates the `context_entries` eager cache**: compacts and privacy-strips the current verbose files
    and upserts them back into MariaDB's `context_entries` — the same table the live agent reads on turn 1 —
-   so the small, fast, sensitive-free eager set always reflects the latest long-term memory. The
+   so the small, fast, sensitive-free eager set always reflects the latest long-term memory. For
+   `people/<name>.md`, `cooldown.ts` extracts distinct active chat dates from journal `chatDates` headers
+   and passes them with the run date to person compaction for the five-active-chat-day topic cooldown.
+   Future `fällig ab` deadlines retain date-gated restraint; unresolved `neuer Aspekt` and reached
+   deadlines override the cooldown. Journal transcripts label messages with their own `MEMORY_TZ` date;
+   missing timestamps are unknown, not guessed. The
    `Profile of Yasmin` compaction additionally folds in the current mood and the most recent dream
    reflections (`self-reflection/dreams.md`) as soft evidence — dream-derived material is always marked as
    such (e.g. "aus einem Traum") and never promoted to standalone facts. That asymmetry is deliberate:

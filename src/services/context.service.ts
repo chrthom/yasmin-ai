@@ -10,6 +10,21 @@ export interface ContextRetrievalResult {
 }
 
 /**
+ * Formats an instant as YYYY-MM-DD in the configured memory timezone (defaulting to Europe/Berlin).
+ *
+ * @param now The instant to format.
+ * @returns The YYYY-MM-DD calendar date in MEMORY_TZ.
+ */
+function formatContextDate(now: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.nightly?.tz || 'Europe/Berlin',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
+}
+
+/**
  * Service to select eager context from a database snapshot and format it as XML.
  */
 export class ContextService {
@@ -17,12 +32,14 @@ export class ContextService {
    * Retrieves relevant context for a specific conversation turn, filtering out already loaded blocks
    * @param username The sender username
    * @param loadedTitles Set of titles that have already been loaded/sent in this conversation
+   * @param now Optional current instant (defaults to `new Date()`), formatted as `Today is YYYY-MM-DD.`
    * @returns ContextRetrievalResult containing formatted XML context and any newly loaded titles
    * @throws The underlying error when the context_entries queries fail.
    */
   public async getRelevantContext(
     username: string,
-    loadedTitles: Set<string> | string[]
+    loadedTitles: Set<string> | string[],
+    now: Date = new Date()
   ): Promise<ContextRetrievalResult> {
     const loadedSet = loadedTitles instanceof Set ? loadedTitles : new Set(loadedTitles);
     const entries = await getAllEntriesFromDb();
@@ -68,8 +85,9 @@ export class ContextService {
 
     let formattedContext = xmlBlocks.join('\n\n');
 
-    // Identify the user Yasmin is talking to
-    formattedContext += `\n\nYou are talking to ${username}.`;
+    // Identify the user Yasmin is talking to and today's calendar date (for memory freshness and
+    // deadline-gated follow-ups; cleanStoredText strips the whole "You are talking to ... ." line).
+    formattedContext += `\n\nYou are talking to ${username}. Today is ${formatContextDate(now)}.`;
 
     // 3. On the initial turn, inject the manifest of all other available titles
     if (loadedSet.size === 0) {
