@@ -2376,7 +2376,6 @@ describe('nightly pipeline integration', () => {
 
       // Before due date (2026-10-07): live context carries restraint + Today is 2026-10-07 (< 2026-10-09).
       const beforeDueContext = await contextService.getRelevantContext(
-        'Hey',
         'zara',
         [],
         new Date('2026-10-07T14:00:00Z')
@@ -2388,7 +2387,6 @@ describe('nightly pipeline integration', () => {
       // On the due date (2026-10-09) right after quiet nights: follow-up is STILL in the eager cache
       // and Today is 2026-10-09 (>= fällig ab 2026-10-09), so live chat can proactively ask!
       const onDueContext = await contextService.getRelevantContext(
-        'Hey',
         'zara',
         [],
         new Date('2026-10-09T14:00:00Z')

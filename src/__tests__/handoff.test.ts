@@ -65,6 +65,36 @@ describe('handoff', () => {
       expect(priorContext).toContain('Earlier stuff');
     });
 
+    it('preserves the distinct handoff and journal cleaning and labeling rules', () => {
+      const handoff = '<previous_conversation>old summary</previous_conversation>';
+      const context = '<context_entry title="Profile of Zara">facts</context_entry>';
+      const messages = [
+        {
+          type: 'message.input',
+          content: [
+            { type: 'text', text: `${handoff}\n${context}` },
+            { type: 'text', text: 'hello' }
+          ]
+        },
+        { type: 'message.tool_calls', role: 'assistant', content: 'internal tool call' },
+        { type: 'message.output', content: ` ${handoff} reply ` },
+        { type: 'message.input', role: 'custom', content: 'custom role' },
+        { type: 'message.output', content: [{ type: 'image', url: 'ignored' }] }
+      ];
+
+      expect(extractTurns(messages)).toEqual({
+        priorContext: 'old summary',
+        turns: [
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: `${handoff} reply` },
+          { role: 'assistant', text: 'custom role' }
+        ]
+      });
+      expect(buildTranscript(messages)).toBe(
+        `[date unknown] user: ${context} hello\n[date unknown] assistant: reply\n[date unknown] custom: custom role`
+      );
+    });
+
     it('splits off the last N user turns together with their replies', () => {
       const turns = [1, 2, 3, 4, 5].flatMap(i => [
         { role: 'user' as const, text: `u${i}` },

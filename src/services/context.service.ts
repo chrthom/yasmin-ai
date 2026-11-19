@@ -1,9 +1,5 @@
 import { config } from '../config';
-import {
-  getAllEntriesFromDb,
-  getAllTitlesFromDb,
-  getContentByTitleFromDb
-} from '../database/models/context.model';
+import { ContextEntry, getAllEntriesFromDb } from '../database/models/context.model';
 import { contextEntryBlock, xmlBlock } from '../protocol';
 import { profileTitle } from '../strings';
 
@@ -29,12 +25,11 @@ function formatContextDate(now: Date): string {
 }
 
 /**
- * Service to orchestrate database queries, TF-IDF relevance matching, and XML formatting
+ * Service to select eager context from a database snapshot and format it as XML.
  */
 export class ContextService {
   /**
    * Retrieves relevant context for a specific conversation turn, filtering out already loaded blocks
-   * @param prompt The incoming user prompt/message
    * @param username The sender username
    * @param loadedTitles Set of titles that have already been loaded/sent in this conversation
    * @param now Optional current instant (defaults to `new Date()`), formatted as `Today is YYYY-MM-DD.`
@@ -42,7 +37,6 @@ export class ContextService {
    * @throws The underlying error when the context_entries queries fail.
    */
   public async getRelevantContext(
-    prompt: string,
     username: string,
     loadedTitles: Set<string> | string[],
     now: Date = new Date()
@@ -58,28 +52,31 @@ export class ContextService {
     const familyNotesTitle = config.context.familyNotesTitle;
     const profileOfYasminTitle = config.context.profileOfYasminTitle;
 
-    const matchedProfileSender = titles.find(t => t.toLowerCase() === profileOfSenderTitle.toLowerCase());
-    const matchedFamilyNotes = titles.find(t => t.toLowerCase() === familyNotesTitle.toLowerCase());
-    const matchedProfileYasmin = titles.find(t => t.toLowerCase() === profileOfYasminTitle.toLowerCase());
+    const matchedProfileSender = entries.find(
+      e => e.title.toLowerCase() === profileOfSenderTitle.toLowerCase()
+    );
+    const matchedFamilyNotes = entries.find(e => e.title.toLowerCase() === familyNotesTitle.toLowerCase());
+    const matchedProfileYasmin = entries.find(
+      e => e.title.toLowerCase() === profileOfYasminTitle.toLowerCase()
+    );
 
-    // Identify candidate titles for injection
-    const candidateTitles: string[] = [];
-    if (matchedProfileYasmin && !loadedSet.has(matchedProfileYasmin)) {
-      candidateTitles.push(matchedProfileYasmin);
+    // Identify candidates in injection order; the sender may also be Yasmin.
+    const candidates: ContextEntry[] = [];
+    if (matchedProfileYasmin && !loadedSet.has(matchedProfileYasmin.title)) {
+      candidates.push(matchedProfileYasmin);
     }
-    if (matchedFamilyNotes && !loadedSet.has(matchedFamilyNotes)) {
-      candidateTitles.push(matchedFamilyNotes);
+    if (matchedFamilyNotes && !loadedSet.has(matchedFamilyNotes.title)) {
+      candidates.push(matchedFamilyNotes);
     }
-    if (matchedProfileSender && !loadedSet.has(matchedProfileSender)) {
-      candidateTitles.push(matchedProfileSender);
+    if (matchedProfileSender && !loadedSet.has(matchedProfileSender.title)) {
+      candidates.push(matchedProfileSender);
     }
 
-    // 2. Load actual contents and format as clean XML
+    // 2. Format the contents from the same snapshot as the matched titles.
     const xmlBlocks: string[] = [];
     const newlyLoadedTitles: string[] = [];
 
-    for (const title of candidateTitles) {
-      const content = await getContentByTitleFromDb(title);
+    for (const { title, content } of candidates) {
       if (content !== null && content !== undefined) {
         xmlBlocks.push(contextEntryBlock(title, content.trim()));
         newlyLoadedTitles.push(title);
@@ -94,9 +91,8 @@ export class ContextService {
 
     // 3. On the initial turn, inject the manifest of all other available titles
     if (loadedSet.size === 0) {
-      const allTitles = await getAllTitlesFromDb();
-      const eagerlyLoadedSet = new Set(candidateTitles.map(t => t.toLowerCase()));
-      const availableTitles = allTitles.filter(t => !eagerlyLoadedSet.has(t.toLowerCase()));
+      const eagerlyLoadedSet = new Set(candidates.map(e => e.title.toLowerCase()));
+      const availableTitles = titles.filter(t => !eagerlyLoadedSet.has(t.toLowerCase()));
 
       if (availableTitles.length > 0) {
         const titleListXml = xmlBlock(

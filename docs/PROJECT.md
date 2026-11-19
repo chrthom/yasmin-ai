@@ -110,9 +110,11 @@ is not journaled twice.
    quietly, and errors inside the memory pipeline never turn into broken conversations.
 2. **In-persona truthfulness.** Dreams stay dreams, opinions stay interpretations, dated facts age.
    Within the persona she may interpret and weigh, but never invent facts.
-3. **Privacy is a hard boundary.** `[PRIVACY:SENSITIVE]` content never leaves local storage: it is
-   stripped before any upload, and the archive that keeps it is local-only and not searched by the
-   live agent.
+3. **Privacy is a hard boundary.** The nightly pipeline strips `[PRIVACY:SENSITIVE]` content from the
+   library and eager cache; the full archive is local and not searched by the live agent. This is not a
+   blanket prohibition on sending sensitive content to Mistral: pipeline-internal review/revision calls
+   can receive unstripped content, and the one-time bootstrap uploads existing context without stripping.
+   Inspect bootstrap inputs before running it. See `docs/ARCHITECTURE.md` for these boundaries.
 4. **Small, reviewable write paths.** All memory writes go through the nightly pipeline's
    propose, review and archive chain, are versioned, and the whole run is resumable: memory is too
    important to be left half-consolidated.
@@ -131,5 +133,5 @@ is not journaled twice.
 - Development follows the repo's dev-loop: feature branches, PRs into protected `main`, lint and tests
   in CI.
 
-See `AGENTS.md` for the architecture behind all of this, `docs/CONTEXT_CONVENTIONS.md` for the memory
-data model, and `docs/nightly_memory_processing_implementation.md` for the pipeline's full design.
+See `docs/ARCHITECTURE.md` for the architecture behind all of this, `docs/CONTEXT_CONVENTIONS.md` for
+the memory data model, and `docs/nightly_memory_processing_implementation.md` for the historical design.
